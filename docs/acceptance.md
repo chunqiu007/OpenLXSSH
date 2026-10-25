@@ -1,6 +1,6 @@
 # OpenLXSSH V1.0 — 验收总表
 
-当前状态：阶段 0 的 P0-01、P0-02、P0-03、P0-04、P0-05 已有阶段任务证据；产品验收条目仍尚未执行。文档已准备不等于产品已通过。主管在执行时维护本表并链接证据。
+当前状态：阶段 0 的 P0-01～P0-05 已有阶段任务证据；P1-01 本地无网络 PTY 探针已通过主管代码审查、独立测试与资源快照，报告已落盘。产品验收条目仍尚未执行；实验 build/test 不等于产品已通过。
 
 ## 阶段 0 门槛与证据（不替代产品验收）
 
@@ -15,6 +15,14 @@
 | P0-05 签名、辅助程序与 Sandbox 调查 | 通过（阶段任务） | `docs/reports/p0-05-signing-sandbox.md` | 已核对本机 `codesign`/`security`/Xcode/SDK/`notarytool`/`stapler`/`spctl` 入口、签名身份类型数量、Bundle ID/Team/证书/公证未知项、Apple helper 路径、签名顺序、Sandbox/Hardened Runtime 最小权限与公证前置条件；`/tmp` fixture 的 ad hoc runtime 深度严格验证通过。当前无正式 App/Target，Developer ID Application/Installer 摘要均为 0，未签名正式产品、未上传 Apple；AC-33/AC-34/AC-35 仍未执行。 |
 
 阶段 0 的阶段任务状态不改变下方产品验收条目的状态。整体 Goal 仍不能因 P0-01/P0-02/P0-03/P0-04/P0-05 的阶段任务通过而宣布完成；所有必要的产品、性能、Release 及外部人工验收仍须按执行计划完成并留存证据。
+
+## 阶段 1 局部实验记录（不替代产品验收）
+
+| 阶段任务 | 状态 | 执行证据 | 关键限制 / 未验证范围 |
+| --- | --- | --- | --- |
+| P1-01 最小受控 OpenSSH/PTY 探针 | 通过（仅本地无网络原型范围） | `Experiments/P1-01-PTYProbe/`；`docs/reports/p1-01-pty.md`；macOS 15.8.1 / Xcode 26.3 / Swift 6.2.4；主管独立复跑14项 XCTest、Release CLI 和 ps/lsof 资源快照均通过；工程师 Debug/Release/TSan/重复测试见 `.build/verification/` | 无 Shell 拼接、9 类 argv 精确回传、256 输入字节顺序、128 KiB 输出尾部、窗口/SIGWINCH、超时、TERM→KILL、EOF、并发幂等关闭、20 次本地循环与对象/FD/进程/task 回收只证明本地原型范围。系统 ssh 只运行无网络 `-G -F /dev/null`。无隔离 SSH 服务、无 macOS 26 runtime（只有 minos 26 交叉编译证据）；没有认证/MFA/信任、Keychain、Askpass、正式 App、SwiftTerm 集成、后代进程树或产品性能证据。 |
+
+P1-01 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等产品条目的状态；尤其“未使用 Shell”不能替代后续完整参数/配置验证与主机信任。阶段 1 门槛尚未达到。
 
 ## 1. 状态与证据格式
 
