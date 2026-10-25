@@ -325,6 +325,17 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
     private func handle(_ id: FileHandleID) throws -> OpaquePointer {
         guard let h = handles[id] else { throw FileServiceError(.closed, operation: "handle") }; return h
     }
+    public func fstat(_ handle: FileHandleID, token: CancellationToken) async throws -> FileAttributes? {
+        try await perform(token) { c in
+            try self.requireReady()
+            var a = LIBSSH2_SFTP_ATTRIBUTES()
+            let rc = rf_fstat(c, try self.handle(handle), &a, token.native, self.timeout)
+            // A server may explicitly reject FSTAT; nil declares the weaker path/digest fallback.
+            if rc == Int32(LIBSSH2_ERROR_SFTP_PROTOCOL), rf_sftp_error(c) == UInt64(LIBSSH2_FX_OP_UNSUPPORTED) { return nil }
+            try self.check(rc, c, operation: "fstat")
+            return self.attributes(a)
+        }
+    }
     public func read(_ handle: FileHandleID, maxBytes: Int, token: CancellationToken) async throws -> Data {
         guard maxBytes > 0, maxBytes <= 1024 * 1024 else { throw FileServiceError(.resourceLimit, operation: "read") }
         return try await perform(token) { c in

@@ -48,6 +48,7 @@ int rf_authenticated(rf_connection *);
 int rf_start_sftp(rf_connection *, rf_cancel *, double);
 uint64_t rf_sftp_error(rf_connection *);
 int rf_lstat(rf_connection *, const char *, unsigned int, LIBSSH2_SFTP_ATTRIBUTES *, rf_cancel *, double);
+int rf_fstat(rf_connection *, LIBSSH2_SFTP_HANDLE *, LIBSSH2_SFTP_ATTRIBUTES *, rf_cancel *, double);
 LIBSSH2_SFTP_HANDLE *rf_open(rf_connection *, const char *, unsigned int, int kind, int *error,
                             rf_cancel *, double);
 int rf_readdir(rf_connection *, LIBSSH2_SFTP_HANDLE *, char *, size_t,

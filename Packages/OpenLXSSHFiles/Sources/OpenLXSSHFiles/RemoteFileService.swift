@@ -143,6 +143,9 @@ public protocol RemoteFileService: AnyObject, Sendable {
     func commit(_ source: RemotePath, to destination: RemotePath, request: CommitRequest, token: CancellationToken) async throws
     func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry]
     func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes
+    /// Metadata of the actual opened handle, without moving its read offset. nil explicitly means
+    /// unsupported (the source-compatible default), not a substitute path stat or snapshot guarantee.
+    func fstat(_ handle: FileHandleID, token: CancellationToken) async throws -> FileAttributes?
     func open(_ path: RemotePath, mode: OpenMode, token: CancellationToken) async throws -> FileHandleID
     func read(_ handle: FileHandleID, maxBytes: Int, token: CancellationToken) async throws -> Data
     func write(_ handle: FileHandleID, data: Data, token: CancellationToken) async throws -> Int
@@ -153,6 +156,11 @@ public protocol RemoteFileService: AnyObject, Sendable {
     func remove(_ path: RemotePath, directory: Bool, token: CancellationToken) async throws
     func cancel()
     func close() async
+}
+extension RemoteFileService {
+    public func fstat(_ handle: FileHandleID, token: CancellationToken) async throws -> FileAttributes? {
+        try token.check(); return nil
+    }
 }
 public enum NativeDiagnostics {
     public static var libssh2: String { String(cString: rf_libssh2_version()) }

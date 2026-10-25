@@ -59,12 +59,13 @@ def main():
     description = json.JSONDecoder().raw_decode(description_log[description_log.index('{'):])[0]
     if [(p['name'], p['type']) for p in description['products']] != [('OpenLXSSHFiles', {'library': ['automatic']})]:
         raise RuntimeError('Runtime package must publish only the OpenLXSSHFiles library')
+    # Replan local consumers: SwiftPM's cached dependency source list can miss newly added files.
     fixture = ROOT / 'Tests/Fixtures/OpenLXSSHFilesNativeSmoke'
     smoke_path = ROOT / '.build/native-smoke-fixture'
     strict = ['-Xswiftc', '-warnings-as-errors', '-Xcc', '-Wall', '-Xcc', '-Wextra', '-Xcc', '-Werror']
     for configuration in ('debug', 'release'):
         run(configuration + '-build', ['swift', 'build', '--package-path', ROOT, '-c', configuration, '--target', 'OpenLXSSHFiles'] + strict)
-        run(configuration + '-smoke-build', ['swift', 'build', '--package-path', fixture, '--scratch-path', smoke_path, '-c', configuration] + strict)
+        run(configuration + '-smoke-build', ['swift', 'build', '--disable-build-manifest-caching', '--package-path', fixture, '--scratch-path', smoke_path, '-c', configuration] + strict)
         run(configuration + '-test', ['swift', 'test', '--package-path', ROOT, '-c', configuration] + strict)
         binary = smoke_path / configuration / 'OpenLXSSHFilesNativeSmoke'
         run(configuration + '-smoke', [binary])
@@ -76,7 +77,7 @@ def main():
     run('tsan-test', ['swift', 'test', '--package-path', ROOT, '--sanitize=thread'] + strict)
     # Product target compile/link only. Do NOT execute a min-26 binary on the macOS-15 host.
     target_path = ROOT / '.build/target26-fixture'
-    run('target26-build', ['swift', 'build', '--package-path', fixture, '--scratch-path', target_path,
+    run('target26-build', ['swift', 'build', '--disable-build-manifest-caching', '--package-path', fixture, '--scratch-path', target_path,
                            '--triple', 'arm64-apple-macosx26.0', '-c', 'release'] + strict,
         environment={'OPENLXSSH_FILES_TARGET26': '1'})
     load = run('target26-load-commands', ['otool', '-l', target_path / 'arm64-apple-macosx/release/OpenLXSSHFilesNativeSmoke'])
@@ -92,7 +93,7 @@ def main():
         'targets: [.executableTarget(name: "Consumer", dependencies: '
         '[.product(name: "OpenLXSSHFiles", package: "OpenLXSSHFiles")])])\n')
     (consumer / 'Sources/Consumer/main.swift').write_text('import OpenLXSSHFiles\nprint(NativeDiagnostics.libssh2)\n')
-    run('consumer-build', ['swift', 'build', '--package-path', consumer] + strict)
+    run('consumer-build', ['swift', 'build', '--disable-build-manifest-caching', '--package-path', consumer] + strict)
     run('consumer-smoke', [consumer / '.build/debug/Consumer'])
     manifest = json.loads((ROOT / '.build/native/manifest.json').read_text())
     native_hashes = {name: manifest['outputs']['install/lib/' + name] for name in ('libssh2.a', 'libssl.a', 'libcrypto.a')}

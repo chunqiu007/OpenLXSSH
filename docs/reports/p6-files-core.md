@@ -27,6 +27,18 @@ TransferManager actor由应用级持有，服务/job/batch身份与生命周期�
 
 R1未重跑ASan/TSan/native/min26，因为只改结果分类与风险记录；原70矩阵证据仍保留，新增3项在Debug/Release完整73项通过。日志 `.build/verification/results.json`、`p6-transfer-manager-r1/results.json`、native-hash-verification.json。
 
+## R2：根目录枚举与源一致性修复
+
+P7独立只读审查发现两项历史测试未覆盖的问题：根目录 FD 使用 dup 导致重复 list 消耗共享偏移、预览后整根复制漏文件却成功；源文件同 inode 等长跨块修改可能提交混合内容。已新增修前回归，8项测试出现36断言失败（exit1），证据保留而非将历史通过改写为从未有缺陷。
+
+R2改为 openat(rootFD, ".", ...) 创建独立目录枚举描述；RemoteFileService 新增可选 fstat，默认nil保持旧conformer兼容。Local真实fstat保留device/inode与纳秒mtime，libssh2通过原串行/EAGAIN桥接FSTAT。私有SourceIntegrityCheck对初始path、打开后handle、读后和beforeCommit后再次复核；源句柄保留到所有最终检查结束。弱属性或无handle-stat路径增加一次有界流式SHA256复核，不缓存整文件、不无限retry；取消/关闭保留原错误，检测变化报raceDetected且不提交，原目标保留。
+
+工程师Debug/Release各86项、ASan/TSan各57项受影响测试退出0；主管读取全部本轮实际差异、新13项完整性测试和结果日志，独立运行Release57项退出0。包含重复/并发根list、预览后4文件/7结果+SHA、同inode等长纳秒变化、同size/mtime换inode、beforeCommit修改、symlink、弱属性、增长上界、复核取消双句柄关闭、静态源及Manager/策略回归。
+
+证据位于 `.build/verification/p7-files-integrity-r2/`，主管日志 `primary-release57.log`。min26、独立consumer/smoke、单library和160 native产物/7许可hash工程师通过。首次min26因SwiftPM旧source清单缓存遗漏新增文件失败，保留日志；显式 `--disable-build-manifest-caching` 重新规划后通过，verify脚本独立消费者同步修正。仅重编C桥，未重建上游libssh2/OpenSSL档案。
+
+此修复仍是观察到的变化检测，不是source原子快照。最终检查后修改、恢复全部可观察元数据、远端秒级属性及摘要复核期间的剩余竞争如实保留；没有真实远端FSTAT/SFTP证据。本地2GiB/1000压力随后另行验证，不从57项推断已通过。
+
 ## 未完成与整合约束
 
 真实SFTP/认证/MFA、rename/fsync扩展、删除与能力probe远端运行未验证，本地FD fixture不是服务器。上游静态库未ASan/TSan插桩。macOS26只编译未实跑。

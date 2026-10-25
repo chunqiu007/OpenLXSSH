@@ -264,6 +264,11 @@ int rf_lstat(rf_connection *c, const char *path, unsigned int len, LIBSSH2_SFTP_
     if(!c || !c->sftp) return RF_CLOSED;
     RETRY(c, cancel, timeout, libssh2_sftp_stat_ex(c->sftp, path, len, LIBSSH2_SFTP_LSTAT, a));
 }
+int rf_fstat(rf_connection *c, LIBSSH2_SFTP_HANDLE *h, LIBSSH2_SFTP_ATTRIBUTES *a,
+             rf_cancel *cancel, double timeout) {
+    if(!c || !c->sftp || !h) return RF_CLOSED;
+    RETRY(c, cancel, timeout, libssh2_sftp_fstat_ex(h, a, 0));
+}
 LIBSSH2_SFTP_HANDLE *rf_open(rf_connection *c, const char *path, unsigned int len, int kind,
                             int *error, rf_cancel *cancel, double timeout) {
     *error = RF_CLOSED;

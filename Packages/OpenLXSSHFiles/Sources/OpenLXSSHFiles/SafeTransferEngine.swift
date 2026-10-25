@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 private actor AsyncGate {
@@ -203,7 +204,10 @@ public struct SafeTransferEngine: Sendable {
                     throw FileServiceError(.needsCapabilityConfirmation, operation: "server-no-replace-unproven", path: destinationPath)
                 }
             }
-            sourceHandle = try await source.open(sourcePath, mode: .read, token: token)
+            let openedSource = try await source.open(sourcePath, mode: .read, token: token)
+            sourceHandle = openedSource
+            let sourceCheck = try await SourceIntegrityCheck(service: source, path: sourcePath, handle: openedSource, expected: attr, token: token)
+            var requiresSourceDigestRecheck = try await sourceCheck.validate(service: source, handle: openedSource, token: token)
             var owned = false
             for _ in 0..<3 {
                 let candidate = try destinationPath.parent.appending(FileName(".openlxssh-transfer.\(UUID().uuidString).part"))
@@ -216,8 +220,9 @@ public struct SafeTransferEngine: Sendable {
                 throw FileServiceError(.conflict, operation: "temporary-reservation", path: destinationPath)
             }
             var total: UInt64 = 0
+            var sourceDigest = SHA256()
             while true {
-                let count: Int = try await scheduler.chunk(token) {
+                let data: Data = try await scheduler.chunk(token) {
                     try token.check()
                     let data = try await source.read(sh, maxBytes: self.chunkSize, token: token)
                     guard data.count <= self.chunkSize else { throw FileServiceError(.integrity, operation: "oversized-read") }
@@ -228,25 +233,42 @@ public struct SafeTransferEngine: Sendable {
                         guard written > 0, written <= data.count - offset else { throw FileServiceError(.integrity, operation: "short-write") }
                         offset += written
                     }
-                    return data.count
+                    return data
                 }
-                if count == 0 { break }
-                total += UInt64(count)
+                try token.check()
+                if data.isEmpty { break }
+                total += UInt64(data.count)
+                sourceDigest.update(data: data)
                 await hooks.progress?(sourcePath, total)
+                try token.check()
+                if let expected = attr.size, total > expected {
+                    throw FileServiceError(.raceDetected, operation: "source-grew-during-read", path: sourcePath)
+                }
             }
-            if let expected = attr.size, expected != total { throw FileServiceError(.integrity, operation: "source-size-changed", path: sourcePath) }
+            try token.check()
+            let weakAfterRead = try await sourceCheck.validate(service: source, handle: sh, token: token)
+            requiresSourceDigestRecheck = requiresSourceDigestRecheck || weakAfterRead
+            if let expected = attr.size, expected != total { throw FileServiceError(.raceDetected, operation: "source-size-changed", path: sourcePath) }
             try token.check()
             do { try await destination.finish(dh, token: token) }
             catch let error as FileServiceError where error.kind == .unsupported && destination.capabilities.traversal == .remoteComponentLstat {
                 let risk = TransferRisk.remoteFsyncUnavailable(path: destinationPath)
                 try await policy.require(risk); risks.append(risk)
             }
-            try await source.closeHandle(sh); sourceHandle = nil
             try await destination.closeHandle(dh); destinationHandle = nil
             guard let temp = temporary else { throw FileServiceError(.integrity, operation: "missing-temporary") }
             try await hooks.beforeCommit?(temp, destinationPath)
             try token.check()
             try await TransferChecks.inspect(destination, path: destinationPath, includeLeaf: false, token: token)
+            let weakBeforeCommit = try await sourceCheck.validate(service: source, handle: sh, token: token)
+            if requiresSourceDigestRecheck || weakBeforeCommit {
+                try await sourceCheck.verifyDigest(service: source, digest: Data(sourceDigest.finalize()), expectedBytes: total,
+                                                   scheduler: scheduler, chunkSize: chunkSize, token: token)
+                _ = try await sourceCheck.validate(service: source, handle: sh, token: token)
+            }
+            // Keep the original handle until final path/handle comparison and optional digest finish.
+            try await source.closeHandle(sh); sourceHandle = nil
+            try token.check()
             let request = CommitRequest(mode: expectedTarget == nil ? .noReplace : .replaceExisting,
                 expectedTarget: expectedTarget, expectedContentSHA256: targetDigest,
                 acceptNonCASOverwriteRisk: expectedTarget != nil, serverConfirmation: policy.serverCommit)

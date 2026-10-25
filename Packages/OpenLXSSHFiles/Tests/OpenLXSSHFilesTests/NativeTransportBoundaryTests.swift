@@ -25,6 +25,8 @@ final class NativeTransportBoundaryTests: XCTestCase, @unchecked Sendable {
             XCTAssertEqual(rf_publickey(connection, "fixture", 7, nil, 0, secret, random.utf8.count, nil, token.native, 0.1), Int32(RF_UNTRUSTED))
         }
         XCTAssertEqual(rf_trust_hostkey(connection, 1), Int32(RF_UNTRUSTED))
+        var attributes = LIBSSH2_SFTP_ATTRIBUTES()
+        XCTAssertEqual(rf_fstat(connection, nil, &attributes, token.native, 0.1), Int32(RF_CLOSED))
         var bytes = [UInt8](repeating: 0, count: 32)
         XCTAssertEqual(recv(sockets[1], &bytes, bytes.count, MSG_DONTWAIT), -1)
         XCTAssertEqual(errno, EAGAIN)

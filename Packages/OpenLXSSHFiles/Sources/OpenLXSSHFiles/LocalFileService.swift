@@ -36,8 +36,9 @@ public actor LocalFileService: RemoteFileService {
         try lifetime.check(); try token.check()
     }
     private func directory(_ path: RemotePath) throws -> Int32 {
-        var fd = fcntl(rootFD, F_DUPFD_CLOEXEC, 0)
-        guard fd >= 0 else { throw Self.error("duplicate-directory", path: path) }
+        // dup() would share rootFD's directory offset: every listing needs a new open description.
+        var fd = openat(rootFD, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw Self.error("open-root-directory", path: path) }
         do {
             for part in path.components {
                 let next = part.cBytes.withUnsafeBufferPointer {
@@ -69,7 +70,7 @@ public actor LocalFileService: RemoteFileService {
         try check(token)
         var st = stat()
         if path == .root {
-            guard fstat(rootFD, &st) == 0 else { throw Self.error("fstat", path: path) }
+            guard Darwin.fstat(rootFD, &st) == 0 else { throw Self.error("fstat", path: path) }
         } else {
             let (fd, name) = try parent(path); defer { Darwin.close(fd) }
             let rc = name.cBytes.withUnsafeBufferPointer { fstatat(fd, $0.baseAddress!, &st, AT_SYMLINK_NOFOLLOW) }
@@ -110,13 +111,19 @@ public actor LocalFileService: RemoteFileService {
         let fd = name.cBytes.withUnsafeBufferPointer { openat(parent, $0.baseAddress!, flags, mode_t(0o600)) }
         guard fd >= 0 else { throw Self.error("open", path: path) }
         var st = stat()
-        guard fstat(fd, &st) == 0, st.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
+        guard Darwin.fstat(fd, &st) == 0, st.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
             Darwin.close(fd); throw FileServiceError(.unsupported, operation: "nonregular", path: path)
         }
         let id = FileHandleID(); handles[id] = fd; return id
     }
     private func handle(_ id: FileHandleID) throws -> Int32 {
         guard let fd = handles[id] else { throw FileServiceError(.closed, operation: "handle") }; return fd
+    }
+    public func fstat(_ handle: FileHandleID, token: CancellationToken) async throws -> FileAttributes? {
+        try check(token)
+        var st = stat()
+        guard Darwin.fstat(try self.handle(handle), &st) == 0 else { throw Self.error("fstat-handle") }
+        return attributes(st)
     }
     public func read(_ handle: FileHandleID, maxBytes: Int, token: CancellationToken) async throws -> Data {
         try check(token)
