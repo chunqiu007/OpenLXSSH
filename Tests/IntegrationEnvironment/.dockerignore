@@ -1,0 +1,9 @@
+.runtime
+__pycache__
+*.pyc
+.git
+README.md
+test_static.py
+fixture.sh
+fixture.py
+compose.yaml
