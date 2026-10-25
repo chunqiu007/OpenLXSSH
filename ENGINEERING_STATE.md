@@ -27,7 +27,7 @@
 | P1-04A/B/C、P1-06A | software-engineer | C主管双配置16单测+28Mach通过；P1-06A主管Release真实readpass三场景通过（工程师回归29Mach）；真实SSH未测 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
 | P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |
 | P4-DATA-A | software-engineer | 核心主管审查/独立29真实DB测试通过；UI/外部资源一致性未验收 | `Packages/OpenLXSSHCore/`、`docs/reports/p4-data-core.md` |
-| P4-APP-A | software-engineer | 正式OpenLXSSH Xcode Target/原生主机UI实现中 | 独占 `Application/OpenLXSSH/`、`OpenLXSSH.xcodeproj/`、根Scripts/build-app.sh/verify-app.sh、`Tests/OpenLXSSHAppTests/` |
+| P4-APP-A | software-engineer | 主管代码审查/独立verify-app all通过：正式双配置min26编译、HostProbe13测试与GUI14+8检查；真实transport未接 | `Application/OpenLXSSH/`、`OpenLXSSH.xcodeproj/`、根Scripts、`Tests/OpenLXSSHAppTests/`、`docs/reports/p4-native-app.md` |
 | P3-LOCAL-A | software-engineer | 固定原生库/结构化接口与本地文件策略实现中；无远端互通 | `Experiments/P3-RemoteFileProbe/` 与限定文件策略ADR |
 
 ## P1-01 审查与验证

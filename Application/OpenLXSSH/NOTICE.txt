@@ -1,0 +1,4 @@
+OpenLXSSH includes OpenLXSSHCore and GRDB.swift 7.11.1, revision b83108d10f42680d78f23fe4d4d80fc88dab3212.
+Source: https://github.com/groue/GRDB.swift
+License: MIT; see GRDB-LICENSE.txt in this bundle.
+SQLite is supplied by macOS, not by a developer-machine runtime library.

@@ -36,7 +36,7 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 ## 阶段 4 数据层记录（不替代App功能）
 
 - P4-DATA-A：`Packages/OpenLXSSHCore/` 主管代码审查和独立29项真实SQLite测试通过，见 `docs/reports/p4-data-core.md`。包含主机/分组/收藏/搜索/设置、迁移回滚、共享删除票据、跨进程锁与异常退出WAL恢复；不代表UI/真实Keychain/私钥跨存储或掉电验收。
-- P4-APP-A正式Xcode Target与原生主机UI实现中；产品AC仍未据数据层测试直接标通过。
+- P4-APP-A本地最小集成已通过主管代码审查及完整verify-app all：正式Debug/Release arm64/min26编译、HostProbe13项XCTest、原生GUI14检查及新进程reopen8检查；见 `docs/reports/p4-native-app.md`。真实SSH/终端/SFTP/密钥/凭据未集成，产品AC仍不能据这次UI检查整体标通过。
 
 ## 1. 状态与证据格式
 
