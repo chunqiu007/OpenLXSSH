@@ -1,9 +1,9 @@
 # OpenLXSSH P0-03 依赖清单
 
-更新时间：2026-10-25（Asia/Shanghai）  
-Task ID：`P0-03`  
-状态：候选核对完成；依赖尚未进入 OpenLXSSH 项目，也不代表任何 SSH/SFTP、终端或数据库产品功能通过。  
-核对工作区：`/Users/liuwenshuo/Desktop/OpenLXSSH`  
+更新时间：2026-10-25（Asia/Shanghai）
+Task ID：`P0-03`
+状态：候选核对完成；依赖尚未进入 OpenLXSSH 项目，也不代表任何 SSH/SFTP、终端或数据库产品功能通过。
+核对工作区：`/Users/liuwenshuo/Desktop/OpenLXSSH`
 临时探针根目录：`/tmp/openlxssh-p0-03`（仅用于本轮只读核对和构建，完成记录后清理）
 
 ## 1. 结论摘要与边界

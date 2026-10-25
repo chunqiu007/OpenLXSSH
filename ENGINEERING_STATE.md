@@ -33,7 +33,7 @@
 - P0-03 主管复核：独立执行 SwiftTerm `v1.19.0`/`v1.20.0`/`v1.99.1` 的 `dump-package` 和 `arm64-apple-macosx26.0` build（均退出码 0）；GRDB `v7.11.1` dump/build（均退出码 0）及 arm64 系统 SQLite C 探针（编译/运行均退出码 0，宿主 SQLite 3.43.2）；libssh2 1.11.1 发布包 SHA-256、Autotools configure/make、OpenSSL 静态链接和运行探针（均退出码 0，输出 1.11.1）；上游标签、许可证标记和 Keyboard-Interactive/SFTP API 文档抓取均成功。
 - P0-03 限制：libssh2 CMake 配置因本机缺少 `cmake` 退出码 127，未安装补齐；mbedTLS/wolfSSL/Libgcrypt/LibreSSL 未完成组合构建；Homebrew OpenSSL 仅为临时探针输入，不是发行依赖；未创建 App/Xcode target、Package.resolved 或 `.app`，未进行 macOS 26 运行时、真实 SSH/SFTP/MFA、签名、公证或第二台 Mac 验收。
 - 版本/许可决策：SwiftTerm 暂在 P2 比较稳定 `v1.20.0` 与 2.0 前预览 `v1.99.1`，不锁定 main；GRDB 暂用 `v7.11.1` 的 `GRDB` 产品和系统 SQLite；P3 初始候选为 libssh2 `1.11.1` + OpenSSL 3.x 静态构建，不依赖 Homebrew 运行时；详细影响与复验计划见两个 ADR。
-- P0-02 提交事实：初始基线为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`；R1 修正提交为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`；主管审查状态提交为 `851b61283ff28c0f16926a09eed8cf043f0d5a46`。
+- P0-02 提交事实：初始基线为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`；R1 修正提交为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`；主管审查状态提交为 `851b61283ff28c0f16926a09eed8cf043f0d5a46`；P0-03 依赖证据提交为 `68b9306`。
 - P0-01 主管审查：已读取实际报告与状态改动，并独立复跑环境、OpenSSH 受控配置和辅助工具检查；结果与报告一致。
 - 验收对应：P0-01/P0-02/P0-03 阶段证据已落盘并审查；产品功能、macOS 26 运行时和最终分发仍未验收。
 

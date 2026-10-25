@@ -219,7 +219,7 @@ mbedTLS、wolfSSL、Libgcrypt、LibreSSL 未完成本机 libssh2 组合构建：
 
 主管复核命令：
 
-- `/usr/bin/git status --short --branch`：`## main`，P0-03 文档为未提交改动。
+- `/usr/bin/git status --short --branch`：`## main`，P0-03 文档已提交到本地 Git（主管复核前的状态检查曾显示文档改动，最终提交为 `68b9306`）。
 - `/usr/bin/git diff --check`：退出码 `0`。
 - `git ls-files` 的秘密文件模式扫描无匹配；报告和依赖文档不包含密码、私钥、令牌或真实服务器信息。
 - 临时探针目录在独立命令完成后无残留 `openlxssh-p0-03*` 目录。
