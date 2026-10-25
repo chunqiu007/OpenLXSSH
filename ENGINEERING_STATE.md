@@ -4,9 +4,9 @@
 
 ## 当前状态
 
-- 状态：IN_PROGRESS，P0-01 与 P0-02 已通过主管审查，阶段 0 的 P0-03 依赖核对准备执行。
-- 本轮交付：完成本地 Git 基线保护与 R1 记录修正；已确认当前 HEAD 为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`，无 remote，工作区除被忽略的 `.DS_Store` 外干净；下一步核对候选依赖的版本、来源、许可证、平台要求及构建/分发路径。
-- 当前工作区尚未创建 App/Xcode 项目，尚未安装新增测试环境或执行产品测试；交接文档检查、环境核对和 Git 基线不计为产品验收完成。
+- 状态：IN_PROGRESS，P0-01、P0-02、P0-03 已通过主管审查；阶段 0 仍需完成 P0-04 隔离测试环境调查和 P0-05 签名/辅助程序/Sandbox 路径调查。
+- 本轮交付：完成 SwiftTerm、GRDB、libssh2 与加密后端的来源、版本、许可证、平台要求和原生构建探针核对；已补充正式阶段报告。候选依赖尚未进入 OpenLXSSH 产品构建，未宣称任何 SSH/SFTP、终端或数据库功能通过。
+- 当前宿主为 macOS 15.8.1，低于目标 macOS 26；尚未创建 App/Xcode 项目、执行产品测试、签名、公证或外部人工验收。
 
 ## 已确认目标与范围
 
@@ -27,27 +27,25 @@
 
 ## 当前任务与证据
 
-- 当前里程碑：阶段 0 环境、依赖与基础约束核对进行中；P0-01、P0-02 已通过主管独立审查，P0-03 待执行。
-- Task ID：`P0-02-R1`；执行者：`software-engineer`；状态：通过（主管已独立审查；子任务通过不代表整体 Goal 完成）。
-- 证据报告：`docs/reports/p0-01-environment.md`（P0-01）；`docs/reports/p0-02-git-baseline.md`（P0-02 与 R1 修正）。
-- 主管审查 P0-02-R1：已读取三处实际差异并独立复跑仓库根目录、无 remote、提交历史、`git diff --check`、`git check-ignore` 和跟踪文件边界；`0e136e2` 仅修改 `.gitignore`、P0-02 报告和本状态文件。`/local-secrets/`、构建产物和 `.env` 被忽略；`.env.example`、`.env.template`、Package/源码/文档/Xcode `project.pbxproj` 未被忽略；未发现秘密进入 Git。
-- P0-02 提交事实：初始基线为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`；后续记录提交为 `333ec8e`、`5edb20e`、`b83a10b`、`6a6f7cb`；R1 修正提交为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`。当前 `git status --short --branch` 为 `## main`，`git remote -v` 无输出。
-- P0-01 主管审查：已读取实际报告与状态改动，并独立复跑 `sw_vers`、架构、Xcode/SDK、Swift/Clang、OpenSSH 路径/版本、受控 `ssh -G` 配置展开和辅助工具检查；结果与报告一致。未发现无关文件或敏感信息泄漏。
-- 核心事实：Apple Silicon `arm64`；实际宿主为 macOS 15.8.1 (Build 24H32)，低于需求的 macOS 26；Xcode 26.3 (17C529) 与 macOS 26.2 SDK (SDK build 25C58) 可用；Swift 6.2.4、Apple Clang 17.0.0、系统 OpenSSH 9.9p2 / LibreSSL 3.3.6、`xcbeautify` 3.2.1 可用。
-- 构建证据：临时 Swift 源文件以 `arm64-apple-macosx26.0` 目标真实编译/运行成功，Mach-O `minos 26.0`、SDK 26.2；未创建 App 或执行项目构建。
-- OpenSSH 边界：仅完成 `/usr/bin/ssh`、`/usr/bin/sftp` 路径/版本、签名和 `ssh -G` 受控配置展开；未连接服务器、未执行认证或 SFTP 传输。
-- 工作区状态：P0-01 核对时无 Xcode 项目、Swift Package、Swift 源文件或 `.git`；P0-02 已在本项目根目录创建 `.git`，当前基线工作区状态和忽略文件见 P0-02 报告。
-- 验收对应：P0-01 五项验收标准均已在报告中逐条对应；P0-02 的根目录、文件边界、忽略规则、无 remote 和本地提交条件均已通过；产品功能及 macOS 26 运行时仍未验收。
+- 当前里程碑：阶段 0 环境、依赖与基础约束核对进行中；P0-01、P0-02、P0-03 已通过主管独立审查，P0-04 待执行。
+- Task ID：`P0-03`；执行者：`software-engineer`；状态：通过（主管已独立复核清单、ADR、上游来源和构建探针；阶段通过不代表整体 Goal 或产品功能完成）。
+- 证据文件：`docs/dependencies.md`；`docs/adr/p0-03-swifterm-version-candidate.md`；`docs/adr/p0-03-libssh2-crypto-backend.md`；`docs/reports/p0-03-dependencies.md`。
+- P0-03 主管复核：独立执行 SwiftTerm `v1.19.0`/`v1.20.0`/`v1.99.1` 的 `dump-package` 和 `arm64-apple-macosx26.0` build（均退出码 0）；GRDB `v7.11.1` dump/build（均退出码 0）及 arm64 系统 SQLite C 探针（编译/运行均退出码 0，宿主 SQLite 3.43.2）；libssh2 1.11.1 发布包 SHA-256、Autotools configure/make、OpenSSL 静态链接和运行探针（均退出码 0，输出 1.11.1）；上游标签、许可证标记和 Keyboard-Interactive/SFTP API 文档抓取均成功。
+- P0-03 限制：libssh2 CMake 配置因本机缺少 `cmake` 退出码 127，未安装补齐；mbedTLS/wolfSSL/Libgcrypt/LibreSSL 未完成组合构建；Homebrew OpenSSL 仅为临时探针输入，不是发行依赖；未创建 App/Xcode target、Package.resolved 或 `.app`，未进行 macOS 26 运行时、真实 SSH/SFTP/MFA、签名、公证或第二台 Mac 验收。
+- 版本/许可决策：SwiftTerm 暂在 P2 比较稳定 `v1.20.0` 与 2.0 前预览 `v1.99.1`，不锁定 main；GRDB 暂用 `v7.11.1` 的 `GRDB` 产品和系统 SQLite；P3 初始候选为 libssh2 `1.11.1` + OpenSSL 3.x 静态构建，不依赖 Homebrew 运行时；详细影响与复验计划见两个 ADR。
+- P0-02 提交事实：初始基线为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`；R1 修正提交为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`；主管审查状态提交为 `851b61283ff28c0f16926a09eed8cf043f0d5a46`。
+- P0-01 主管审查：已读取实际报告与状态改动，并独立复跑环境、OpenSSH 受控配置和辅助工具检查；结果与报告一致。
+- 验收对应：P0-01/P0-02/P0-03 阶段证据已落盘并审查；产品功能、macOS 26 运行时和最终分发仍未验收。
 
 ## 下一项具体工作
 
-执行 P0-03：核对 SwiftTerm、GRDB、libssh2 及其原生/加密传递依赖的真实来源、稳定版本候选、许可证、最低系统要求、Apple Silicon 构建与打包方式；形成 `docs/dependencies.md` 和必要的 ADR/证据，禁止安装未评估依赖或把网络抓取结果当作已通过产品验证。
+执行 P0-04：调查当前可用的隔离测试环境和本机工具，区分已有能力与缺口；若需要新增 Linux 虚拟机或容器，形成来源、资源、网络范围和授权边界方案并等待用户确认，不擅自安装或启用远程服务。
 
 ## 待外部条件
 
 以下是实施时需要核实的条件，不代表当前已有产品失败：隔离服务环境方案、Developer ID 可用性、公证上传授权、用户实际企业认证验收、第二台 Mac 实测安排。先完成不依赖这些条件的必要工作。
 
-- P0-02-R1（2026-10-25）：`software-engineer` 修正 `.gitignore` 的本地秘密目录覆盖，补全 P0-02 报告中的 `333ec8e`、`5edb20e`、`b83a10b`、`6a6f7cb` 历史事实，并删除重复的过时下一项记录；待主管独立复核本地文档提交。
+- P0-02-R1（2026-10-25）：`software-engineer` 修正 `.gitignore` 的本地秘密目录覆盖，补全 P0-02 报告中的提交历史事实，并删除重复的过时下一项记录；主管已独立复核并在 `851b612` 状态提交中记录通过。
 
 ## 后续更新格式
 
