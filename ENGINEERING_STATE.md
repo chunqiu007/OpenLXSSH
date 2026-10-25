@@ -1,78 +1,67 @@
 # OpenLXSSH — 工程状态
 
-更新日期：2026-10-25（Asia/Shanghai）。
+更新：2026-10-26（Asia/Shanghai）。
 
-## 当前目标与范围
+## 当前目标与授权
 
-- 状态：IN_PROGRESS。同一个 Goal 持续推进至可安装 V1.0 Release 并完成必要验收；目前没有产品完成声明。
-- Apple Silicon/macOS 26 原生 SSH/SFTP。私钥、密码、私钥＋OTP、密码＋OTP、多轮挑战/审批；终端内手动嵌套 SSH；SFTP 仅覆盖直接可达目标。
-- 不做自动 ProxyJump、多级跳板、经跳板图形化 SFTP、端口转发、自动重连或会话恢复。其余完整范围见 `docs/requirements.md`。
-- 主要实现交给 software-engineer，主管独立审查和复跑关键验证；本地提交已授权，不设置 remote、不 push。
-- 新增 VM/容器须先获用户确认；Apple 登录/证书安全操作由用户完成，公证上传须针对具体产物确认；不接触公司秘密或生产服务器。
+- IN_PROGRESS：同一Goal持续至Apple Silicon/macOS26可安装V1.0并完成必要验收；整体尚未完成。
+- 已确认四类直连认证/MFA、多终端标签、手动嵌套SSH、直连SFTP、主机/密钥/凭据管理和独立传输生命周期。范围见requirements；不做自动ProxyJump/经跳板图形SFTP/转发/自动重连/恢复。
+- 主要编码由software-engineer，主管独立读差异和复跑关键验证；可本地提交，不remote/push。新增VM/容器须用户确认；不生产连接、不读公司秘密；Apple账号/证书安全操作由用户完成，公证上传需具体产物授权。
 
-## 当前里程碑
+## 当前实际状态
 
-阶段 0 调查门槛完成；阶段 1 认证与信任原型进行中。P1-01 仅本地无网络进程/PTY 范围通过，真实服务阶段门槛未通过。
+正式OpenLXSSH Xcode App/Target已存在，arm64/min26；已集成真实GRDB主机管理。安全管理UI正在R1收口，正式SSH与Files包已本地实现/审查，等待App整合。当前并非可用完整SSH/SFTP Release；无真实服务器互通。
 
-| Task | 执行者 | 主管结论 | 证据 |
-| --- | --- | --- | --- |
-| P0-01 | software-engineer | 调查通过 | `docs/reports/p0-01-environment.md` |
-| P0-02 / R1 | software-engineer | 基线与边界通过 | `docs/reports/p0-02-git-baseline.md` |
-| P0-03 | software-engineer | 来源/许可/构建路径调查通过 | `docs/dependencies.md`、两个 P0-03 ADR、`docs/reports/p0-03-dependencies.md` |
-| P0-04 | software-engineer | 环境调查通过，新增 VM 未授权 | `docs/reports/p0-04-test-environment.md` |
-| P0-05 | software-engineer | 签名/辅助程序路径调查通过，产品签名未执行 | `docs/reports/p0-05-signing-sandbox.md` |
-| P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
-| P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
-| P1-03 / R1/R2 | software-engineer | DP仍-34018；file-based候选主管真实CRUD/ACL/升级/拒绝与6策略测试通过，ADR选择显式生产路线 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md`、`docs/adr/p1-03-file-keychain-selection.md` |
-| P4-CREDENTIAL-A | software-engineer | 主管审查/独立20测试+真实签名CRUD通过，自建临时Keychain锁回退恢复已证；App集成中 | `Packages/OpenLXSSHSecurity/`、`docs/reports/p4-security-core.md` |
-| P5-TRUST-A | software-engineer | 正式共享Trust主管独立30测试通过，PID-safe工具修复 | `Packages/OpenLXSSHTrust/`、`docs/reports/p5-shared-trust.md` |
-| P5-TRANSPORT-A | software-engineer | 正式SSH/Askpass/终端会话包实现中，未审查 | `Packages/OpenLXSSHTransport/` 与限定ADR |
-| P1-04A/B/C、P1-06A | software-engineer | C主管双配置16单测+28Mach通过；P1-06A主管Release真实readpass三场景通过（工程师回归29Mach）；真实SSH未测 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
-| P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |
-| P4-DATA-A | software-engineer | 核心主管审查/独立29真实DB测试通过；UI/外部资源一致性未验收 | `Packages/OpenLXSSHCore/`、`docs/reports/p4-data-core.md` |
-| P4-APP-A | software-engineer | 主管代码审查/独立verify-app all通过：正式双配置min26编译、HostProbe13测试与GUI14+8检查；真实transport未接 | `Application/OpenLXSSH/`、`OpenLXSSH.xcodeproj/`、根Scripts、`Tests/OpenLXSSHAppTests/`、`docs/reports/p4-native-app.md` |
-| P3-LOCAL-A/R1、P6-FILES-A | software-engineer | 实验主管完整46项双配置/ASan/TSan+min26验证通过；LTS3.5.9/typedTCP/同握手信任已接；正式包迁移与安全删除中，远端未验 | `Experiments/P3-RemoteFileProbe/`、`docs/reports/p3-local-files.md`；独占 `Packages/OpenLXSSHFiles/` |
+| Task | 实际结果/主管证据 | 主要文件 |
+| --- | --- | --- |
+| P0-01～05 | 环境/依赖/Git/隔离环境/签名路径调查均审查通过 | docs/reports/p0-* |
+| P1-01/02 | 本地PTY14项、信任22项主管独立通过 | Experiments/P1-01、P1-02；对应报告 |
+| P1-03/R1 | DP真实Keychain -34018保留，签名有效仍需profile | docs/reports/p1-03-credential-key.md |
+| P1-03/R2 | file-based候选主管真实CRUD/ACL/跨启动/同DR升级/错误身份拒绝/清理通过，ADR显式选择，不自动fallback | docs/adr/p1-03-file-keychain-selection.md |
+| P1-04C/P1-06A | Mach冻结身份/不同镜像签名本地测试通过；主管真实App内OpenSSH readpass与控制PTY成功/取消/超时3场景通过；非SSH服务器认证 | Experiments/P1-04；docs/reports/p1-04-askpass.md |
+| P2-LOCAL-A | 主管16测试+原生窗口通过，稳定1.20丢输出独立复现，精确选1.99.1预览；人工IME/Vim严格ZWJ/远端未过 | Experiments/P2；P2 ADR/报告 |
+| P4-DATA-A/R1 | 真实DB主管29全套+新5定向通过；工程师双配置34；迁移/WAL/并发/共享保护/受检口令解除 | Packages/OpenLXSSHCore；docs/reports/p4-data-core.md |
+| P4-APP-A | 主管verify-app all通过：正式双配置min26编译，HostProbe13测试/GUI14+8；当时未接transport | Application/OpenLXSSH、OpenLXSSH.xcodeproj；docs/reports/p4-native-app.md |
+| P4-CREDENTIAL-A | 主管20项+真实签名CRUD通过，自建Keychain锁回退/解锁恢复/default-searchlist不变 | Packages/OpenLXSSHSecurity；docs/reports/p4-security-core.md |
+| P4-SECURITY-UI | 主管已独立26测试、GUI15+8、真实签名App保存/跨启动读取/清理通过；R1私钥忘记口令/未知intent核对/提交后清理结果修正中 | App安全4文件/测试/脚本 |
+| P5-TRUST-A | 主管30项通过，正式共享信任，PID-safe固定工具runner；SSH/SFTP只依赖同一library | Packages/OpenLXSSHTrust；docs/reports/p5-shared-trust.md |
+| P5-TRANSPORT-A/R1 | 主管Release23测试+6真实系统readpass/4签名event/10postexit通过；字体6～72、保活0～3600、三色外观修正；真实SSH/mac26未验 | Packages/OpenLXSSHTransport；docs/reports/p5-transport-core.md |
+| P3-LOCAL/R1 | 主管完整46矩阵通过，OpenSSL改3.5.9LTS、typedTCP/同握手信任/显式风险策略；真实SFTP未测 | Experiments/P3；docs/reports/p3-local-files.md |
+| P6-FILES-A / TRANSFER-MANAGER-R1 | 正式Files/Manager主管完整70矩阵通过，R1混合skip修正后主管Release16定向通过、工程师双配置73通过；真实SFTP未验 | Packages/OpenLXSSHFiles；docs/reports/p6-files-core.md |
 
-## P1-01 审查与验证
+## 正在委派与文件所有权
 
-- 实际修改：独立 SwiftPM 实验包，Swift actor 资源所有者、C Darwin PTY/execve glue、固定本地 fixture、CLI、14 项 XCTest；无外部依赖。实验最低 macOS 15 仅用于当前宿主，不改变产品目标。
-- 主管已阅读全部 8 个实现/测试/manifest 文件；参数直接经 argv 传入 execve，不经 Shell；I/O 有界，EOF 尾部排空，TERM→KILL、waitpid、FD 关闭和迟到调用隔离可审查。
-- 主管独立运行 `swift test --package-path Experiments/P1-01-PTYProbe -Xswiftc -warnings-as-errors -Xcc -Wall -Xcc -Wextra -Xcc -Werror`：退出 0，14 项、0 失败；Release CLI 退出 0，验证字节顺序、控制终端、尺寸/SIGWINCH、无网络 ssh -G、幂等取消。
-- 独立 Release `--snapshot-hold` + ps/lsof：父进程仍存活时 child 已消失、master FD 无输出行、tasks=0，CLI 最终退出 0。
-- 工程师 Debug/Release/TSan/重复测试日志位于 `Experiments/P1-01-PTYProbe/.build/verification/`；主管读取资源、TSan 和 target26 日志。TSan 14 项通过；minos 26.0/SDK 26.2 仅交叉编译证据。
-- 限制：只回收直接 child，后代进程树未覆盖；有限输出超限终止不是正式流式背压；真实 SSH/认证/MFA、Keychain、Askpass、SwiftTerm、App/Sandbox、200 次真实 SSH/24 小时均未验证。
+- 恢复核对：用户发送“继续”后重新核对HEAD `fd005f5` 与实际未提交App/Files改动；旧agent不可恢复，重新委派同范围，不重建或覆盖工作。
+- App工程师 agent_f6776fa3-ff7f-4432-9226-b8a46b9feef8：P4-SECURITY-UI-R1-RESUME，仅Application/OpenLXSSH、根xcodeproj/构建验证脚本、AppTests。收口后继续SSH标签/认证UI，再文件UI，避免同工程并写。
+- Files工程师 agent_7b556d2b-7a15-416f-9e3f-cd1ac6a69082：P6-TRANSFER-MANAGER-RESUME，仅Packages/OpenLXSSHFiles；不碰App或共享文档。
+- Transport工程师 agent_8f3982f0-44d8-479d-a5f4-35a383d4401c：A/R1已返回，当前无写入；后续必要修复通过SendMessage。
+- Security工程师 agent_54e6a1a7-3a1a-4f21-ab8f-438c0aa9a942：正式包已返回，无写入。
+- Core工程师 agent_73af9b8f-ecfa-48f0-8fff-a89712f8abeb、Trust工程师 agent_e26e9287-a223-4ff6-a7ea-3a3dfd19d4f0：已返回，无写入。
+- 主管维护STATE/acceptance/reports/跨模块决策；不与工程师并写拥有文件。所有记录是线索，恢复后先核对实际git/代码。
 
-## P1-02 本地原型证据（主管审查通过）
+## 关键技术决定与边界
 
-- 主管已读取全部库/CLI/测试与 manifest，独立 `swift test -Xswiftc -warnings-as-errors` 22项0失败、Release CLI 退出0；读取最终TSan日志22项0失败。报告 `docs/reports/p1-02-host-trust.md` 已落盘。
+- SwiftTerm1.99.1 preview固定2f573f73...，正常输出完整性优先，不能称稳定2.x；最终包锁/ThirdParty notices已保存。
+- GRDB7.11.1固定b83108...，系统SQLite；libssh2 1.11.1 + OpenSSL3.5.9 LTS，SHA/tag/官方checksum/工具链固定，维护至2030-04-08。P0旧3.6模糊hash不作生产输入，后续来源已独立核对。
+- 凭据显式file-based Keychain，稳定namespace、同步false、默认creator ACL、串行lease；非ThisDeviceOnly/屏幕锁等价。DP实验失败不隐藏，profile不再阻止V1默认路线。
+- Askpass未知挑战人工；固定LocalCommand签名helper事件只证明外层认证，不证明shellReady；单次saved password严格封闭配置+已核build gate。当前只24H32，shipping26自动凭据仍人工回退，AUTH02未完成验收。
+- SSH唯一SwiftTerm LocalProcess拥有PTY/reader/reaper；只保证直属child/正常helper，任意逃逸后代树未验。远端/内层提示绝不扫描自动注入秘密。
+- 文件copy先唯一temp再commit；本地FD/noFollow/RENAME_EXCL，远端lstat/非CAS覆盖剩余风险必须明示确认；服务noReplace能力probe显式批准且只自有UUID目录。无真实服务能力证据，不能自动造通过token。
 
-- 新增独立无外部依赖 SwiftPM 库/CLI/22 项 XCTest：类型化地址/端口/用户与 prepared `-F` 配置，禁用代理、转发、复用和本地命令；单一 App 专属 known_hosts、显式首次/新算法确认、变化拒绝与指纹核对替换。
-- 文件锁、0700/0600、openat/O_NOFOLLOW、原子 rename/fsync、代次与内容摘要拒绝陈旧确认；覆盖损坏/超限、symlink/hardlink/FIFO、稳定锁/目录替换、8 store 与 4 独立进程竞争。细节见 `docs/adr/p1-02-host-trust.md`。
-- 工程师实际执行 Debug/Release `swift build`/`swift test -Xswiftc -warnings-as-errors`，各 22 项、0 失败；`swift test --sanitize=thread` 22 项通过；Release CLI `--self-test` 退出 0。本地 `ssh -G/-vvG` 和 `ssh-keygen -F/-l` 对照在测试内执行；日志 `Experiments/P1-02-HostTrustProbe/.build/verification/`。
-- 宿主仍是 macOS 15.8.1，实验 min macOS 15 不改变产品 26 目标。未启动 sshd、未连接 SSH 服务，真实握手公钥绑定、SSH/SFTP 集成、认证、macOS 26 runtime 与掉电故障未验证；AC-04/AC-12/AC-25 不因此标产品通过。
+## 环境与外部条件
 
-## 已核实的环境与依赖
+- 宿主macOS15.8.1/24H32、arm64、8CPU、16GiB；Xcode26.3/SDK26.2/Swift6.2.4。正式min26只编译，HostProbe15本地运行单独标注。
+- 无现成VM/container/隔离SSH服务；未启动系统sshd。建议UTM+官方UbuntuARM64、2vCPU/4GiB/20GiB动态盘起步、private/NAT、不桥接LAN、一次性账号/密钥。未获新增环境确认，不安装。
+- 有Apple Development身份1，DeveloperID Application/Installer0；用户自行准备DeveloperID/登录。无Apple公证上传授权/执行。
+- 真实四类认证/MFA/审批/主机变更/SSH-SFTP/嵌套/TUI、200循环/5会话真实24小时仍缺隔离服务；不能mock或短测替代。
+- 人工IME/像素、macOS26实机/双机安装/公司允许场景待用户操作。当前模型不支持图像像素，原生行为自检不等于主管人工视觉通过。
 
-- Apple Silicon arm64、8 CPU、16GiB物理内存；主管实测数据卷可用约89.6GiB（瞬时值）；宿主 macOS 15.8.1/24H32，不是 macOS 26。Xcode 26.3、macOS 26.2 SDK、Swift 6.2.4、系统 OpenSSH 9.9p2、xctest/xctrace 可用。
-- SwiftTerm本地选v1.99.1预览并锁提交：主管独立16测试/原生Release窗口通过，稳定v1.20同场景尾部丢失已独立复现；完整P2与产品依赖仍待集成，详见P2 ADR/报告。GRDB暂选v7.11.1/系统SQLite；P3初始候选libssh2 1.11.1+OpenSSL静态库。CMake缺失；替代后端/最终App打包未验证；Homebrew仅临时探针。
-- 尚无 Linux guest/隔离 SSH 服务；未启动本机 sshd。推荐 UTM + 官方 Ubuntu ARM64、2 vCPU/4 GiB RAM/20 GiB 动态磁盘起步，NAT/private 网络、一次性测试账户，不暴露 LAN；方案待用户确认。
-- 有 1 个 Apple Development 身份；Developer ID Application/Installer 0。正式 Team/Bundle ID、公证凭据、上传授权和 macOS 26 双机运行条件尚未准备。
+## 提交与证据
 
-## 提交与验收
+分支development/p1-prototypes，无remote/push。近期：19c2c78 Core、0ee6b7d Mach/readpass、9f4c81f原生App、fc16dc4显式Keychain候选、c183591共享Trust、c110ebd正式Security、cc559d4 P3LTS实验、fd005f5正式Transport/Core引用更新。未提交AppR1/Files属当前工程师工作，不重置。
 
-- 基线 `4ccebe7`；P0-02-R1 `0e136e2`；P0-03 `68b9306`/记录修正 `8575f4a`；P0-04 `65e2edd`；P0-05 `927a84e`；P1-01 `e5e5b1a`、P1-02与Askpass约束记录 `984d2d2`（development/p1-prototypes）。P1-03/P1-04/P2尚在各自独立目录推进，未审查文件不混入已验收提交。
-- `docs/acceptance.md` 保留全部产品 AC；P0 调查和 P1-01 本地探针不将产品 AC 标为通过。
-- 尚无正式 App/Xcode target、安装包、产品签名、公证、24 小时长测或外部人工验收。
+验证日志在各包/实验 .build/verification 与 DerivedData/Verification（忽略），报告含命令/结果/限制。产品AC总表在docs/acceptance.md，不以包测试或build替代整体验收。
 
-## 下一项具体工作
+## 下一项具体动作
 
-P1-03已审查并提交8524a77，本地密钥/引用通过，DP真实Keychain需合法profile授权。推进P1-04C将有界请求迁移到已独立验证的冻结Mach消息身份，不让响应继续走旧socket；未知挑战人工输入，自动长期秘密前提未证实前禁止启用。P2本地候选已审查，人工IME/macOS26/远端待测。等待P4-DATA-A交付后审查真实数据库，再建立正式原生App目标/UI集成；真实SSH/SFTP验收仍待隔离服务。
-
-## 待外部条件
-
-- 新增隔离 Linux VM/容器方案确认；确认前不安装或启动。
-- DP实验仍需合法profile且-34018失败保留；V1已按独立证据ADR显式改用file-based系统Keychain，不是失败自动fallback。生产包/锁定/正式签名/双机仍须验证，profile不再作为V1默认路线的必要阻塞。
-- macOS 26 实机运行、Developer ID 和用户 Apple 登录条件；公证上传仅在具体产物准备后集中请求。
-- 第二台 Apple Silicon/macOS 26 安装与公司允许的真实认证/审批/嵌套 SSH 人工验收。
-
-以上缺口不阻止其余本地可恢复实现；缺少必要验收时不宣布 Goal 完成。
+等待/审查App安全R1，独立复跑后提交；给同App工程师派P5标签/认证/TerminalView真实集成（只读Transport/Trust/Security），随后P6右侧文件面板/独立任务入口与关闭退出保护。FilesManager返回后审查真实本地任务生命周期。继续所有可本地推进的安全/压力/打包/使用说明。真实互通需要新增环境授权，最终集中说明且整体未完成。

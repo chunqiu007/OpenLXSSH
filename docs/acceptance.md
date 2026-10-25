@@ -1,6 +1,6 @@
 # OpenLXSSH V1.0 — 验收总表
 
-当前状态：阶段 0 的 P0-01～P0-05 已有阶段任务证据；P1-01 本地无网络 PTY 探针已通过主管代码审查、独立测试与资源快照，报告已落盘。产品验收条目仍尚未执行；实验 build/test 不等于产品已通过。
+当前状态：正式 App、共享数据/安全/信任/SSH/文件包已有本地实现与分项证据，产品验收进行中，整体未通过。宿主 macOS 15 的 HostProbe 与正式 macOS 26 编译分别记录；尚无真实 SSH/SFTP 互通、24 小时长测或双机验收。包测试与构建不等于产品通过。
 
 ## 阶段 0 门槛与证据（不替代产品验收）
 
@@ -39,6 +39,11 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 - P4-CREDENTIAL-A正式 `Packages/OpenLXSSHSecurity/` 主管审查/独立20测试与真实签名CRUD fixture通过；自建临时Keychain真实锁时回退、解锁恢复且用户default/searchlist不变。见 `docs/reports/p4-security-core.md`。App凭据/密钥UI和跨存储worker集成中，产品AUTH/KEY仍不据包测试直接通过。
 - P4-APP-A本地最小集成已通过主管代码审查及完整verify-app all：正式Debug/Release arm64/min26编译、HostProbe13项XCTest、原生GUI14检查及新进程reopen8检查；见 `docs/reports/p4-native-app.md`。真实SSH/终端/SFTP/密钥/凭据未集成，产品AC仍不能据这次UI检查整体标通过。
 
+## 阶段 6 文件/任务核心记录（不替代真实SFTP）
+
+- 正式OpenLXSSHFiles+TransferManager主管完整70矩阵通过，R1修正混合成功/跳过不误报成功，主管Release16定向与工程师双配置73全量通过，见 `docs/reports/p6-files-core.md`。
+- Manager应用级拥有service/job，不引用终端/panel，取消/decision/批策略/idle关闭有真实本地FD测试；App面板/生命周期尚待整合。远端互通、服务能力、网络异常与AC-17～24仍未通过。
+
 ## 1. 状态与证据格式
 
 允许使用：未执行、进行中、通过、失败、待外部条件。失败修复后复验，不删除条目。每行至少记录测试环境、对应构建/提交、实际步骤或命令与结果证据；用户实测记录日期和覆盖范围，不保存秘密。
@@ -49,11 +54,11 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 
 | 验收 ID | 关联需求 | 必须观察到的结果 | 当前状态 / 证据 |
 | --- | --- | --- | --- |
-| AC-01 | 产品命名、DIST | App 显示、正式 Target、模块与文档统一使用 OpenLXSSH，平台为 Apple Silicon/macOS 26 | 未执行 |
-| AC-02 | HOST-01～02 | 主机增删改复制、单层分组、收藏、搜索与重启持久化正确 | 未执行 |
+| AC-01 | 产品命名、DIST | App 显示、正式 Target、模块与文档统一使用 OpenLXSSH，平台为 Apple Silicon/macOS 26 | 进行中：正式Debug/Release arm64/minOS26/module/Info.plist已核验；宿主为15.8.1，macOS26实跑待外部条件。见 `docs/reports/p4-native-app.md` |
+| AC-02 | HOST-01～02 | 主机增删改复制、单层分组、收藏、搜索与重启持久化正确 | 进行中：HostProbe真实App CRUD/分组/收藏/搜索/跨进程重启已验证，Core34项含持久化/事务；正式目标系统与整合集成回归仍待完成。见 `docs/reports/p4-native-app.md`、`docs/reports/p4-data-core.md` |
 | AC-03 | HOST-03～04 | 双击定位已有活动标签，显式新建产生独立会话，切换不重连 | 未执行 |
 | AC-04 | HOST-05～06、SEC-03 | 不改系统 SSH 配置，异常主机字段不能注入选项、配置或 Shell 指令；删除不误删共享凭据 | 未执行 |
-| AC-05 | KEY-01～03 | 导入有/无口令 Ed25519/RSA，生成 Ed25519、复制公钥，权限正确，不改源文件 | 未执行 |
+| AC-05 | KEY-01～03 | 导入有/无口令 Ed25519/RSA，生成 Ed25519、复制公钥，权限正确，不改源文件 | 进行中：正式安全包主管20项含四种真实key/持久重开通过；App安全UI26项和签名GUI保存/公钥/清理已过，R1编辑器关闭/恢复入口回归修复中。见 `docs/reports/p4-security-core.md` |
 | AC-06 | AUTH-01 | 直接私钥认证成功，解锁错误/取消可恢复且不泄漏 | 未执行 |
 | AC-07 | AUTH-02、06～07 | 直接密码登录、选择保存、不保存、Keychain 不可用均符合授权与人工回退规则 | 未执行 |
 | AC-08 | AUTH-03 | 直接私钥＋OTP 成功，错误/过期 OTP 可处理，OTP 不保存 | 未执行 |
@@ -75,7 +80,7 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-24 | LIFE、FILE-08 | 有传输时窗口关闭/退出均拦截；继续保留窗口，取消并关闭正确终止，文件不被静默破坏 | 未执行 |
 | AC-25 | SEC-02、AUTH、KEY | 源码、配置、数据库、参数、日志、测试截图和提交中没有秘密；测试不使用真实公司凭据 | 未执行 |
 | AC-26 | SEC-04 | 固定依赖及传递依赖、许可证与来源记录；Sandbox/权限选择有证据，无关闭系统保护的绕过 | 未执行 |
-| AC-27 | 数据一致性 | 数据迁移、异常中断、重启、重复保存、Keychain/私钥删除引用失败均可恢复，不错配凭据 | 未执行 |
+| AC-27 | 数据一致性 | 数据迁移、异常中断、重启、重复保存、Keychain/私钥删除引用失败均可恢复，不错配凭据 | 进行中：Core迁移/真实WAL异常退出/事务与共享引用、App补偿/清理重启有局部证据；App R1提交后清理语义和prepared恢复入口尚在完整回归，未标通过。见 `docs/reports/p4-data-core.md`、`docs/reports/p4-security-core.md` |
 
 ## 3. 性能与长期稳定性
 
