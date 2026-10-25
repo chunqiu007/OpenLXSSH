@@ -1,6 +1,6 @@
 # OpenLXSSH V1.0 — 验收总表
 
-当前状态：阶段 0 的 P0-01、P0-02、P0-03 已有阶段任务证据；产品验收条目仍尚未执行。文档已准备不等于产品已通过。主管在执行时维护本表并链接证据。
+当前状态：阶段 0 的 P0-01、P0-02、P0-03、P0-04 已有阶段任务证据；产品验收条目仍尚未执行。文档已准备不等于产品已通过。主管在执行时维护本表并链接证据。
 
 ## 阶段 0 门槛与证据（不替代产品验收）
 
@@ -11,10 +11,10 @@
 | P0-01 环境核对 | 通过（阶段任务） | `docs/reports/p0-01-environment.md` | 已核对 Apple Silicon、Xcode/SDK、Swift、系统 OpenSSH 和可用工具；实际宿主为 macOS 15.8.1，低于目标 macOS 26。未执行 App 构建、SSH/SFTP 互通或 macOS 26 运行时验收。 |
 | P0-02 Git 基线 | 通过（阶段任务） | `docs/reports/p0-02-git-baseline.md` | 已确认项目根目录、本地 Git、忽略规则和无 remote；不代表存在产品代码、依赖可用或产品验收通过。 |
 | P0-03 依赖核对 | 通过（阶段任务） | `docs/reports/p0-03-dependencies.md`、`docs/dependencies.md`、`docs/adr/` 下 P0-03 ADR | SwiftTerm、GRDB、libssh2 与候选加密后端的来源/许可证/构建证据已记录；libssh2 CMake 未执行（本机无 cmake），替代加密后端未完成本机构建，最终 App/Xcode 打包、签名、公证和真实 SSH/SFTP 互通仍未验证。依赖探针不等于产品功能通过。 |
-| P0-04 隔离测试环境调查 | 未执行 | 无阶段证据 | 不得用本机依赖探针或文档代替隔离环境调查；真实服务器不用于填补未执行项。 |
+| P0-04 隔离测试环境调查 | 通过（阶段任务） | `docs/reports/p0-04-test-environment.md` | 已以只读方式核对 Apple Silicon/macOS、Xcode/SDK、XCTest、xctrace、临时目录、PTY 工具、系统 SSH 工具、虚拟化框架及容器/VM 工具缺口；没有新增环境、启动 `sshd` 或连接远程。已提出待用户确认的 Apple Silicon Ubuntu ARM64 VM（优先 UTM + Apple Virtualization）和容器备选，包含资源、网络、一次性凭据与销毁策略。P0-04 不等于 SSH/SFTP、MFA、终端、SFTP 传输或 Linux 服务验收通过。 |
 | P0-05 签名、辅助程序与 Sandbox 调查 | 未执行 | 无阶段证据 | 不得用依赖构建探针代替签名、辅助程序、Sandbox/Hardened Runtime 或公证路径调查。 |
 
-阶段 0 的阶段任务状态不改变下方产品验收条目的状态。整体 Goal 仍不能因 P0-01/P0-02/P0-03 的阶段任务通过而宣布完成；P0-04/P0-05 和所有必要的产品、性能、Release 及外部人工验收仍须按执行计划完成并留存证据。
+阶段 0 的阶段任务状态不改变下方产品验收条目的状态。整体 Goal 仍不能因 P0-01/P0-02/P0-03/P0-04 的阶段任务通过而宣布完成；P0-05 和所有必要的产品、性能、Release 及外部人工验收仍须按执行计划完成并留存证据。
 
 ## 1. 状态与证据格式
 
