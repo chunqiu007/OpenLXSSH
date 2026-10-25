@@ -36,7 +36,7 @@
 - 核心事实：Apple Silicon `arm64`；实际宿主为 macOS 15.8.1 (Build 24H32)，低于需求的 macOS 26；Xcode 26.3 (17C529) 与 macOS 26.2 SDK (SDK build 25C58) 可用；Swift 6.2.4、Apple Clang 17.0.0、系统 OpenSSH 9.9p2 / LibreSSL 3.3.6、`xcbeautify` 3.2.1 可用。
 - 构建证据：临时 Swift 源文件以 `arm64-apple-macosx26.0` 目标真实编译/运行成功，Mach-O `minos 26.0`、SDK 26.2；未创建 App 或执行项目构建。
 - OpenSSH 边界：仅完成 `/usr/bin/ssh`、`/usr/bin/sftp` 路径/版本、签名和 `ssh -G` 受控配置展开；未连接服务器、未执行认证或 SFTP 传输。
-- 工作区状态：无 Xcode 项目、Swift Package、Swift 源文件或 `.git`；本任务未初始化 Git。
+- 工作区状态：P0-01 核对时无 Xcode 项目、Swift Package、Swift 源文件或 `.git`；P0-02 已在本项目根目录创建 `.git`，当前基线工作区状态和忽略文件见 P0-02 报告。
 - 验收对应：P0-01 五项验收标准均已在报告中逐条对应；macOS 15 与目标 macOS 26 差异、无项目及未联网限制已明确记录。
 
 ## 下一项具体工作
