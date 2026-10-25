@@ -68,6 +68,21 @@ public actor KeyStore {
     }
     public func publicKey(for id: UUID) throws -> PublicKey { try key(id: id).publicKey }
 
+    /// Returns this exact managed UUID's OpenSSH private bytes in memory only, for a direct,
+    /// user-authorized authentication boundary. The caller must first validate the Core
+    /// host/key reference and user authorization; this store has no reference database.
+    /// Retain only as long as authentication needs it: never log, serialize, persist or use
+    /// this as a private-key file export. Encrypted keys remain encrypted; the caller supplies
+    /// any separately authorized passphrase to the authentication implementation.
+    /// Uses the same root/lock, owner, mode, ACL, no-follow, link and size checks as `key(id:)`,
+    /// and validates the OpenSSH envelope before returning. It never modifies/deletes the file.
+    /// Swift/Data and downstream libraries can copy bytes; complete zeroization is not promised.
+    public func privateKeyForAuthentication(id: UUID) throws -> SecretBytes {
+        let bytes = try open().read(finalName(id))
+        _ = try OpenSSHEnvelope(bytes)
+        return SecretBytes(bytes)
+    }
+
     public func importKey(from source: URL, protection: KeyProtection, id: UUID = UUID()) async throws -> ManagedKey {
         guard !mutating else { throw KeyFailure.busy }
         mutating = true

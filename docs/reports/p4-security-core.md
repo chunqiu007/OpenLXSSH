@@ -41,6 +41,12 @@ Darwin `acl_get_fd_np` 在无ACL时也返回NULL/ENOENT，不能把NULL统一解
 
 拒绝ACL时需要用户检查App专属leaf/lock/key或导入源，单纯chmod不足；App不自动改ACL。前后检查不是ACL与I/O的原子绑定，恶意同UID进程及瞬时竞态不在完整防护承诺内。当前只宿主macOS15包级证据，正式签名App与macOS26仍须后续回归。
 
+## P6 认证专用私钥内存接口
+
+SFTP frommemory 接口需要受检内存材料，正式KeyStore新增 `privateKeyForAuthentication(id:) -> SecretBytes`，三行实现只精确UUID读取并核OpenSSHEnvelope，复用既有root/lock/noFollow/mode/ACL/owner/link/1MiB界限。不提供任意URL读取或私钥文件导出，不改源文件；加密密钥仍返回原密文。调用方必须核Core关联与显式认证授权、限期保留，Swift/Data副本不保证完全擦除。
+
+工程师Debug/Release各39项（原31+新8）通过。主管读新API/8tests与离线probe，独立Release新8项、verify_authentication_material.py退出0。四种真实Ed25519/RSA有/无口令返回原字节，经固定libssh2内存解析/签名/验签匹配公钥，source不变、自有UUID清理；日志 `.build/verification/auth-material-primary-release8.log`、`auth-material-primary-probe.log`。probe使用已有固定libssh2内部ABI，仅测试路径；正式Security无native新依赖，未重建上游或联网，不算远端认证通过。
+
 ## 限制
 
 file-based相关legacyAPI弃用风险需升级回归；App其他代码不得独立切进程非交互标志。KeyStore只释放资源不删长期文件，父目录须存在且规范无symlink。口令1023字节/NUL-CR-LF限制、Swift副本不能完全擦除如实保留。
