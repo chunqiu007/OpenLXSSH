@@ -22,7 +22,8 @@
 | P0-04 | software-engineer | 环境调查通过，新增 VM 未授权 | `docs/reports/p0-04-test-environment.md` |
 | P0-05 | software-engineer | 签名/辅助程序路径调查通过，产品签名未执行 | `docs/reports/p0-05-signing-sandbox.md` |
 | P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
-| P1-02 | 待派工 | 未执行 | 主机信任/配置原型为下一任务 |
+| P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
+| P1-03 | software-engineer | 独立实验实现中；真实 Keychain 当前返回 -34018，未通过 CRUD | `Experiments/P1-03-CredentialKeyProbe/` |
 
 ## P1-01 审查与验证
 
@@ -33,6 +34,15 @@
 - 工程师 Debug/Release/TSan/重复测试日志位于 `Experiments/P1-01-PTYProbe/.build/verification/`；主管读取资源、TSan 和 target26 日志。TSan 14 项通过；minos 26.0/SDK 26.2 仅交叉编译证据。
 - 限制：只回收直接 child，后代进程树未覆盖；有限输出超限终止不是正式流式背压；真实 SSH/认证/MFA、Keychain、Askpass、SwiftTerm、App/Sandbox、200 次真实 SSH/24 小时均未验证。
 
+## P1-02 本地原型证据（主管审查通过）
+
+- 主管已读取全部库/CLI/测试与 manifest，独立 `swift test -Xswiftc -warnings-as-errors` 22项0失败、Release CLI 退出0；读取最终TSan日志22项0失败。报告 `docs/reports/p1-02-host-trust.md` 已落盘。
+
+- 新增独立无外部依赖 SwiftPM 库/CLI/22 项 XCTest：类型化地址/端口/用户与 prepared `-F` 配置，禁用代理、转发、复用和本地命令；单一 App 专属 known_hosts、显式首次/新算法确认、变化拒绝与指纹核对替换。
+- 文件锁、0700/0600、openat/O_NOFOLLOW、原子 rename/fsync、代次与内容摘要拒绝陈旧确认；覆盖损坏/超限、symlink/hardlink/FIFO、稳定锁/目录替换、8 store 与 4 独立进程竞争。细节见 `docs/adr/p1-02-host-trust.md`。
+- 工程师实际执行 Debug/Release `swift build`/`swift test -Xswiftc -warnings-as-errors`，各 22 项、0 失败；`swift test --sanitize=thread` 22 项通过；Release CLI `--self-test` 退出 0。本地 `ssh -G/-vvG` 和 `ssh-keygen -F/-l` 对照在测试内执行；日志 `Experiments/P1-02-HostTrustProbe/.build/verification/`。
+- 宿主仍是 macOS 15.8.1，实验 min macOS 15 不改变产品 26 目标。未启动 sshd、未连接 SSH 服务，真实握手公钥绑定、SSH/SFTP 集成、认证、macOS 26 runtime 与掉电故障未验证；AC-04/AC-12/AC-25 不因此标产品通过。
+
 ## 已核实的环境与依赖
 
 - Apple Silicon arm64、8 CPU；宿主 macOS 15.8.1/24H32，不是 macOS 26。Xcode 26.3、macOS 26.2 SDK、Swift 6.2.4、系统 OpenSSH 9.9p2、xctest/xctrace 可用。
@@ -42,13 +52,13 @@
 
 ## 提交与验收
 
-- 基线 `4ccebe7`；P0-02-R1 `0e136e2`；P0-03 `68b9306`/记录修正 `8575f4a`；P0-04 `65e2edd`；P0-05 `927a84e`。P1-01 待本轮审查后提交。
+- 基线 `4ccebe7`；P0-02-R1 `0e136e2`；P0-03 `68b9306`/记录修正 `8575f4a`；P0-04 `65e2edd`；P0-05 `927a84e`；P1-01 `e5e5b1a`（development/p1-prototypes）。P1-02 待本轮审查后提交，P1-03 并行目录不混入提交。
 - `docs/acceptance.md` 保留全部产品 AC；P0 调查和 P1-01 本地探针不将产品 AC 标为通过。
 - 尚无正式 App/Xcode target、安装包、产品签名、公证、24 小时长测或外部人工验收。
 
 ## 下一项具体工作
 
-P1-02：实现 App 专属受控配置、输入边界与主机信任原型；本地合成公钥覆盖首次确认、匹配、变化拒绝、非默认端口/多算法、地址编辑和持久化并发，使用系统工具对照。真实服务握手仍保留待外部条件。随后继续 P1-03/04 及其他不受服务环境阻塞的必要工作。
+完成 P1-03 本地私钥/引用测试并独立审查；真实 Keychain 的 -34018 需在后续有明确签名/entitlements 的最小 App 中复验，不降级或跳过伪造通过。继续 P1-04 控制面桥接，安全约束见 `docs/adr/p1-04-askpass-authentication-context.md`：Askpass无可靠挑战类型，未知提示人工输入，自动投递前提未证实前禁止启用。真实 SSH/SFTP 握手与认证仍待隔离服务。
 
 ## 待外部条件
 
