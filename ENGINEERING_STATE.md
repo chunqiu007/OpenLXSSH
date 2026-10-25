@@ -4,9 +4,9 @@
 
 ## 当前状态
 
-- 状态：IN_PROGRESS，P0-01 已通过主管审查，P0-02-R1 已完成忽略覆盖和基线事实记录修正，待主管独立复核本轮本地文档提交后进入 P0-03。
-- 本轮交付：在不进入 P0-03 或产品实现的前提下，补充根目录 `local-secrets/` 忽略规则，修正 P0-02 报告中的完整提交历史，并清理本状态文件的重复下一项记录。
-- 当前工作区此前没有 `.git`、Xcode 项目、Swift Package 或产品代码；已有交接文档、P0-01 报告和本状态文件必须保留。`.DS_Store` 保留原文件并由忽略规则排除，不擅自删除。
+- 状态：IN_PROGRESS，P0-01 与 P0-02 已通过主管审查，阶段 0 的 P0-03 依赖核对准备执行。
+- 本轮交付：完成本地 Git 基线保护与 R1 记录修正；已确认当前 HEAD 为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`，无 remote，工作区除被忽略的 `.DS_Store` 外干净；下一步核对候选依赖的版本、来源、许可证、平台要求及构建/分发路径。
+- 当前工作区尚未创建 App/Xcode 项目，尚未安装新增测试环境或执行产品测试；交接文档检查、环境核对和 Git 基线不计为产品验收完成。
 
 ## 已确认目标与范围
 
@@ -27,21 +27,21 @@
 
 ## 当前任务与证据
 
-- 当前里程碑：阶段 0 环境、依赖与基础约束核对进行中；P0-01 已通过主管独立审查，P0-02-R1 已完成本地文档修正，待主管复核。
-- Task ID：`P0-02-R1`；执行者：`software-engineer`；状态：待主管独立审查（子任务完成不代表整体 Goal 完成）。
-- 证据报告：`docs/reports/p0-01-environment.md`（P0-01）；`docs/reports/p0-02-git-baseline.md`（P0-02 与本轮 R1 修正）。
-- P0-02-R1 范围：仅修正 `/Users/liuwenshuo/Desktop/OpenLXSSH` 根目录 `.gitignore`、P0-02 报告和本状态文件；补充根目录锚定的 `/local-secrets/` 规则，保留 `.env.example`/`.env.template`，更正当前提交历史事实；不进入 P0-03，不修改需求、架构、执行计划和验收基线。
-- P0-02 提交事实：初始基线为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`；后续仅文档提交为 `333ec8e`、`5edb20e`、`b83a10b`、`6a6f7cb`；P0-02-R1 本地修正仅包含本文件列出的三个允许文件，提交 hash 以提交后的 Git 输出为准。实际文件清单、命令结果和无 remote 记录见 `docs/reports/p0-02-git-baseline.md`。
+- 当前里程碑：阶段 0 环境、依赖与基础约束核对进行中；P0-01、P0-02 已通过主管独立审查，P0-03 待执行。
+- Task ID：`P0-02-R1`；执行者：`software-engineer`；状态：通过（主管已独立审查；子任务通过不代表整体 Goal 完成）。
+- 证据报告：`docs/reports/p0-01-environment.md`（P0-01）；`docs/reports/p0-02-git-baseline.md`（P0-02 与 R1 修正）。
+- 主管审查 P0-02-R1：已读取三处实际差异并独立复跑仓库根目录、无 remote、提交历史、`git diff --check`、`git check-ignore` 和跟踪文件边界；`0e136e2` 仅修改 `.gitignore`、P0-02 报告和本状态文件。`/local-secrets/`、构建产物和 `.env` 被忽略；`.env.example`、`.env.template`、Package/源码/文档/Xcode `project.pbxproj` 未被忽略；未发现秘密进入 Git。
+- P0-02 提交事实：初始基线为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`；后续记录提交为 `333ec8e`、`5edb20e`、`b83a10b`、`6a6f7cb`；R1 修正提交为 `0e136e23ab9394e6a4672c15876947c827dbcbfb`。当前 `git status --short --branch` 为 `## main`，`git remote -v` 无输出。
 - P0-01 主管审查：已读取实际报告与状态改动，并独立复跑 `sw_vers`、架构、Xcode/SDK、Swift/Clang、OpenSSH 路径/版本、受控 `ssh -G` 配置展开和辅助工具检查；结果与报告一致。未发现无关文件或敏感信息泄漏。
 - 核心事实：Apple Silicon `arm64`；实际宿主为 macOS 15.8.1 (Build 24H32)，低于需求的 macOS 26；Xcode 26.3 (17C529) 与 macOS 26.2 SDK (SDK build 25C58) 可用；Swift 6.2.4、Apple Clang 17.0.0、系统 OpenSSH 9.9p2 / LibreSSL 3.3.6、`xcbeautify` 3.2.1 可用。
 - 构建证据：临时 Swift 源文件以 `arm64-apple-macosx26.0` 目标真实编译/运行成功，Mach-O `minos 26.0`、SDK 26.2；未创建 App 或执行项目构建。
 - OpenSSH 边界：仅完成 `/usr/bin/ssh`、`/usr/bin/sftp` 路径/版本、签名和 `ssh -G` 受控配置展开；未连接服务器、未执行认证或 SFTP 传输。
 - 工作区状态：P0-01 核对时无 Xcode 项目、Swift Package、Swift 源文件或 `.git`；P0-02 已在本项目根目录创建 `.git`，当前基线工作区状态和忽略文件见 P0-02 报告。
-- 验收对应：P0-01 五项验收标准均已在报告中逐条对应；macOS 15 与目标 macOS 26 差异、无项目及未联网限制已明确记录。
+- 验收对应：P0-01 五项验收标准均已在报告中逐条对应；P0-02 的根目录、文件边界、忽略规则、无 remote 和本地提交条件均已通过；产品功能及 macOS 26 运行时仍未验收。
 
 ## 下一项具体工作
 
-P0-02-R1 待主管独立复核本轮三个允许文件和本地文档提交；复核通过后进入 P0-03 依赖核对。本轮不创建 App、不核对依赖、不执行后续阶段工作。
+执行 P0-03：核对 SwiftTerm、GRDB、libssh2 及其原生/加密传递依赖的真实来源、稳定版本候选、许可证、最低系统要求、Apple Silicon 构建与打包方式；形成 `docs/dependencies.md` 和必要的 ADR/证据，禁止安装未评估依赖或把网络抓取结果当作已通过产品验证。
 
 ## 待外部条件
 
