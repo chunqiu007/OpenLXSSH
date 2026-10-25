@@ -51,9 +51,19 @@ PARTIAL。本地私钥/授权策略/共享引用最小状态机已通过独立�
 
 日志：`.build/verification/signed-keychain-68ba5b22-a4af-4449-901d-4fe633b9c628.log`（签名/真实CRUD失败）；`signed-keychain-bfc109a9-95b6-4df8-a85c-e07bea80f411.log`（运行时诊断）。跨启动/同身份版本替换基础代码与替身测试已准备，但真实保存失败，未进入真实重启/版本替换读取；不能写成通过。无成功新增测试条目、pending ticket=0。
 
+## P1-03-R2：显式file-based候选
+
+独立候选没有修改DP原实现/失败断言，也没有自动fallback。主管读取候选全部Swift/C、真实fixture、签名脚本与6项测试，独立运行 `verify_file_keychain_candidate.py` 退出0（run cd8b4339-2b96-40fb-bb3c-0bb0a3384478），另独立6项候选策略测试退出0。
+
+真实CRUD/未授权不写/重复不覆盖/精确namespace、默认creator ACL、跨启动、同DR版本替换读取成功；同Team不同identifier和同identifier ad-hoc读取均denied，不将missing假装成权限拒绝。自己的条目精确删除后确认不存在、ticket0。ACL只读检查decrypt1、trustedApp1、creator匹配、unrestricted0；无自定义allow-all ACL。同步属性系统未返回，不能假称读到false；明确选择同步false/DPfalse且itemRef归属file Keychain，语义不等价ThisDeviceOnly。
+
+进程级禁UI guard仅fixture内读取/设置/恢复，不改用户全局Keychain配置/ACL，不答授权提示。生产必须一次串行拥有/lease，不能照搬并发per-call恢复。真实锁定仍未验（不锁用户库），正式包将用自己临时Keychain做独立分支验证。
+
+基于实际证据与Apple TN3137，主管ADR `docs/adr/p1-03-file-keychain-selection.md` 批准V1显式file-based生产集成；旧DP实验仍失败并保留。正式 `Packages/OpenLXSSHSecurity/` 正在独立实现，不把候选成功算产品AUTH验收。
+
 ## 未覆盖与后续
 
-需用户后续提供/在Xcode配置合法profile授权条件后，继续真实CRUD、跨启动/升级与清理复验。传统file-based Keychain仍是受保护秘密存储，不是明文，但Apple已建议默认DP且ACL/解锁/同步模型不同；本轮未实现任何fallback，若调整需另行ADR与同套安全验收。
+DP路线若恢复需合法profile；当前V1选择显式file-based，避免把profile缺口当全产品不可推进。传统Keychain弃用风险、锁定与不可复制语义差异准确披露，未来迁移需显式授权。
 
 真实锁定、用户取消等目前仅替身分支；正式数据库崩溃恢复、升级/重装/双机、App Sandbox、macOS26与真实SSH/SFTP认证未验证。私钥来源路径严格拒绝符号链接（包括系统别名）；仅系统临时父目录作realpath解析。管道口令限1023字节且拒绝NUL/CR/LF，此限制需在最终产品说明。
 

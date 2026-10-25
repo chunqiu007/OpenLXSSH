@@ -23,7 +23,9 @@
 | P0-05 | software-engineer | 签名/辅助程序路径调查通过，产品签名未执行 | `docs/reports/p0-05-signing-sandbox.md` |
 | P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
 | P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
-| P1-03 / R1 | software-engineer | 本地私钥/策略通过；主管完整41项=40通过+1真实Keychain失败，正确开发签名仍缺profile授权 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md` |
+| P1-03 / R1/R2 | software-engineer | DP仍-34018；file-based候选主管真实CRUD/ACL/升级/拒绝与6策略测试通过，ADR选择显式生产路线 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md`、`docs/adr/p1-03-file-keychain-selection.md` |
+| P4-CREDENTIAL-A | software-engineer | 正式安全包实现中，独占新目录 | `Packages/OpenLXSSHSecurity/` |
+| P5-TRANSPORT-A | software-engineer | 正式SSH/Askpass/终端会话包实现中，未审查 | `Packages/OpenLXSSHTransport/` 与限定ADR |
 | P1-04A/B/C、P1-06A | software-engineer | C主管双配置16单测+28Mach通过；P1-06A主管Release真实readpass三场景通过（工程师回归29Mach）；真实SSH未测 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
 | P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |
 | P4-DATA-A | software-engineer | 核心主管审查/独立29真实DB测试通过；UI/外部资源一致性未验收 | `Packages/OpenLXSSHCore/`、`docs/reports/p4-data-core.md` |
@@ -68,7 +70,7 @@ P1-03已审查并提交8524a77，本地密钥/引用通过，DP真实Keychain需
 ## 待外部条件
 
 - 新增隔离 Linux VM/容器方案确认；确认前不安装或启动。
-- Data Protection Keychain的合法provisioning profile授权：主管独立核对Apple TN3137；现有开发签名+运行时appID匹配仍-34018，不能以签名有效代替profile授权。未成功保存测试条目；不盲试entitlement或静默fallback。
+- DP实验仍需合法profile且-34018失败保留；V1已按独立证据ADR显式改用file-based系统Keychain，不是失败自动fallback。生产包/锁定/正式签名/双机仍须验证，profile不再作为V1默认路线的必要阻塞。
 - macOS 26 实机运行、Developer ID 和用户 Apple 登录条件；公证上传仅在具体产物准备后集中请求。
 - 第二台 Apple Silicon/macOS 26 安装与公司允许的真实认证/审批/嵌套 SSH 人工验收。
 

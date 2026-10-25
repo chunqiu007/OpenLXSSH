@@ -7,13 +7,18 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "OpenLXSSHCredentialKeyProbe", targets: ["OpenLXSSHCredentialKeyProbe"]),
-        .executable(name: "openlxssh-credential-key-probe", targets: ["CredentialKeyProbeCLI"])
+        .executable(name: "openlxssh-credential-key-probe", targets: ["CredentialKeyProbeCLI"]),
+        .executable(name: "openlxssh-file-keychain-candidate", targets: ["FileKeychainCandidateCLI"])
     ],
     targets: [
         .target(name: "CredentialKeyPOSIX"),
+        .target(name: "FileKeychainLegacy"),
         .target(name: "OpenLXSSHCredentialKeyProbe", dependencies: ["CredentialKeyPOSIX"]),
+        .target(name: "FileKeychainCandidate", dependencies: ["OpenLXSSHCredentialKeyProbe", "FileKeychainLegacy"]),
         .executableTarget(name: "CredentialKeyProbeCLI", dependencies: ["OpenLXSSHCredentialKeyProbe"]),
-        .testTarget(name: "CredentialKeyProbeTests", dependencies: ["OpenLXSSHCredentialKeyProbe"])
+        .executableTarget(name: "FileKeychainCandidateCLI", dependencies: ["FileKeychainCandidate"]),
+        .testTarget(name: "CredentialKeyProbeTests", dependencies: ["OpenLXSSHCredentialKeyProbe"]),
+        .testTarget(name: "FileKeychainCandidateTests", dependencies: ["FileKeychainCandidate"])
     ],
     swiftLanguageModes: [.v6]
 )
