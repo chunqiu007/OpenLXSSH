@@ -31,7 +31,7 @@
 | P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |
 | P4-DATA-A | software-engineer | 核心主管审查/独立29真实DB测试通过；UI/外部资源一致性未验收 | `Packages/OpenLXSSHCore/`、`docs/reports/p4-data-core.md` |
 | P4-APP-A | software-engineer | 主管代码审查/独立verify-app all通过：正式双配置min26编译、HostProbe13测试与GUI14+8检查；真实transport未接 | `Application/OpenLXSSH/`、`OpenLXSSH.xcodeproj/`、根Scripts、`Tests/OpenLXSSHAppTests/`、`docs/reports/p4-native-app.md` |
-| P3-LOCAL-A | software-engineer | 固定原生库/结构化接口与本地文件策略实现中；无远端互通 | `Experiments/P3-RemoteFileProbe/` 与限定文件策略ADR |
+| P3-LOCAL-A/R1、P6-FILES-A | software-engineer | 实验主管完整46项双配置/ASan/TSan+min26验证通过；LTS3.5.9/typedTCP/同握手信任已接；正式包迁移与安全删除中，远端未验 | `Experiments/P3-RemoteFileProbe/`、`docs/reports/p3-local-files.md`；独占 `Packages/OpenLXSSHFiles/` |
 
 ## P1-01 审查与验证
 

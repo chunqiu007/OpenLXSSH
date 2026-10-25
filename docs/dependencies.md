@@ -1,10 +1,22 @@
-# OpenLXSSH P0-03 依赖清单
+# OpenLXSSH 依赖清单
 
-更新时间：2026-10-25（Asia/Shanghai）
+更新时间：2026-10-26（Asia/Shanghai）
+
+## 当前集成状态（优先于下方P0历史调查）
+
+- GRDB7.11.1 / `b83108d10f42680d78f23fe4d4d80fc88dab3212` 已进入正式Core和App，系统SQLite；真实DB29测试及App本地13测试/GUI通过，不代表连接功能完成。
+- SwiftTerm精确1.99.1预览 / `2f573f73af5e768d90847dce20c97fa9535d7164` 在P2探针选定，稳定1.20输出尾部失败已主管独立复现；不是正式稳定2.x。实际锁图和licenses见实验Package.resolved/ThirdParty及P2 ADR，后续Transport同版本。
+- SFTP当前原生组合libssh2 1.11.1 + OpenSSL3.5.9 LTS，固定tag object/peeled/archive SHA/官方checksum/SDK/flags见P3 `native-inputs.json`。OpenSSL3.5.9 archiveSHA `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`，长期维护证据至2030-04-08；真实服务互通未验，正式Files包迁移中。
+- P0的OpenSSL3.6.5模糊hash `e5c234...` 与后续现场tag/peeled不一致，不能用作生产输入；不推断上游变化原因。3.6.5短维护候选已被LTS取代，历史记录保留但非当前选择。
+- 正式OpenLXSSHTrust/OpenLXSSHSecurity无外部包，系统CryptoKit/Security/OpenSSH；安全策略显式file-based Keychain见ADR，不通过依赖修改关闭系统保护。
+- 当前正式App只集成Core；后续各包尚需逐项链接/签名/许可证/实际App运行审查。测试成功不是完整产品验收。
+
+## P0-03历史调查（以下状态均指调查时）
+
 Task ID：`P0-03`
-状态：候选核对完成；依赖尚未进入 OpenLXSSH 项目，也不代表任何 SSH/SFTP、终端或数据库产品功能通过。
+状态：当时完成候选核对；下方“未进入项目/未实现”等是P0历史，不代表当前工程状态。
 核对工作区：`/Users/liuwenshuo/Desktop/OpenLXSSH`
-临时探针根目录：`/tmp/openlxssh-p0-03`（仅用于本轮只读核对和构建，完成记录后清理）
+临时探针根目录：`/tmp/openlxssh-p0-03`（仅用于当轮调查）
 
 ## 1. 结论摘要与边界
 
