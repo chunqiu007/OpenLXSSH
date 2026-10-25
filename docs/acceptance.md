@@ -24,7 +24,7 @@
 | P1-02 受控配置与 HostTrustStore 原型 | 通过（仅本地信任/配置原型范围） | `Experiments/P1-02-HostTrustProbe/`；`docs/adr/p1-02-host-trust.md`；`docs/reports/p1-02-host-trust.md`；主管独立22项测试与Release CLI通过，工程师Debug/Release/TSan证据见实验 `.build/verification/`；系统ssh -G/-vvG、ssh-keygen -F/-l真实本地对照 | 仅本地配置/公钥/文件证据：显式首次/新算法确认、匹配、变化拒绝、非默认端口/地址编辑、代次与旧确认、原子写与跨进程并发、权限/链接/恶意存储。未启动 sshd 或连接 SSH；真实握手公钥绑定、SSH/SFTP 集成、认证/MFA、macOS 26 runtime 与掉电未验证，产品 AC-04/AC-12/AC-25 仍未执行。 |
 
 | P1-03 凭据与私钥原型 | 进行中（本地密钥通过；真实Keychain缺profile授权） | `docs/reports/p1-03-credential-key.md`；主管独立全量R1共41项=40通过+1真实Keychain -34018；四种真实Ed25519/RSA有/无口令本地操作及引用通过；已签名fixture严格验证/运行时appID匹配 | 正确现有开发签名仍未授权DP访问组，Apple TN3137明确需合法profile。无成功新增条目；精确清理请求被拒，saveSucceeded=false。跨启动/升级真实读取未执行；不fallback、不弱化测试。 |
-| P1-04A/B/C Askpass本机控制面 | C本地范围通过；P1-04整体进行中 | `docs/reports/p1-04-askpass.md`；主管独立C verify.sh退出0，Debug/Release各16单测+28真实Mach跨进程场景通过；B双向冻结审计5场景也独立通过 | 活跃代码已移除旧socket回答路径。逐消息audit+签名、不同identifier/同Team、受控parent、错误signer/重放/queuedexec、reply rights与FD/port回收通过。真实SSH/PTY/force、MFA、macOS26/Sandbox与正式打包仍未验证；P1-06A本地系统readpass打包实现中。 |
+| P1-04A/B/C、P1-06A Askpass本机控制面/打包 | C和P1-06A本地范围通过；阶段1整体进行中 | `docs/reports/p1-04-askpass.md`；主管C双配置16单测+28Mach通过、P1-06A Release真实App readpass成功/取消/超时三场景通过；工程师最终回归29Mach场景 | 已移除旧socket回答路径。包内helper/严格系统ssh-keygen签名、控制PTY无DISPLAY+force实际触发，公钥匹配且资源/密钥清理。不是系统ssh网络认证/MFA；Finder启动、macOS26/Sandbox/DeveloperID仍未验证。 |
 
 P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等产品条目的状态；尤其“未使用 Shell”不能替代完整产品参数/配置与真实主机信任验证。阶段 1 门槛尚未达到。
 
