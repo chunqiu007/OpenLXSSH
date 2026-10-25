@@ -61,6 +61,28 @@ int olxs_spawn_keygen(char *const argv[], pid_t *child, int *input, int *output)
 int olxs_exit_code(int status) { return WIFEXITED(status) ? WEXITSTATUS(status) : -1; }
 int olxs_exit_signal(int status) { return WIFSIGNALED(status) ? WTERMSIG(status) : 0; }
 
+int olxs_file_has_extended_acl(int fd, int *present) {
+    if (present == NULL) return EINVAL;
+    *present = 1;
+    filesec_t security = filesec_init();
+    if (security == NULL) return errno ? errno : ENOMEM;
+    struct stat info;
+    int code = 0, populated = 0, has_acl = 1;
+    // acl_get_fd_np returns NULL both for absent ACL (ENOENT) and query failure.
+    // Use the public filesec property query only after successful extended stat.
+    int result = fstatx_np(fd, &info, security);
+    if (result != 0) code = result > 0 ? result : (errno ? errno : EIO);
+    // Libc's statx allocation-failure path can return 0 without populating filesec.
+    // A fresh filesec must have its mode property before absence is trustworthy.
+    if (code == 0 && filesec_query_property(security, FILESEC_MODE, &populated) != 0) code = errno ? errno : EIO;
+    if (code == 0 && !populated) code = EIO;
+    if (code == 0 && filesec_query_property(security, FILESEC_ACL, &has_acl) != 0) code = errno ? errno : EIO;
+    // Snapshot errno before cleanup; filesec owns and frees its internal ACL buffer.
+    filesec_free(security);
+    if (code == 0) *present = has_acl != 0;
+    return code;
+}
+
 // The file-based Keychain interaction APIs have no nondeprecated equivalent.
 // Suppression is limited to these three reviewed legacy calls, not to the target.
 #pragma clang diagnostic push

@@ -28,6 +28,10 @@ public enum KeyDeleteResult: Equatable, Sendable { case deleted, alreadyAbsent }
 /// Durable App-owned key files, no metadata database and no scanning. The caller supplies
 /// an Application Support leaf whose parent exists. Files are referenced only by UUID.
 /// Core must authorize deletion after checking every host and passphrase reference.
+/// Root/lock and imported/managed private files must have no extended filesystem ACL,
+/// including deny-only ACLs. ACL presence throws `KeyFailure.unsafePermissions`; lookup
+/// failure throws `KeyFailure.systemCall` without falling back to mode bits. ACLs are never
+/// removed or repaired automatically. A refused newly created leaf remains empty for review.
 public actor KeyStore {
     public nonisolated let rootURL: URL
     private var directory: PrivateDirectory?
@@ -78,7 +82,9 @@ public actor KeyStore {
         do {
             try Task.checkCancellation()
             try directory.write(bytes, name: stage, created: &created)
+            try directory.validatePrivateFile(stage)
             let observed = try await tool.publicKey(at: rootURL.appendingPathComponent(stage).path, protection: protection)
+            try directory.validatePrivateFile(stage)
             guard observed == envelope.publicKey else { throw KeyFailure.invalidOpenSSH }
             try Task.checkCancellation()
             try directory.commit(stage: stage, destination: finalName(id), committed: &committed)
@@ -104,9 +110,15 @@ public actor KeyStore {
         guard !(try directory.exists(stage)), !(try directory.exists(stage + ".pub")) else { throw KeyFailure.duplicateKey }
         var committed = false
         do {
+            // Verify the ACL-free root immediately before system ssh-keygen creates its
+            // stage. Its umask/0600 alone cannot suppress an inherited filesystem ACL.
+            try directory.prepareGeneration(stage)
             try await tool.generate(at: rootURL.appendingPathComponent(stage).path, algorithm: algorithm, protection: protection)
+            try directory.validatePrivateFile(stage)
             let envelope = try OpenSSHEnvelope(directory.read(stage))
+            try directory.validatePrivateFile(stage)
             let observed = try await tool.publicKey(at: rootURL.appendingPathComponent(stage).path, protection: protection)
+            try directory.validatePrivateFile(stage)
             guard observed == envelope.publicKey, observed.algorithm == algorithm else { throw KeyFailure.invalidOpenSSH }
             try Task.checkCancellation()
             try directory.remove(stage + ".pub")

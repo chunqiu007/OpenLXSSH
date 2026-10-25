@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SecurityPOSIX
 
 /// Only standard OpenSSH framing is parsed here. Decryption, key consistency and private
 /// algorithm validation are delegated to the system ssh-keygen, never custom cryptography.
@@ -86,9 +87,13 @@ struct OpenSSHEnvelope {
     }
 }
 
-/// Descriptor-relative file operations, owner-only permissions, and explicit rejection of
-/// every symlink/path-traversal component. This is not a defense against a malicious process
-/// already running as the same user and able to rewrite that user's files.
+/// Descriptor-relative file operations, owner-only permissions, no extended filesystem ACLs,
+/// and explicit rejection of every symlink/path-traversal component. Even deny-only/empty
+/// extended ACLs are conservatively rejected; this type never clears an existing or inherited
+/// ACL. The caller must arrange an ACL-free App-owned leaf before retrying a permission error.
+/// Checks around I/O detect persistent runtime ACL changes, but do not atomically bind an ACL
+/// snapshot to I/O or an external ssh-keygen path open. A malicious process already running
+/// as the same user and able to rewrite that user's files is outside this threat model.
 final class PrivateDirectory {
     let url: URL
     let fd: Int32
@@ -110,22 +115,25 @@ final class PrivateDirectory {
         let opened = try Self.openDirectory(directory.path)
         do {
             var info = stat()
-            guard fstat(opened, &info) == 0, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else {
-                throw KeyFailure.unsafePermissions
-            }
+            guard fstat(opened, &info) == 0 else { throw KeyFailure.systemCall("stat root", errno) }
+            guard info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { throw KeyFailure.unsafePermissions }
+            // mkdir's 0700 does not suppress an inheritable extended ACL. Reject the new
+            // leaf before creating a lock, generating a key or writing imported bytes.
+            try Self.requireNoExtendedACL(opened)
             let lock = openat(opened, ".OpenLXSSH.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
             guard lock >= 0 else { throw KeyFailure.systemCall("open key lock", errno) }
-            var lockInfo = stat()
-            guard fstat(lock, &lockInfo) == 0, lockInfo.st_mode & S_IFMT == S_IFREG,
-                  lockInfo.st_uid == geteuid(), lockInfo.st_nlink == 1, lockInfo.st_mode & 0o777 == 0o600 else {
-                _ = Darwin.close(lock)
-                throw KeyFailure.unsafePermissions
-            }
-            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
-                _ = Darwin.close(lock)
-                throw KeyFailure.busy
-            }
-            lockFD = lock
+            do {
+                var lockInfo = stat()
+                guard fstat(lock, &lockInfo) == 0 else { throw KeyFailure.systemCall("stat lock", errno) }
+                guard lockInfo.st_mode & S_IFMT == S_IFREG, lockInfo.st_uid == geteuid(),
+                      lockInfo.st_nlink == 1, lockInfo.st_mode & 0o777 == 0o600 else {
+                    throw KeyFailure.unsafePermissions
+                }
+                try Self.requireNoExtendedACL(lock)
+                guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw KeyFailure.busy }
+                try Self.requireNoExtendedACL(opened)
+                lockFD = lock
+            } catch { _ = Darwin.close(lock); throw error }
         } catch { _ = Darwin.close(opened); throw error }
         fd = opened
     }
@@ -151,6 +159,13 @@ final class PrivateDirectory {
         return current
     }
 
+    static func requireNoExtendedACL(_ descriptor: Int32) throws {
+        var present: Int32 = 1
+        let code = olxs_file_has_extended_acl(descriptor, &present)
+        guard code == 0 else { throw KeyFailure.systemCall("query filesystem ACL", code) }
+        guard present == 0 else { throw KeyFailure.unsafePermissions }
+    }
+
     func verify() throws {
         let observed = try Self.openDirectory(url.path)
         defer { _ = Darwin.close(observed) }
@@ -158,14 +173,18 @@ final class PrivateDirectory {
         guard fstat(fd, &a) == 0, fstat(observed, &b) == 0 else { throw KeyFailure.systemCall("stat root", errno) }
         guard a.st_dev == b.st_dev, a.st_ino == b.st_ino else { throw KeyFailure.symbolicLinkOrEscape }
         guard a.st_uid == geteuid(), a.st_mode & 0o777 == 0o700 else { throw KeyFailure.unsafePermissions }
+        try Self.requireNoExtendedACL(fd)
         var lock = stat(), onDiskLock = stat()
         guard fstat(lockFD, &lock) == 0,
-              fstatat(fd, ".OpenLXSSH.lock", &onDiskLock, AT_SYMLINK_NOFOLLOW) == 0,
-              lock.st_dev == onDiskLock.st_dev, lock.st_ino == onDiskLock.st_ino,
-              onDiskLock.st_mode & S_IFMT == S_IFREG, onDiskLock.st_uid == geteuid(),
-              onDiskLock.st_nlink == 1, onDiskLock.st_mode & 0o777 == 0o600 else {
-            throw KeyFailure.symbolicLinkOrEscape
+              fstatat(fd, ".OpenLXSSH.lock", &onDiskLock, AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw KeyFailure.systemCall("stat lock", errno)
         }
+        guard lock.st_dev == onDiskLock.st_dev, lock.st_ino == onDiskLock.st_ino,
+              onDiskLock.st_mode & S_IFMT == S_IFREG else { throw KeyFailure.symbolicLinkOrEscape }
+        guard lock.st_uid == geteuid(), lock.st_nlink == 1, lock.st_mode & 0o777 == 0o600 else {
+            throw KeyFailure.unsafePermissions
+        }
+        try Self.requireNoExtendedACL(lockFD)
     }
 
     static func readSource(_ url: URL) throws -> Data {
@@ -183,7 +202,9 @@ final class PrivateDirectory {
     func read(_ name: String) throws -> Data {
         try verify()
         try Self.checkName(name)
-        return try Self.read(at: fd, name: name)
+        let bytes = try Self.read(at: fd, name: name)
+        try verify()
+        return bytes
     }
 
     private static func checkName(_ name: String) throws {
@@ -206,6 +227,7 @@ final class PrivateDirectory {
         guard before.st_uid == geteuid(), before.st_mode & 0o077 == 0, before.st_nlink == 1 else {
             throw KeyFailure.unsafePermissions
         }
+        try requireNoExtendedACL(file)
         guard before.st_size > 0, before.st_size <= 1_048_576 else { throw KeyFailure.fileTooLarge }
         var bytes = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
@@ -221,6 +243,10 @@ final class PrivateDirectory {
         }
         var after = stat()
         guard fstat(file, &after) == 0 else { throw KeyFailure.systemCall("stat key", errno) }
+        guard after.st_uid == geteuid(), after.st_mode & 0o077 == 0, after.st_nlink == 1 else {
+            throw KeyFailure.unsafePermissions
+        }
+        try requireNoExtendedACL(file)
         guard bytes.count == Int(before.st_size), before.st_size == after.st_size,
               before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
               before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
@@ -238,6 +264,39 @@ final class PrivateDirectory {
         return false
     }
 
+    /// Validate a tool-facing path without reading private bytes. Generation additionally
+    /// requires absent stage/sidecar names under the verified ACL-free root.
+    func prepareGeneration(_ name: String) throws {
+        try verify()
+        try Self.checkName(name)
+        guard !(try exists(name)), !(try exists(name + ".pub")) else { throw KeyFailure.duplicateKey }
+        try verify()
+    }
+
+    func validatePrivateFile(_ name: String) throws {
+        try verify()
+        try Self.checkName(name)
+        let file = openat(fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard file >= 0 else {
+            if errno == ELOOP { throw KeyFailure.symbolicLinkOrEscape }
+            if errno == ENOENT { throw KeyFailure.missing }
+            throw KeyFailure.systemCall("open key", errno)
+        }
+        defer { _ = Darwin.close(file) }
+        try Self.validateManagedFile(file)
+        try verify()
+    }
+
+    private static func validateManagedFile(_ file: Int32) throws {
+        var info = stat()
+        guard fstat(file, &info) == 0 else { throw KeyFailure.systemCall("stat key", errno) }
+        guard info.st_mode & S_IFMT == S_IFREG else { throw KeyFailure.notRegularFile }
+        guard info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o777 == 0o600 else {
+            throw KeyFailure.unsafePermissions
+        }
+        try requireNoExtendedACL(file)
+    }
+
     func write(_ data: Data, name: String, created: inout Bool) throws {
         try verify()
         try Self.checkName(name)
@@ -245,6 +304,10 @@ final class PrivateDirectory {
         guard file >= 0 else { throw KeyFailure.systemCall("create key", errno) }
         created = true
         defer { _ = Darwin.close(file) }
+        // Inspect the newly created file before the first imported private byte is written.
+        // chmod/umask do not remove an ACL inherited during openat.
+        try Self.validateManagedFile(file)
+        try verify()
         var offset = 0
         while offset < data.count {
             let count = data.withUnsafeBytes { Darwin.write(file, $0.baseAddress!.advanced(by: offset), $0.count - offset) }
@@ -252,7 +315,9 @@ final class PrivateDirectory {
             guard count > 0 else { throw KeyFailure.systemCall("write key", errno) }
             offset += count
         }
-        guard fchmod(file, 0o600) == 0, fsync(file) == 0 else { throw KeyFailure.systemCall("sync key", errno) }
+        guard fsync(file) == 0 else { throw KeyFailure.systemCall("sync key", errno) }
+        try Self.validateManagedFile(file)
+        try verify()
     }
 
     @discardableResult
@@ -275,11 +340,14 @@ final class PrivateDirectory {
         try verify()
         try Self.checkName(stage)
         try Self.checkName(destination)
+        try validatePrivateFile(stage)
         _ = try read(stage)
         guard renameatx_np(fd, stage, fd, destination, UInt32(RENAME_EXCL)) == 0 else {
             throw KeyFailure.systemCall("commit key", errno)
         }
         committed = true
+        try validatePrivateFile(destination)
         guard fsync(fd) == 0 else { throw KeyFailure.systemCall("sync root", errno) }
+        try verify()
     }
 }

@@ -31,6 +31,16 @@ python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Packages/OpenLXSSHSecurity/Scripts/v
 
 Ed25519/RSA有/无口令四组合、复制/源不变、重开、公钥、拒链接/冲突/取消/超时/补偿ticket与多owner恢复失败都有断言。工程师Debug/Release/TSan各20项通过，显式min26交叉构建元数据通过，日志在包 `.build/verification/`。macOS26产物未运行。
 
+## P7 ACL 修复复验
+
+后续独立审查发现原mode-only策略接受危险继承ACL（修前生成/导入仍成功），已在 `P7-SECURITY-ACL-R1` 修正。采用保守拒绝任何扩展文件系统ACL，包括deny-only/empty；不清除用户目录、导入源或生成leaf的ACL。新leaf在创建锁或产生私钥前核对，root/lock/source/stage/final均有对应检查，I/O与系统ssh-keygen路径调用前后及提交后复验。
+
+Darwin `acl_get_fd_np` 在无ACL时也返回NULL/ENOENT，不能把NULL统一解释为无ACL。生产C shim用公开filesec/fstatx_np，成功且MODE已填、ACL property不存在才接受，查询失败保存errno并单独systemCall，释放filesec内部资源；不把旧errno误用于成功路径。此实现不依赖Linux acl_get_entry语义。
+
+修前10项真实ACL回归退出1、25断言失败，日志 `.build/verification/acl-r1-before-fix-confirmed.log` 保留。工程师最终Debug/Release各31项退出0。主管读取7个实际修改文件与11新tests，在独立scratch运行Release完整31项退出0，日志 `.build/verification/acl-r1-primary-release.log`。本轮真实自有临时Keychain锁/解锁/清理再次通过，用户default/searchlist不变；无真实用户私钥操作、无签名脚本并发、无上游native重建。
+
+拒绝ACL时需要用户检查App专属leaf/lock/key或导入源，单纯chmod不足；App不自动改ACL。前后检查不是ACL与I/O的原子绑定，恶意同UID进程及瞬时竞态不在完整防护承诺内。当前只宿主macOS15包级证据，正式签名App与macOS26仍须后续回归。
+
 ## 限制
 
 file-based相关legacyAPI弃用风险需升级回归；App其他代码不得独立切进程非交互标志。KeyStore只释放资源不删长期文件，父目录须存在且规范无symlink。口令1023字节/NUL-CR-LF限制、Swift副本不能完全擦除如实保留。

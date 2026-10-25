@@ -7,6 +7,9 @@
 int olxs_spawn_keygen(char *const argv[], pid_t *child, int *input, int *output);
 int olxs_exit_code(int status);
 int olxs_exit_signal(int status);
+// Descriptor-only filesystem ACL query. Returns 0 or an errno value; never mutates ACLs.
+// On error, *present remains true so callers cannot mistake failure for no ACL.
+int olxs_file_has_extended_acl(int fd, int *present);
 // Legacy file-Keychain operations only; no Keychain configuration or ACL mutation.
 OSStatus olxs_interaction_get(Boolean *allowed);
 OSStatus olxs_interaction_set(Boolean allowed);
