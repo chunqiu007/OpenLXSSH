@@ -1,0 +1,30 @@
+OpenLXSSHTransport — dependency and source notices
+
+Shipping dependency: SwiftTerm v1.99.1, PREVIEW BEFORE 2.0, MIT.
+https://github.com/migueldeicaza/SwiftTerm.git
+commit 2f573f73af5e768d90847dce20c97fa9535d7164
+Full unchanged upstream license: ThirdPartyNotices/SwiftTerm-LICENSE.
+Only the SwiftTerm library is linked. Its build-info plugin executes locally.
+
+Resolved (not linked into the macOS transport/helper products):
+- swift-argument-parser 1.8.2, 6a52f3251125d74daf04fcbd5e6f08a75d074382
+  https://github.com/apple/swift-argument-parser (Apache-2.0)
+- swift-png 4.5.2, 2d17c6c51c098628574c0383f1119892655a73a2
+  https://github.com/tayloraswift/swift-png (Apache-2.0)
+- h 1.0.1, aa3626829160917d4378330617971977cbd78f5b
+  https://github.com/rarestype/h (Apache-2.0)
+Full license/notice text copied unchanged in ThirdPartyNotices.
+Package.resolved pins the full SwiftPM resolved graph. No remote branch dependency.
+
+Local shared dependency: ../OpenLXSSHTrust (same repository, no experimental import).
+System /usr/bin/ssh, /usr/bin/ssh-keyscan, /usr/bin/ssh-keygen and macOS system
+frameworks are runtime/validation tools, not bundled or reimplemented SSH crypto.
+Their Apple signatures/OS build must be re-verified on upgrades.
+
+Migrated first-party code, not a second upstream fork:
+- P1-04C Mach inline transport/audit/signature and bounded request state/helper.
+- P1-02 controlled SSH configuration boundaries, extended in this package only
+  for session auth/keepalive and a fixed signed authenticated-event LocalCommand.
+- P2 single LocalProcess owner, bounded input and native terminal adapter.
+No experimental fixture code is linked into the default shipping product graph.
+Host-probe fixtures are opt-in via OPENLXSSH_TRANSPORT_HOST_PROBE=1 only.

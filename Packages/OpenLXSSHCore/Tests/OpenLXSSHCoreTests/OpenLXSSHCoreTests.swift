@@ -151,6 +151,140 @@ final class OpenLXSSHCoreTests: XCTestCase {
         expect(.cleanupAlreadyScheduled) { try database.registerKey(key) }
     }
 
+    func testUpdateKeyPassphraseDetachesOnlyOneSharedKey() throws {
+        let passphrase = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let first = ManagedKeyReference(algorithm: .ed25519, passphraseCredentialRef: passphrase.id)
+        let second = ManagedKeyReference(algorithm: .rsa, passphraseCredentialRef: passphrase.id)
+        let host = HostConfiguration(name: "linked key", address: "key.invalid", username: "fixture", authentication: .privateKey, keyRef: first.id)
+        try database.apply([.registerCredential(passphrase), .registerKey(first), .registerKey(second), .insertHost(host)])
+        try database.updateKeyPassphrase(keyID: first.id, credentialRef: nil)
+        try database.updateKeyPassphrase(keyID: first.id, credentialRef: nil)
+        var detached = first; detached.passphraseCredentialRef = nil
+        XCTAssertEqual(Set(try database.keys().map(\.id)), [first.id, second.id])
+        XCTAssertEqual(try database.keys().first { $0.id == first.id }, detached)
+        XCTAssertEqual(try database.keys().first { $0.id == second.id }, second)
+        XCTAssertEqual(try database.host(id: host.id), host)
+        XCTAssertEqual(try database.credentials(), [passphrase])
+        XCTAssertTrue(try database.cleanupTickets().isEmpty)
+        expect(.resourceInUse) { try database.deleteCredential(id: passphrase.id) }
+        // Registration still rejects changes to an existing key; it is not an upsert.
+        expect(.conflictingID) { try database.registerKey(first) }
+        try database.registerKey(detached)
+        try reopen()
+        XCTAssertEqual(try database.keys().first { $0.id == first.id }, detached)
+        XCTAssertEqual(try database.keys().first { $0.id == second.id }, second)
+        XCTAssertEqual(try database.credentials(), [passphrase])
+        try database.updateKeyPassphrase(keyID: second.id, credentialRef: nil)
+        XCTAssertEqual(try database.credentials(), [passphrase])
+        XCTAssertTrue(try database.cleanupTickets().isEmpty)
+        try database.deleteCredential(id: passphrase.id)
+        try reopen()
+        XCTAssertTrue(try database.keys().allSatisfy { $0.passphraseCredentialRef == nil })
+        XCTAssertEqual(Set(try database.keys().map(\.id)), [first.id, second.id])
+        XCTAssertEqual(try database.host(id: host.id), host)
+        XCTAssertTrue(try database.credentials().isEmpty)
+        XCTAssertEqual(try database.cleanupTickets().map(\.resourceID), [passphrase.id])
+    }
+
+    func testUpdateKeyPassphraseReplacementAndExplicitCleanupPersist() throws {
+        let old = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let replacement = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let unrelated = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let key = ManagedKeyReference(algorithm: .ed25519, passphraseCredentialRef: old.id)
+        try database.apply([.registerCredential(old), .registerCredential(unrelated), .registerKey(key)])
+        try database.apply([.registerCredential(replacement), .updateKeyPassphrase(keyID: key.id, credentialRef: replacement.id)])
+        try database.updateKeyPassphrase(keyID: key.id, credentialRef: replacement.id)
+        var changed = key; changed.passphraseCredentialRef = replacement.id
+        XCTAssertEqual(try database.keys(), [changed])
+        XCTAssertEqual(Set(try database.credentials().map(\.id)), [old.id, replacement.id, unrelated.id])
+        XCTAssertTrue(try database.cleanupTickets().isEmpty)
+        expect(.conflictingID) { try database.registerKey(key) }
+        try database.deleteCredential(id: old.id)
+        try database.apply([.updateKeyPassphrase(keyID: key.id, credentialRef: nil), .deleteCredential(replacement.id)])
+        try reopen()
+        changed.passphraseCredentialRef = nil
+        XCTAssertEqual(try database.keys(), [changed])
+        XCTAssertEqual(try database.credentials(), [unrelated])
+        let tickets = try database.cleanupTickets()
+        XCTAssertEqual(tickets.count, 2)
+        XCTAssertEqual(Set(tickets.map(\.resourceID)), [old.id, replacement.id])
+        XCTAssertTrue(tickets.allSatisfy { $0.resourceKind == .credential && $0.reason == .removedReference && $0.state == .pending })
+        try database.deleteCredential(id: replacement.id)
+        XCTAssertEqual(try database.cleanupTickets(), tickets)
+        try database.queue.read { XCTAssertTrue(try Row.fetchAll($0, sql: "PRAGMA foreign_key_check").isEmpty) }
+    }
+
+    func testUpdateKeyPassphraseInvalidReferencesRollBackBatch() throws {
+        let passphrase = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let password = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        let key = ManagedKeyReference(algorithm: .rsa, passphraseCredentialRef: passphrase.id)
+        try database.apply([.registerCredential(passphrase), .registerCredential(password), .registerKey(key)])
+        let folder = HostFolder(name: "must roll back")
+        let invalid: [(RepositoryChange, RepositoryError)] = [
+            (.updateKeyPassphrase(keyID: key.id, credentialRef: password.id), .invalidField("passphraseCredentialRef")),
+            (.updateKeyPassphrase(keyID: key.id, credentialRef: UUID()), .notFound),
+            (.updateKeyPassphrase(keyID: UUID(), credentialRef: passphrase.id), .notFound),
+            (.updateKeyPassphrase(keyID: UUID(), credentialRef: nil), .notFound)
+        ]
+        for (change, error) in invalid {
+            expect(error) { try database.apply([.saveFolder(folder), change]) }
+            XCTAssertTrue(try database.folders().isEmpty)
+            XCTAssertEqual(try database.keys(), [key])
+            XCTAssertTrue(try database.cleanupTickets().isEmpty)
+        }
+        // SQL constraints remain effective independently of the new checked API.
+        XCTAssertThrowsError(try database.queue.write { try $0.execute(sql: "UPDATE managedKeys SET passphraseCredentialRef = ? WHERE id = ?", arguments: [password.id, key.id]) })
+        XCTAssertThrowsError(try database.queue.write { try $0.execute(sql: "UPDATE managedKeys SET passphraseCredentialRef = ? WHERE id = ?", arguments: [UUID(), key.id]) })
+        try reopen()
+        XCTAssertEqual(try database.keys(), [key])
+        XCTAssertEqual(Set(try database.credentials().map(\.id)), [passphrase.id, password.id])
+    }
+
+    func testUpdateKeyPassphraseDeletionAndTicketRollBackOnLaterFailure() throws {
+        enum Injected: Error { case fail }
+        let passphrase = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let key = ManagedKeyReference(algorithm: .ed25519, passphraseCredentialRef: passphrase.id)
+        try database.apply([.registerCredential(passphrase), .registerKey(key)])
+        let detachAndDelete: [RepositoryChange] = [.updateKeyPassphrase(keyID: key.id, credentialRef: nil), .deleteCredential(passphrase.id)]
+        var invalidHost = sampleHost(); invalidHost.folderID = UUID()
+        XCTAssertThrowsError(try database.apply(detachAndDelete + [.insertHost(invalidHost)]))
+        XCTAssertThrowsError(try database.applyTransaction(detachAndDelete, beforeCommit: { throw Injected.fail }))
+        expect(.notFound) {
+            try database.apply(detachAndDelete + [.updateKeyPassphrase(keyID: key.id, credentialRef: passphrase.id)])
+        }
+        try reopen()
+        XCTAssertEqual(try database.keys(), [key])
+        XCTAssertEqual(try database.credentials(), [passphrase])
+        XCTAssertTrue(try database.cleanupTickets(includeCompleted: true).isEmpty)
+        XCTAssertTrue(try database.hosts().isEmpty)
+        try database.queue.read { XCTAssertTrue(try Row.fetchAll($0, sql: "PRAGMA foreign_key_check").isEmpty) }
+    }
+
+    func testUpdateKeyPassphraseRejectsUnauthorizedExistingMetadata() throws {
+        let key = ManagedKeyReference(algorithm: .rsa)
+        let unauthorized = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: false)
+        try database.registerKey(key)
+        // Deliberately corrupt one metadata row to exercise the API's defensive authorization check.
+        // Production registration and the unchanged schema both reject this row normally.
+        try database.queue.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            defer { try? db.execute(sql: "PRAGMA ignore_check_constraints = OFF") }
+            try db.execute(sql: "INSERT INTO credentials(id, purpose, isSavingAuthorized) VALUES (?, 'privateKeyPassphrase', 0)", arguments: [unauthorized.id])
+        }
+        let folder = HostFolder(name: "unauthorized batch must roll back")
+        expect(.savingNotAuthorized) {
+            try database.apply([.saveFolder(folder), .updateKeyPassphrase(keyID: key.id, credentialRef: unauthorized.id)])
+        }
+        XCTAssertEqual(try database.keys(), [key])
+        XCTAssertTrue(try database.folders().isEmpty)
+        XCTAssertTrue(try database.cleanupTickets().isEmpty)
+        try database.queue.write { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA ignore_check_constraints"), 0)
+            try db.execute(sql: "DELETE FROM credentials WHERE id = ?", arguments: [unauthorized.id])
+            XCTAssertEqual(try String.fetchOne(db, sql: "PRAGMA integrity_check"), "ok")
+        }
+    }
+
     func testCredentialAuthorizationAndPurposeEnforcement() throws {
         expect(.savingNotAuthorized) { try database.registerCredential(CredentialReference(purpose: .password, isSavingAuthorized: false)) }
         let password = CredentialReference(purpose: .password, isSavingAuthorized: true)

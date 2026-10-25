@@ -173,6 +173,7 @@ public enum RepositoryChange: Sendable {
     case insertHost(HostConfiguration), updateHost(HostConfiguration), deleteHost(UUID)
     case saveFolder(HostFolder), deleteFolder(UUID)
     case registerCredential(CredentialReference), registerKey(ManagedKeyReference)
+    case updateKeyPassphrase(keyID: UUID, credentialRef: UUID?)
     case deleteCredential(UUID), deleteKey(UUID)
     case saveSettings(AppSettings)
     case setFavorite(UUID, Bool, order: Int = 0)

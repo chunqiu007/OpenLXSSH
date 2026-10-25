@@ -98,6 +98,11 @@ public final class OpenLXSSHDatabase: Sendable {
     public func deleteFolder(id: UUID) throws { try apply([.deleteFolder(id)]) }
     public func registerCredential(_ reference: CredentialReference) throws { try apply([.registerCredential(reference)]) }
     public func registerKey(_ reference: ManagedKeyReference) throws { try apply([.registerKey(reference)]) }
+    /// Updates only this key's saved-passphrase reference. Detaching never deletes credential metadata;
+    /// callers must explicitly delete an unreferenced credential to schedule external cleanup.
+    public func updateKeyPassphrase(keyID: UUID, credentialRef: UUID?) throws {
+        try apply([.updateKeyPassphrase(keyID: keyID, credentialRef: credentialRef)])
+    }
     public func deleteCredential(id: UUID) throws { try apply([.deleteCredential(id)]) }
     public func deleteKey(id: UUID) throws { try apply([.deleteKey(id)]) }
     public func saveSettings(_ value: AppSettings) throws { try apply([.saveSettings(value)]) }
@@ -171,6 +176,14 @@ public final class OpenLXSSHDatabase: Sendable {
             if let old = try ManagedKeyReference.fetchOne(db, key: value.id) {
                 guard old == value else { throw RepositoryError.conflictingID }
             } else { try value.insert(db) }
+        case .updateKeyPassphrase(let keyID, let credentialRef):
+            guard try ManagedKeyReference.fetchOne(db, key: keyID) != nil else { throw RepositoryError.notFound }
+            if let credentialRef {
+                guard let credential = try CredentialReference.fetchOne(db, key: credentialRef) else { throw RepositoryError.notFound }
+                guard credential.purpose == .privateKeyPassphrase else { throw RepositoryError.invalidField("passphraseCredentialRef") }
+                guard credential.isSavingAuthorized else { throw RepositoryError.savingNotAuthorized }
+            }
+            try db.execute(sql: "UPDATE managedKeys SET passphraseCredentialRef = ? WHERE id = ?", arguments: [credentialRef, keyID])
         case .deleteCredential(let id):
             try deleteResource(ExternalResource(kind: .credential, id: id), db: db)
         case .deleteKey(let id):
