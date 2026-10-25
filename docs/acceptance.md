@@ -23,6 +23,9 @@
 | P1-01 最小受控 OpenSSH/PTY 探针 | 通过（仅本地无网络原型范围） | `Experiments/P1-01-PTYProbe/`；`docs/reports/p1-01-pty.md`；macOS 15.8.1 / Xcode 26.3 / Swift 6.2.4；主管独立复跑14项 XCTest、Release CLI 和 ps/lsof 资源快照均通过；工程师 Debug/Release/TSan/重复测试见 `.build/verification/` | 无 Shell 拼接、9 类 argv 精确回传、256 输入字节顺序、128 KiB 输出尾部、窗口/SIGWINCH、超时、TERM→KILL、EOF、并发幂等关闭、20 次本地循环与对象/FD/进程/task 回收只证明本地原型范围。系统 ssh 只运行无网络 `-G -F /dev/null`。无隔离 SSH 服务、无 macOS 26 runtime（只有 minos 26 交叉编译证据）；没有认证/MFA/信任、Keychain、Askpass、正式 App、SwiftTerm 集成、后代进程树或产品性能证据。 |
 | P1-02 受控配置与 HostTrustStore 原型 | 通过（仅本地信任/配置原型范围） | `Experiments/P1-02-HostTrustProbe/`；`docs/adr/p1-02-host-trust.md`；`docs/reports/p1-02-host-trust.md`；主管独立22项测试与Release CLI通过，工程师Debug/Release/TSan证据见实验 `.build/verification/`；系统ssh -G/-vvG、ssh-keygen -F/-l真实本地对照 | 仅本地配置/公钥/文件证据：显式首次/新算法确认、匹配、变化拒绝、非默认端口/地址编辑、代次与旧确认、原子写与跨进程并发、权限/链接/恶意存储。未启动 sshd 或连接 SSH；真实握手公钥绑定、SSH/SFTP 集成、认证/MFA、macOS 26 runtime 与掉电未验证，产品 AC-04/AC-12/AC-25 仍未执行。 |
 
+| P1-03 凭据与私钥原型 | 进行中（本地密钥通过；真实Keychain缺profile授权） | `docs/reports/p1-03-credential-key.md`；主管独立全量R1共41项=40通过+1真实Keychain -34018；四种真实Ed25519/RSA有/无口令本地操作及引用通过；已签名fixture严格验证/运行时appID匹配 | 正确现有开发签名仍未授权DP访问组，Apple TN3137明确需合法profile。无成功新增条目；精确清理请求被拒，saveSucceeded=false。跨启动/升级真实读取未执行；不fallback、不弱化测试。 |
+| P1-04A Askpass本机控制面 | 进行中（fixture行为通过，生产身份未证明） | `docs/reports/p1-04-askpass.md`；主管独立verify.sh退出0，Debug/Release各14单测+20真实本机跨进程场景通过 | Unix socket LOCAL_PEERTOKEN不是冻结消息身份，重复核验不证明消除PID/exec竞态；单镜像ad-hoc fixture不等于正式App/helper信任根。P1-04B临时Mach审计消息可行性验证中；无真实SSH/MFA/秘密投递。 |
+
 P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等产品条目的状态；尤其“未使用 Shell”不能替代完整产品参数/配置与真实主机信任验证。阶段 1 门槛尚未达到。
 
 ## 1. 状态与证据格式

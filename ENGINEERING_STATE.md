@@ -23,7 +23,9 @@
 | P0-05 | software-engineer | 签名/辅助程序路径调查通过，产品签名未执行 | `docs/reports/p0-05-signing-sandbox.md` |
 | P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
 | P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
-| P1-03 | software-engineer | 独立实验实现中；真实 Keychain 当前返回 -34018，未通过 CRUD | `Experiments/P1-03-CredentialKeyProbe/` |
+| P1-03 / R1 | software-engineer | 本地私钥/策略通过；主管完整41项=40通过+1真实Keychain失败，正确开发签名仍缺profile授权 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md` |
+| P1-04A | software-engineer | 主管审查并独立双配置14单测/20跨进程通过，但socket身份证明仍PARTIAL | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
+| P2-LOCAL-A | software-engineer | 独立本地终端探针实现中，非阶段2通过 | `Experiments/P2-TerminalProbe/` 与 `docs/adr/p2-terminal-version-selection.md` |
 
 ## P1-01 审查与验证
 
@@ -45,14 +47,14 @@
 
 ## 已核实的环境与依赖
 
-- Apple Silicon arm64、8 CPU；宿主 macOS 15.8.1/24H32，不是 macOS 26。Xcode 26.3、macOS 26.2 SDK、Swift 6.2.4、系统 OpenSSH 9.9p2、xctest/xctrace 可用。
+- Apple Silicon arm64、8 CPU、16GiB物理内存；主管实测数据卷可用约89.6GiB（瞬时值）；宿主 macOS 15.8.1/24H32，不是 macOS 26。Xcode 26.3、macOS 26.2 SDK、Swift 6.2.4、系统 OpenSSH 9.9p2、xctest/xctrace 可用。
 - SwiftTerm 暂在 P2 比较稳定 v1.20.0 与 v1.99.1（2.0 前预览）；GRDB 暂选 v7.11.1/系统 SQLite；P3 初始候选 libssh2 1.11.1 + OpenSSL 静态库。主管独立重建探针通过，详见依赖清单和 ADR。CMake 缺失；替代加密后端/最终 App 打包未验证；Homebrew 只用于临时探针。
 - 尚无 Linux guest/隔离 SSH 服务；未启动本机 sshd。推荐 UTM + 官方 Ubuntu ARM64、2 vCPU/4 GiB RAM/20 GiB 动态磁盘起步，NAT/private 网络、一次性测试账户，不暴露 LAN；方案待用户确认。
 - 有 1 个 Apple Development 身份；Developer ID Application/Installer 0。正式 Team/Bundle ID、公证凭据、上传授权和 macOS 26 双机运行条件尚未准备。
 
 ## 提交与验收
 
-- 基线 `4ccebe7`；P0-02-R1 `0e136e2`；P0-03 `68b9306`/记录修正 `8575f4a`；P0-04 `65e2edd`；P0-05 `927a84e`；P1-01 `e5e5b1a`（development/p1-prototypes）。P1-02 待本轮审查后提交，P1-03 并行目录不混入提交。
+- 基线 `4ccebe7`；P0-02-R1 `0e136e2`；P0-03 `68b9306`/记录修正 `8575f4a`；P0-04 `65e2edd`；P0-05 `927a84e`；P1-01 `e5e5b1a`、P1-02与Askpass约束记录 `984d2d2`（development/p1-prototypes）。P1-03/P1-04/P2尚在各自独立目录推进，未审查文件不混入已验收提交。
 - `docs/acceptance.md` 保留全部产品 AC；P0 调查和 P1-01 本地探针不将产品 AC 标为通过。
 - 尚无正式 App/Xcode target、安装包、产品签名、公证、24 小时长测或外部人工验收。
 
@@ -63,6 +65,7 @@
 ## 待外部条件
 
 - 新增隔离 Linux VM/容器方案确认；确认前不安装或启动。
+- Data Protection Keychain的合法provisioning profile授权：主管独立核对Apple TN3137；现有开发签名+运行时appID匹配仍-34018，不能以签名有效代替profile授权。未成功保存测试条目；不盲试entitlement或静默fallback。
 - macOS 26 实机运行、Developer ID 和用户 Apple 登录条件；公证上传仅在具体产物准备后集中请求。
 - 第二台 Apple Silicon/macOS 26 安装与公司允许的真实认证/审批/嵌套 SSH 人工验收。
 
