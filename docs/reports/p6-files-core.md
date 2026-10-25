@@ -39,6 +39,12 @@ R2改为 openat(rootFD, ".", ...) 创建独立目录枚举描述；RemoteFileSer
 
 此修复仍是观察到的变化检测，不是source原子快照。最终检查后修改、恢复全部可观察元数据、远端秒级属性及摘要复核期间的剩余竞争如实保留；没有真实远端FSTAT/SFTP证据。本地2GiB/1000压力随后另行验证，不从57项推断已通过。
 
+## R3：同服务根目录自拷边界
+
+主管进一步核查到 raw byte prefix 判断对根 `/` 拼接出 `//`，漏掉同服务 `/` 到 `/inside` 的自拷。工程师真实Local复现（maxDepth2限制规模）：修前1项2断言失败、已创建inside并返回7递归结果；未伪称通过。最小修复用路径组件前缀，包含根空前缀与相等关系，不把/tree-sibling误作/tree后代。
+
+新增3项回归后工程师双配置48相关/89全套退出0，主管读两文件实际diff并独立Release16完整性测试退出0，日志 `.build/verification/p7-files-root-self-r3/primary-release16.log`。拒绝发生在新目录/句柄创建前，真实64句柄槽仍可全开关闭，原文件不变，sibling复制正常。不重复未变native与sanitizer。当前同一service对象识别边界不扩大为不同服务对象底层目录别名检测，UI整合仍须保持受控服务/根的归属。
+
 ## 未完成与整合约束
 
 真实SFTP/认证/MFA、rename/fsync扩展、删除与能力probe远端运行未验证，本地FD fixture不是服务器。上游静态库未ASan/TSan插桩。macOS26只编译未实跑。

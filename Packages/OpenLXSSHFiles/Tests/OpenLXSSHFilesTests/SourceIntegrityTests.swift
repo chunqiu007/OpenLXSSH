@@ -151,6 +151,68 @@ final class SourceIntegrityTests: XCTestCase, @unchecked Sendable {
         await f.cleanup()
     }
 
+    private func assertNoRetainedHandles(_ service: LocalFileService, readablePath: RemotePath) async throws {
+        // LocalFileService's real cap is 64. Opening every slot before close() proves that a
+        // rejected traversal left no file handle behind; service close must not mask a leak.
+        var handles: [FileHandleID] = []
+        do {
+            for _ in 0..<64 { handles.append(try await service.open(readablePath, mode: .read, token: CancellationToken())) }
+        } catch {
+            for handle in handles { try? await service.closeHandle(handle) }
+            throw error
+        }
+        for handle in handles { try await service.closeHandle(handle) }
+    }
+
+    func testRootCopyIntoSameServiceDescendantRejectsBeforeCreatingDirectoryOrHandles() async throws {
+        let f = try IntegrityFixture(); try Data("original".utf8).write(to: f.sourceURL.appendingPathComponent("file"))
+        // Keep the old buggy traversal small enough to reproduce without creating a large tree.
+        do {
+            let report = try await SafeTransferEngine(maxDepth: 2, maxItems: 32).copyTree(hostID: "root-self", source: f.source, sourcePath: .root,
+                destination: f.source, destinationPath: RemotePath("/inside"), token: CancellationToken())
+            XCTFail("Root self-copy must reject before traversal, not return \(report.items.count) recursive results")
+        } catch let error as FileServiceError {
+            XCTAssertEqual(error.kind, .invalidPath); XCTAssertEqual(error.operation, "copy-tree-into-itself")
+            XCTAssertEqual(error.path, try RemotePath("/inside"))
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: f.sourceURL.path), ["file"])
+        XCTAssertEqual(try Data(contentsOf: f.sourceURL.appendingPathComponent("file")), Data("original".utf8))
+        try await assertNoRetainedHandles(f.source, readablePath: RemotePath("/file"))
+        await f.cleanup()
+    }
+
+    func testNonRootCopyIntoSelfOrDescendantStillRejectsWithoutSideEffects() async throws {
+        let f = try IntegrityFixture()
+        try FileManager.default.createDirectory(at: f.sourceURL.appendingPathComponent("tree"), withIntermediateDirectories: true)
+        try Data("original".utf8).write(to: f.sourceURL.appendingPathComponent("tree/file"))
+        for target in [try RemotePath("/tree"), try RemotePath("/tree/inside")] {
+            do {
+                _ = try await SafeTransferEngine().copyTree(hostID: "nonroot-self", source: f.source, sourcePath: RemotePath("/tree"),
+                    destination: f.source, destinationPath: target, token: CancellationToken())
+                XCTFail("Non-root self/descendant must reject")
+            } catch let error as FileServiceError {
+                XCTAssertEqual(error.kind, .invalidPath); XCTAssertEqual(error.operation, "copy-tree-into-itself")
+                XCTAssertEqual(error.path, target)
+            }
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: f.sourceURL.appendingPathComponent("tree").path), ["file"])
+        try await assertNoRetainedHandles(f.source, readablePath: RemotePath("/tree/file"))
+        await f.cleanup()
+    }
+
+    func testSameServiceSiblingWithSharedNamePrefixCopiesNormally() async throws {
+        let f = try IntegrityFixture()
+        try FileManager.default.createDirectory(at: f.sourceURL.appendingPathComponent("tree"), withIntermediateDirectories: true)
+        let bytes = Data("sibling 中文 $".utf8); try bytes.write(to: f.sourceURL.appendingPathComponent("tree/file"))
+        let report = try await SafeTransferEngine().copyTree(hostID: "sibling", source: f.source, sourcePath: RemotePath("/tree"),
+            destination: f.source, destinationPath: RemotePath("/tree-sibling"), token: CancellationToken())
+        XCTAssertTrue(report.allSucceeded); XCTAssertEqual(report.items.count, 2)
+        XCTAssertEqual(try Data(contentsOf: f.sourceURL.appendingPathComponent("tree-sibling/file")), bytes)
+        XCTAssertEqual(try Data(contentsOf: f.sourceURL.appendingPathComponent("tree/file")), bytes)
+        try await assertNoRetainedHandles(f.source, readablePath: RemotePath("/tree/file"))
+        await f.cleanup()
+    }
+
     func testEqualLengthSameInodeCrossChunkMutationIsRaceNotMixedSuccess() async throws {
         let f = try IntegrityFixture(); try f.seedFile()
         let before = try await f.source.lstat(RemotePath("/file"), token: CancellationToken())

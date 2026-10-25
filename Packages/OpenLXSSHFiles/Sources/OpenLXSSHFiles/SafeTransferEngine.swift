@@ -299,8 +299,9 @@ public struct SafeTransferEngine: Sendable {
                          policy: TransferPolicy = .init(), hooks: TransferHooks = .init()) async throws -> TransferReport {
         let target = try conflictDestination(destinationPath, conflict)
         let action: ConflictDecision = { if case .renameTo = conflict { return .fail }; return conflict }()
+        // Component prefixes include equality and root's empty prefix, without confusing siblings.
         guard !(ObjectIdentifier(source) == ObjectIdentifier(destination) &&
-                (target == sourcePath || target.bytes.starts(with: sourcePath.bytes + Data([47])))) else {
+                target.components.starts(with: sourcePath.components)) else {
             throw FileServiceError(.invalidPath, operation: "copy-tree-into-itself", path: target)
         }
         return try await scheduler.onHost(hostID, token: token) {
