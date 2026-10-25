@@ -626,6 +626,27 @@ final class OpenLXSSHCoreTests: XCTestCase {
         try database.queue.read { XCTAssertEqual(try String.fetchOne($0, sql: "PRAGMA integrity_check"), "ok") }
     }
 
+    func testACLChecksPreserveHeldSQLitePOSIXLocksAgainstIndependentProcess() throws {
+        let location = try SecureDatabaseLocation(directory: directory)
+        try database.queue.write { db in
+            try db.execute(sql: "INSERT INTO hosts(id, name, address, username, authentication) VALUES (?, 'parent-held-lock', 'test.invalid', 'fixture', 'password')", arguments: [UUID()])
+            // This is the dangerous direction: a close of an extra descriptor in *this*
+            // process releases our existing SQLite locks, even while GRDB owns the writer.
+            for _ in 0..<25 { try location.validateAndSecureFiles() }
+            let posixProbe = try fixture(mode: "probe-posix-lock")
+            posixProbe.waitUntilExit()
+            XCTAssertEqual(posixProbe.terminationStatus, 74, "Core checks must preserve the DB inode's POSIX locks")
+            let process = try fixture(mode: "probe-writer-lock")
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 74, "Independent writer must still receive SQLITE_BUSY")
+        }
+        let process = try fixture(mode: "probe-writer-lock")
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "Lock must be released normally after COMMIT")
+        XCTAssertEqual(try database.hosts().count, 2)
+        try database.queue.read { XCTAssertEqual(try String.fetchOne($0, sql: "PRAGMA integrity_check"), "ok") }
+    }
+
     func testFreshDatabaseConcurrentProcessInitializationAndMigration() throws {
         try database.close(); database = nil
         try FileManager.default.removeItem(at: directory)

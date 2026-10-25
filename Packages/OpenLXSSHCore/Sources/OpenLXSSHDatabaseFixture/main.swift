@@ -37,6 +37,31 @@ do {
             Thread.sleep(forTimeInterval: 0.4)
         }
         try queue.close()
+    case "probe-posix-lock":
+        let fd = open(directory.appendingPathComponent("OpenLXSSH.sqlite").path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw RepositoryError.unsafeDatabaseLocation }
+        defer { Darwin.close(fd) }
+        // SQLite's PENDING/RESERVED/SHARED byte range. F_GETLK observes the parent's
+        // actual POSIX inode lock independently of WAL's additional SHM writer locks.
+        var query = Darwin.flock()
+        query.l_start = 0x40000000; query.l_len = 512
+        query.l_type = Int16(F_WRLCK); query.l_whence = Int16(SEEK_SET)
+        guard fcntl(fd, F_GETLK, &query) == 0 else { throw RepositoryError.unsafeDatabaseLocation }
+        if query.l_type != Int16(F_UNLCK) { exit(74) }
+    case "probe-writer-lock":
+        // Parent holds a real SQLite write transaction and runs Core's security checks.
+        // A second process must still see SQLITE_BUSY, not acquire a released POSIX lock.
+        do {
+            var config = Configuration()
+            config.journalMode = .wal; config.busyMode = .immediateError
+            let queue = try DatabaseQueue(path: directory.appendingPathComponent("OpenLXSSH.sqlite").path, configuration: config)
+            defer { try? queue.close() }
+            try queue.write { db in
+                try db.execute(sql: "INSERT INTO hosts(id, name, address, username, authentication) VALUES (?, 'lock-probe', 'test.invalid', 'fixture', 'password')", arguments: [UUID()])
+            }
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_BUSY {
+            exit(74)
+        }
     case "abrupt-commit":
         let database = try OpenLXSSHDatabase(directory: directory)
         try database.addHost(HostConfiguration(id: UUID(uuidString: "77777777-7777-4777-8777-777777777777")!, name: "committed", address: "test.invalid", username: "fixture"))

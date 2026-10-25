@@ -147,52 +147,114 @@ public struct DirectSSHConfiguration: Sendable {
 }
 
 /// Only writes its one fixed configuration file in its own UUID subdirectory.
-/// Does not implement a second trust store or modify ~/.ssh.
+/// Does not implement a second trust store or modify ~/.ssh. Descriptor checks
+/// reject extended ACLs; they are not a sandbox against same-UID mutation after
+/// validation (system ssh still opens its configuration and key by path).
 final class SessionWorkspace {
     let directory: String
+    private let rootPath: String
     private let root: Int32
     private let descriptor: Int32
+    private let configurationDescriptor: Int32
     private let name: String
-    init(root path: AbsolutePath, text: String) throws {
-        root = open(path.value, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        var metadata = stat()
-        guard root >= 0 else { throw TransportError.invalidConfiguration }
-        guard fstat(root, &metadata) == 0, metadata.st_uid == getuid(), metadata.st_mode & 0o7777 == 0o700 else {
-            Darwin.close(root); throw TransportError.invalidConfiguration
-        }
-        name = "session-" + UUID().uuidString
-        guard mkdirat(root, name, 0o700) == 0 else { Darwin.close(root); throw TransportError.invalidConfiguration }
-        directory = path.value + "/" + name
-        descriptor = openat(root, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { _ = unlinkat(root, name, AT_REMOVEDIR); Darwin.close(root); throw TransportError.invalidConfiguration }
-        let fd = openat(descriptor, "ssh_config", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else {
-            Darwin.close(descriptor); _ = unlinkat(root, name, AT_REMOVEDIR); Darwin.close(root); throw TransportError.invalidConfiguration
-        }
-        defer { Darwin.close(fd) }
-        var succeeded = false
+
+    enum Checkpoint { case directoryOpened, fileOpened, fileWritten }
+
+    convenience init(root path: AbsolutePath, text: String) throws {
+        try self.init(root: path, text: text, checkpoint: { _, _ in })
+    }
+    #if TRANSPORT_HOST_PROBE
+    // Deterministic real-filesystem race/error tests; unavailable to shipping
+    // clients and does not replace any production security check.
+    convenience init(probeRoot path: AbsolutePath, text: String, checkpoint: (Checkpoint, String) throws -> Void) throws {
+        try self.init(root: path, text: text, checkpoint: checkpoint)
+    }
+    #endif
+    private init(root path: AbsolutePath, text: String, checkpoint: (Checkpoint, String) throws -> Void) throws {
+        let openedRoot = open(path.value, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard openedRoot >= 0 else { throw TransportError.invalidConfiguration }
+        var openedDirectory: Int32 = -1, openedConfiguration: Int32 = -1
+        var createdDirectory = false, succeeded = false
+        let sessionName = "session-" + UUID().uuidString
+        let sessionDirectory = path.value + "/" + sessionName
         defer {
             if !succeeded {
-                _ = unlinkat(descriptor, "ssh_config", 0); Darwin.close(descriptor)
-                _ = unlinkat(root, name, AT_REMOVEDIR); Darwin.close(root)
+                if openedConfiguration >= 0 {
+                    Darwin.close(openedConfiguration)
+                    _ = unlinkat(openedDirectory, "ssh_config", 0)
+                }
+                if openedDirectory >= 0 { Darwin.close(openedDirectory) }
+                if createdDirectory { _ = unlinkat(openedRoot, sessionName, AT_REMOVEDIR) }
+                Darwin.close(openedRoot)
             }
         }
+        // A root ACL must fail before creating even a UUID directory. Do not
+        // chmod or remove ACLs to make an unsafe pre-existing root acceptable.
+        try TransportFileSecurity.directory(openedRoot)
+        guard mkdirat(openedRoot, sessionName, 0o700) == 0 else { throw TransportError.invalidConfiguration }
+        createdDirectory = true
+        openedDirectory = openat(openedRoot, sessionName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard openedDirectory >= 0 else { throw TransportError.invalidConfiguration }
+        try checkpoint(.directoryOpened, sessionDirectory)
+        // Reject inherited/new ACEs on the UUID directory before creating a file.
+        try TransportFileSecurity.directory(openedRoot)
+        try TransportFileSecurity.directory(openedDirectory)
+        openedConfiguration = openat(openedDirectory, "ssh_config", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard openedConfiguration >= 0 else { throw TransportError.invalidConfiguration }
+        try checkpoint(.fileOpened, sessionDirectory)
+        // Creating with mode0600 does not remove inherited ACEs. Validate the
+        // actual file and both directories before writing the first byte.
+        try Self.validate(rootPath: path.value, name: sessionName, root: openedRoot,
+                          directory: openedDirectory, configuration: openedConfiguration)
         try Data(text.utf8).withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
-                let n = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                let n = Darwin.write(openedConfiguration, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
                 if n < 0 && errno == EINTR { continue }
                 guard n > 0 else { throw TransportError.invalidConfiguration }; offset += n
             }
         }
-        guard fsync(fd) == 0 else { throw TransportError.invalidConfiguration }
+        guard fsync(openedConfiguration) == 0 else { throw TransportError.invalidConfiguration }
+        try checkpoint(.fileWritten, sessionDirectory)
+        try Self.validate(rootPath: path.value, name: sessionName, root: openedRoot,
+                          directory: openedDirectory, configuration: openedConfiguration)
+        rootPath = path.value; root = openedRoot; descriptor = openedDirectory
+        configurationDescriptor = openedConfiguration; name = sessionName; directory = sessionDirectory
         succeeded = true
     }
+
+    func validateForLaunch(authentication: SSHAuthentication = .init()) throws {
+        try Self.validate(rootPath: rootPath, name: name, root: root, directory: descriptor, configuration: configurationDescriptor)
+        // KeyStore validation happened earlier; check again immediately before
+        // launch in case a managed key acquired an ACL or unsafe mode meanwhile.
+        try TransportFileSecurity.validateAuthentication(authentication)
+    }
+
+    private static func validate(rootPath: String, name: String, root: Int32, directory: Int32, configuration: Int32) throws {
+        let rootMetadata = try TransportFileSecurity.directory(root)
+        let directoryMetadata = try TransportFileSecurity.directory(directory)
+        let configurationMetadata = try TransportFileSecurity.regularFile(configuration)
+        // ssh consumes pathnames, so also reject replaced/unlinked objects.
+        let currentRoot = open(rootPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard currentRoot >= 0 else { throw TransportError.invalidConfiguration }
+        defer { Darwin.close(currentRoot) }
+        guard TransportFileSecurity.sameObject(rootMetadata, try TransportFileSecurity.directory(currentRoot)) else { throw TransportError.invalidConfiguration }
+        let currentDirectory = openat(currentRoot, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard currentDirectory >= 0 else { throw TransportError.invalidConfiguration }
+        defer { Darwin.close(currentDirectory) }
+        guard TransportFileSecurity.sameObject(directoryMetadata, try TransportFileSecurity.directory(currentDirectory)) else { throw TransportError.invalidConfiguration }
+        let currentConfiguration = openat(currentDirectory, "ssh_config", O_EVTONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard currentConfiguration >= 0 else { throw TransportError.invalidConfiguration }
+        defer { Darwin.close(currentConfiguration) }
+        guard TransportFileSecurity.sameObject(configurationMetadata, try TransportFileSecurity.regularFile(currentConfiguration)) else { throw TransportError.invalidConfiguration }
+    }
+
     func invocation(preview: Bool = false) -> DirectSSHInvocation {
         DirectSSHInvocation(executable: "/usr/bin/ssh", arguments: (preview ? ["-G"] : []) + ["-F", directory + "/ssh_config", "--", DirectSSHConfiguration.destination],
                             environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/sh", "TERM": "xterm-256color", "LANG": "en_US.UTF-8", "LC_CTYPE": "UTF-8", "HOME": directory, "TMPDIR": directory])
     }
     deinit {
+        Darwin.close(configurationDescriptor)
         _ = unlinkat(descriptor, "ssh_config", 0); Darwin.close(descriptor)
         _ = unlinkat(root, name, AT_REMOVEDIR); Darwin.close(root)
     }

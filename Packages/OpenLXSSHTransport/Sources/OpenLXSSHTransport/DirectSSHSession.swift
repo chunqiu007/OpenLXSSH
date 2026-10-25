@@ -172,11 +172,7 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
         let trustStore = trustStore, root = sessionDirectory
         let workspace = try await Task.detached {
             let controlled = try DirectSSHConfiguration(configuration: configuration, trustStore: trustStore, trustedKeys: keys, helper: helper)
-            if case .privateKey(let path, _) = configuration.authentication.method {
-                var metadata = stat()
-                guard lstat(path.value, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG,
-                      metadata.st_uid == getuid(), metadata.st_mode & 0o7777 == 0o600, metadata.st_nlink == 1 else { throw TransportError.invalidConfiguration }
-            }
+            try TransportFileSecurity.validateAuthentication(configuration.authentication)
             return try SessionWorkspace(root: root, text: controlled.text)
         }.value
         guard isCurrent(current) else { throw TransportError.stale }
@@ -200,6 +196,10 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
             else { self.stop(failure: error == .timeout ? .authenticationTimeout : .authenticationFailed) }
         }
         do {
+            // No suspension between this final metadata/ACL check and spawning
+            // the sole SwiftTerm-owned PTY process. This reduces, but cannot
+            // eliminate, pathname races from another process with the same UID.
+            try workspace.validateForLaunch(authentication: configuration.authentication)
             try startOwned(current, invocation: invocation, directory: workspace.directory) { pid in try broker.registerCreatedProcess(pid) }
         } catch {
             broker.close(); self.broker = nil

@@ -41,6 +41,16 @@ swift test --package-path /Users/liuwenshuo/Desktop/OpenLXSSH/Packages/OpenLXSSH
 
 验证日志及summary：包 `.build/verification/` 中 build-and-test-summary.json、verification-summary.json、fresh-start-final.json、wal-metrics-final.json、static-scan.json。私有测试目录自动清理，不连接服务器、不读用户数据。
 
+## P7 ACL 加固复验
+
+后续独立审查确认mode-only未覆盖扩展ACL：可遍历祖先/继承everyone读写下，SQLite0600仍获写权限。Core新增DatabaseFileACL，以严格 `getattrlistat(..., FSOPT_NOFOLLOW | FSOPT_REPORT_FULLSIZE)` 查询已有DB/lock/sidecar，根FD用fgetattrlist；绝不为校验额外open/close已有SQLite inode。校验完整返回长度、attrreference边界、dev/inode；只接受成功且ACL字节长度0，任意ACE/deny-only/显式empty均拒绝，查询失败或格式异常也拒绝，不改变用户ACL。
+
+新leaf在数据库/锁等元数据创建前拒绝危险继承ACL；既有所有目标先核ACL再普通mode修整；运行期公开读写与事务提交前沿用原validate入口。修前6项/47断言失败证据保留。工程师Debug/Release/TSan各48项通过，额外跨进程锁/迁移/恢复15轮通过。
+
+主管阅读6个实际修改文件、严格查询与新14项测试，独立完整Release48项退出0；日志 `.build/verification/p7-acl-r1-primary-release48.log`。新增独立F_GETLK观察SQLite PENDING/RESERVED/SHARED字节锁，检查后父进程POSIX锁仍在，实际child writer仍SQLITE_BUSY，正常COMMIT后可写；不再单凭WAL SHM锁推断DB锁没释放。无关文件ACL/mode保持，提交前ACL故障真实回滚。
+
+当前为macOS15/APFS本地证据，unsupported查询或异常格式的文件系统保守拒绝，非原子隔离，目标macOS26仍未实跑。App父目录、跨存储提交/补偿与最终签名App统一回归另行进行。
+
 ## 未覆盖
 
 异常子进程退出不是机器掉电/磁盘损坏。真实资源worker、Keychain/私钥跨存储一致性、UI交互、macOS26运行、正式安装/升级/双机都未验证。核心min15为宿主可测，正式App必须min26。Core历史上限100000而当前终端50000；UI整合须统一有效上限，不能静默截断用户设置。

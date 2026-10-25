@@ -18,6 +18,16 @@
 
 工程师Debug/Release各23项0失败、FD45→45，默认min26两配置编译对象/helper元数据minos26.0/SDK26.2。日志 `.build/verification/`。readpass用真实系统ssh-keygen+一次性key，不是ssh服务器认证，事件fixture不是远端认证。
 
+## P7 会话配置与私钥 ACL 复验
+
+原mode-only会话目录/ssh_config接受危险继承ACL，修前真实无网络ssh-G显示可被改成StrictHostKeyChecking false/ProxyCommand /usr/bin/true（未执行代理）。P7-TRANSPORT-ACL-R1新增descriptor-only FileSecurity，用fstatx/filesec成功且MODE populated与ACL absent判断，任意ACE或查询失败拒绝，不改ACL。
+
+Sessions根在mkdir UUID前核对，UUID在创建配置前核，config与root/UUID在写前后复验，保留configFD与inode，最终spawn前无suspension重验路径对应对象、ACL及私钥元数据。私钥用O_EVTONLY|O_NONBLOCK|O_NOFOLLOW，不读取密钥内容；FIFO测试曾真实阻塞，sample定位后添加NONBLOCK，失败证据和修复结果分别保留。公共API、PTY唯一owner、严格签名helper与白名单预算不变。
+
+工程师双配置各35项（原23+新12ACL）、严格签名离线IPC、min26双配置编译均退出0。主管阅读4文件实际差异和12新tests，在包稳定后独立执行verify.py release退出0：35项、6真实系统readpass、4签名事件、10独立postexit lookup、runtime依赖检查通过；日志 `.build/verification/p7-acl-primary-release-verify.log` 及本轮release-test/ipc日志。普通20次workspace/ssh-G+FD与cleanup、新继承/运行期/写前后/替换/queryerror等边界通过。
+
+这减少了路径与ACL窗口，不是对同UID进程的完整sandbox。App整体、macOS26运行与真实SSH认证仍未验收；本轮系统组件调用均离线。
+
 ## 未完成
 
 无授权服务器，四类认证/MFA/审批/握手后密钥变化/嵌套SSH均未测；macOS26自动白名单与运行、Sandbox、DeveloperID/公证、人工IME/TUI/长期稳定性未验。正式包尚未全量移植历史different-signer/queued-exec/complex/OOL矩阵，集成回归须补。不能以此或App构建宣布Goal完成。
