@@ -55,8 +55,9 @@
 
 - 基线 commit hash：`4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`（`chore: establish OpenLXSSH git baseline`）。
 - 基线文件清单（`git ls-files`）：`.gitignore`、`AGENTS.md`、`ENGINEERING_STATE.md`、`ZCODE_SETUP.md`、`docs/acceptance.md`、`docs/architecture.md`、`docs/execution-plan.md`、`docs/reports/p0-01-environment.md`、`docs/reports/p0-02-git-baseline.md`、`docs/requirements.md`。
-- `git show --stat --oneline --decorate HEAD`：`4ccebe7 (HEAD -> main) chore: establish OpenLXSSH git baseline`，10 files changed，1098 insertions。
-- 提交后状态：`git status --short --branch` 输出 `## main`，无未提交或未跟踪文件；`.DS_Store` 仍以忽略文件存在，不影响干净工作区。
+- `git show --stat --oneline --decorate 4ccebe7`：`4ccebe7 (main) chore: establish OpenLXSSH git baseline`，10 files changed，1098 insertions。
+- 基线之后的文档记录提交：`333ec8e docs: record P0-02 baseline verification`、`5edb20e docs: mark P0-02 ready for review`；两次提交仅更新本报告和 `ENGINEERING_STATE.md` 的实际验证记录，不改变基线文件范围或 `.gitignore`。
+- 最终 `git status --short --branch`：输出 `## main`，无未提交或未跟踪文件；`.DS_Store` 仍以忽略文件存在，不影响干净工作区。
 - remote：`git remote -v` 无输出，`git config --get-regexp '^(remote\\.|branch\\.)'` 无输出；未配置 remote，也未执行 push。
 
 ## 5. 限制与后续边界
