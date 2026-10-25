@@ -61,6 +61,7 @@ struct AppIssue: Identifiable, Equatable {
 
 @MainActor final class AppModel: ObservableObject {
     let repository: any AppRepositoryProtocol
+    let security: SecurityCoordinator
     private let sessionRouter: any SessionRouting
     @Published private(set) var hosts: [HostConfiguration] = []
     @Published private(set) var folders: [HostFolder] = []
@@ -76,8 +77,9 @@ struct AppIssue: Identifiable, Equatable {
     @Published private(set) var connectionNotice: SessionRouteResult?
     private var generation = 0
 
-    init(repository: any AppRepositoryProtocol, sessionRouter: any SessionRouting = UnavailableSessionRouter()) {
+    init(repository: any AppRepositoryProtocol, sessionRouter: any SessionRouting = UnavailableSessionRouter(), security: SecurityCoordinator? = nil) {
         self.repository = repository; self.sessionRouter = sessionRouter
+        self.security = security ?? SecurityCoordinator(repository: repository)
     }
 
     var selectedHost: HostConfiguration? { hosts.first { $0.id == selectedHostID } }
@@ -117,6 +119,16 @@ struct AppIssue: Identifiable, Equatable {
 
     @discardableResult func saveHost(_ host: HostConfiguration, isNew: Bool) async -> Bool {
         await write { try await repository.apply([isNew ? .insertHost(host) : .updateHost(host)]) }
+    }
+    @discardableResult func saveHostSecurely(_ host: HostConfiguration, isNew: Bool, password: PasswordChoice) async -> Bool {
+        guard !isWriting else { return false }
+        isWriting = true; defer { isWriting = false }
+        do {
+            let outcome = try await security.saveHost(host, isNew: isNew, password: password)
+            let success = await reload()
+            if case .savedWithCleanupPending = outcome { issue = .security(SecurityUIFailure.pendingCleanup) }
+            return success
+        } catch { issue = .security(error); return false }
     }
     @discardableResult func deleteHost(_ id: UUID) async -> Bool {
         await write { try await repository.apply([.deleteHost(id)]) }

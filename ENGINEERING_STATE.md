@@ -23,7 +23,7 @@
 | P4-DATA-A/R1 | 真实DB主管29全套+新5定向通过；工程师双配置34；迁移/WAL/并发/共享保护/受检口令解除 | Packages/OpenLXSSHCore；docs/reports/p4-data-core.md |
 | P4-APP-A | 主管verify-app all通过：正式双配置min26编译，HostProbe13测试/GUI14+8；当时未接transport | Application/OpenLXSSH、OpenLXSSH.xcodeproj；docs/reports/p4-native-app.md |
 | P4-CREDENTIAL-A | 主管20项+真实签名CRUD通过，自建Keychain锁回退/解锁恢复/default-searchlist不变 | Packages/OpenLXSSHSecurity；docs/reports/p4-security-core.md |
-| P4-SECURITY-UI | 主管已独立26测试、GUI15+8、真实签名App保存/跨启动读取/清理通过；R1私钥忘记口令/未知intent核对/提交后清理结果修正中 | App安全4文件/测试/脚本 |
+| P4-SECURITY-UI / R1-RESUME | 主管独立32测试、GUI15+8+7、真实签名App8+15+5检查通过；AppKit owner修复/口令解除/恢复核对/提交后cleanup语义已收口 | App安全文件；docs/reports/p4-security-ui.md |
 | P5-TRUST-A | 主管30项通过，正式共享信任，PID-safe固定工具runner；SSH/SFTP只依赖同一library | Packages/OpenLXSSHTrust；docs/reports/p5-shared-trust.md |
 | P5-TRANSPORT-A/R1 | 主管Release23测试+6真实系统readpass/4签名event/10postexit通过；字体6～72、保活0～3600、三色外观修正；真实SSH/mac26未验 | Packages/OpenLXSSHTransport；docs/reports/p5-transport-core.md |
 | P3-LOCAL/R1 | 主管完整46矩阵通过，OpenSSL改3.5.9LTS、typedTCP/同握手信任/显式风险策略；真实SFTP未测 | Experiments/P3；docs/reports/p3-local-files.md |

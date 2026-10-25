@@ -3,20 +3,15 @@ import SwiftUI
 import OpenLXSSHCore
 
 private struct EditorPresentation: Identifiable {
-    enum Content { case host(HostConfiguration?), folder(HostFolder?), settings }
+    enum Content { case host(HostConfiguration?), folder(HostFolder?), settings, security, deletion(DeletionTarget) }
     let id = UUID()
     let content: Content
 }
-private struct Deletion: Identifiable {
-    enum Target { case host(HostConfiguration), folder(HostFolder) }
-    let id = UUID()
-    let target: Target
-}
+private enum DeletionTarget { case host(HostConfiguration), folder(HostFolder) }
 
 struct MainView: View {
     @ObservedObject var model: AppModel
     @State private var editor: EditorPresentation?
-    @State private var deletion: Deletion?
     private var title: String {
         switch model.selection {
         case .all: "所有主机"
@@ -67,41 +62,18 @@ struct MainView: View {
         .task { if !model.didLoad { await model.reload() } }
         .onChange(of: model.search) { _, _ in Task { await model.reload() } }
         .onChange(of: model.selection) { _, _ in Task { await model.reload() } }
-        .sheet(item: $editor) { presentation in
+        .nativeSheet(item: $editor) { presentation in
             switch presentation.content {
             case .host(let host):
                 HostEditor(model: model, host: host, folderID: selectedFolder?.id) { editor = nil }
             case .folder(let folder): FolderEditor(model: model, folder: folder) { editor = nil }
             case .settings: SettingsEditor(model: model) { editor = nil }
+            case .security: SecurityManagerView(app: model) { editor = nil }
+            case .deletion(let target): HostDeletionView(model: model, target: target) { editor = nil }
             }
         }
-        .sheet(item: $deletion) { value in
-            VStack(alignment: .leading, spacing: 18) {
-                Text("确认删除").font(.title2).bold()
-                switch value.target {
-                case .host(let host):
-                    Text("删除主机“\(host.name)”的配置？共享的私钥与凭据不会被删除。")
-                case .folder(let folder): Text("删除文件夹“\(folder.name)”？其中主机会移至未分组，不会删除主机。")
-                }
-                HStack {
-                    Spacer()
-                    NativeButton(title: "取消", id: "delete.cancel") { deletion = nil }.fixedSize()
-                    NativeButton(title: "删除", id: "delete.confirm", enabled: !model.isWriting) {
-                        Task {
-                            let success: Bool
-                            switch value.target {
-                            case .host(let host): success = await model.deleteHost(host.id)
-                            case .folder(let folder): success = await model.deleteFolder(folder.id)
-                            }
-                            if success { deletion = nil }
-                        }
-                    }.fixedSize()
-                }
-                IssueView(issue: model.issue) { model.issue = nil }
-            }.padding(24).frame(width: 430)
-        }
         .overlay(alignment: .bottom) {
-            if editor == nil, deletion == nil, let issue = model.issue {
+            if editor == nil, let issue = model.issue {
                 IssueView(issue: issue) { model.issue = nil }.padding().background(.regularMaterial).padding()
             }
         }
@@ -127,10 +99,11 @@ struct MainView: View {
             if let folder = selectedFolder {
                 NativeButton(title: "重命名文件夹", id: "folder.edit", enabled: !model.isWriting) { editor = EditorPresentation(content: .folder(folder)) }.fixedSize()
                 NativeButton(title: "复制文件夹及主机", id: "folder.copy", enabled: !model.isWriting) { Task { await model.copyFolder(folder.id) } }.fixedSize()
-                NativeButton(title: "删除文件夹", id: "folder.delete", enabled: !model.isWriting) { deletion = Deletion(target: .folder(folder)) }.fixedSize()
+                NativeButton(title: "删除文件夹", id: "folder.delete", enabled: !model.isWriting) { editor = EditorPresentation(content: .deletion(.folder(folder))) }.fixedSize()
             }
             Spacer(minLength: 8)
             Divider()
+            NativeButton(title: "密钥与凭据…", id: "security.open", enabled: model.didLoad) { editor = EditorPresentation(content: .security) }.fixedSize()
             NativeButton(title: "设置…", id: "settings.open", enabled: model.didLoad) { editor = EditorPresentation(content: .settings) }.fixedSize()
             Text("本地配置 · SSH 尚未集成").font(.caption2).foregroundStyle(.secondary)
         }.padding(16).background(Color(nsColor: .windowBackgroundColor))
@@ -156,7 +129,7 @@ struct MainView: View {
                     NativeButton(title: "复制", id: "host.copy", enabled: !model.isWriting) { Task { await model.copyHost(host.id) } }.fixedSize()
                     NativeButton(title: host.isFavorite ? "取消收藏" : "收藏", id: "host.favorite", enabled: !model.isWriting) { Task { await model.favorite(host) } }.fixedSize()
                 }
-                NativeButton(title: "删除主机…", id: "host.delete", enabled: !model.isWriting) { deletion = Deletion(target: .host(host)) }.fixedSize()
+                NativeButton(title: "删除主机…", id: "host.delete", enabled: !model.isWriting) { editor = EditorPresentation(content: .deletion(.host(host))) }.fixedSize()
             } else {
                 Spacer()
                 Image(systemName: "rectangle.and.text.magnifyingglass").font(.largeTitle).foregroundStyle(.secondary)
@@ -175,6 +148,36 @@ struct MainView: View {
             }
             Spacer()
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct HostDeletionView: View {
+    @ObservedObject var model: AppModel
+    let target: DeletionTarget
+    var dismiss: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("确认删除").font(.title2).bold()
+            switch target {
+            case .host(let host): Text("删除主机“\(host.name)”的配置？共享的私钥与凭据不会被删除。")
+            case .folder(let folder): Text("删除文件夹“\(folder.name)”？其中主机会移至未分组，不会删除主机。")
+            }
+            HStack {
+                Spacer()
+                NativeButton(title: "取消", id: "delete.cancel") { dismiss() }.fixedSize()
+                NativeButton(title: "删除", id: "delete.confirm", enabled: !model.isWriting) {
+                    Task {
+                        let success: Bool
+                        switch target {
+                        case .host(let host): success = await model.deleteHost(host.id)
+                        case .folder(let folder): success = await model.deleteFolder(folder.id)
+                        }
+                        if success { dismiss() }
+                    }
+                }.fixedSize()
+            }
+            IssueView(issue: model.issue) { model.issue = nil }
+        }.padding(24).frame(width: 430)
     }
 }
 

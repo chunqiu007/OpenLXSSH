@@ -15,6 +15,23 @@ protocol AppRepositoryProtocol: Sendable {
     func copyHost(id: UUID) async throws -> HostConfiguration
     func copyFolder(id: UUID) async throws -> HostFolder
     func close() async throws
+    func securityMetadata() async throws -> SecurityMetadata
+    func completeCleanup(_ id: UUID) async throws
+    func recordCleanupFailure(_ id: UUID, failure: CleanupFailure) async throws
+}
+
+struct SecurityMetadata: Sendable {
+    var hosts: [HostConfiguration]
+    var keys: [ManagedKeyReference]
+    var credentials: [OpenLXSSHCore.CredentialReference]
+    var tickets: [CleanupTicket]
+    var completedTickets: [CleanupTicket] = []
+}
+
+extension AppRepositoryProtocol {
+    func securityMetadata() async throws -> SecurityMetadata { throw RepositoryError.notFound }
+    func completeCleanup(_ id: UUID) async throws { throw RepositoryError.notFound }
+    func recordCleanupFailure(_ id: UUID, failure: CleanupFailure) async throws { throw RepositoryError.notFound }
 }
 
 enum AppDataLocation: Sendable {
@@ -36,8 +53,8 @@ enum AppDataLocation: Sendable {
             try Self.ensureAppParent(in: fd)
             return base.appendingPathComponent("OpenLXSSH", isDirectory: true).appendingPathComponent("Data", isDirectory: true)
         case .isolated(let supplied):
-            let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL
-            let parent = supplied.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+            let temporary = try Self.canonical(FileManager.default.temporaryDirectory)
+            let parent = try Self.canonical(supplied.deletingLastPathComponent())
             let name = supplied.lastPathComponent
             guard supplied.isFileURL, parent == temporary,
                   name.hasPrefix("OpenLXSSH-AppSmoke-") || name.hasPrefix("OpenLXSSH-AppTests-") else {
@@ -52,6 +69,12 @@ enum AppDataLocation: Sendable {
             }
             return supplied.appendingPathComponent("Data", isDirectory: true)
         }
+    }
+
+    static func canonical(_ url: URL) throws -> URL {
+        guard let path = realpath(url.path, nil) else { throw RepositoryError.unsafeDatabaseLocation }
+        defer { free(path) }
+        return URL(fileURLWithPath: String(cString: path), isDirectory: true)
     }
 
     private static func ensureAppParent(in parent: Int32) throws {
@@ -115,6 +138,15 @@ actor AppRepository: AppRepositoryProtocol {
         while prefix.utf8.count + suffix.utf8.count > 256 { prefix.removeLast() }
         return prefix + suffix
     }
+
+    func securityMetadata() async throws -> SecurityMetadata {
+        let db = try opened()
+        let tickets = try db.cleanupTickets(includeCompleted: true)
+        return SecurityMetadata(hosts: try db.hosts(), keys: try db.keys(), credentials: try db.credentials(),
+                                tickets: tickets.filter { $0.state == .pending }, completedTickets: tickets.filter { $0.state == .completed })
+    }
+    func completeCleanup(_ id: UUID) async throws { try opened().completeCleanup(ticketID: id) }
+    func recordCleanupFailure(_ id: UUID, failure: CleanupFailure) async throws { try opened().recordCleanupFailure(ticketID: id, failure: failure) }
 
     func close() throws {
         try database?.close()

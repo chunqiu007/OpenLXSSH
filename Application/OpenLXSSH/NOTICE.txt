@@ -2,3 +2,6 @@ OpenLXSSH includes OpenLXSSHCore and GRDB.swift 7.11.1, revision b83108d10f42680
 Source: https://github.com/groue/GRDB.swift
 License: MIT; see GRDB-LICENSE.txt in this bundle.
 SQLite is supplied by macOS, not by a developer-machine runtime library.
+OpenLXSSHSecurity is a local first-party package using system Security.framework and /usr/bin/ssh-keygen.
+The App explicitly uses local file-based Keychain with system creator ACL, no cloud synchronization.
+Screen lock does not imply Keychain lock. No private key export or backup is provided.

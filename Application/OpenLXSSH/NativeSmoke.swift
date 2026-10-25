@@ -2,6 +2,7 @@
 import AppKit
 import Foundation
 import OpenLXSSHCore
+import OpenLXSSHSecurity
 
 /// HostProbe-only in-process GUI exercise. All mutations go through rendered native controls
 /// and their target/action paths, and all files are confined to a marked temporary test root.
@@ -9,19 +10,23 @@ import OpenLXSSHCore
     struct Options {
         let directory: URL
         let phase: String
+        let namespace: UUID
         init?(_ arguments: [String]) throws {
             guard arguments.contains("--self-test-data-dir") else {
                 guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw Failure.invalidArguments }
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["exercise", "reopen"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["exercise", "reopen", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
             guard try String(contentsOf: directory.appendingPathComponent(".openlxssh-app-smoke"), encoding: .utf8) == "OpenLXSSH isolated GUI smoke\n" else {
                 throw Failure.invalidArguments
             }
+            let namespaceFile = directory.appendingPathComponent("test-namespace.txt")
+            if let text = try? String(contentsOf: namespaceFile, encoding: .utf8), let value = UUID(uuidString: text.trimmingCharacters(in: .whitespacesAndNewlines)) { namespace = value }
+            else { namespace = UUID(); try namespace.uuidString.write(to: namespaceFile, atomically: true, encoding: .utf8) }
         }
     }
     enum Failure: Error { case invalidArguments, timeout(String), check(String), missing(String) }
@@ -48,7 +53,9 @@ import OpenLXSSHCore
             try check("native-main-window", delegate.mainWindow?.isVisible == true)
             try check("startup-no-session", model.connectionNotice == nil)
             if options.phase == "exercise" { try await exercise() }
-            else { try await verifyRelaunch() }
+            else if options.phase == "reopen" { try await verifyRelaunch() }
+            else if options.phase == "security-sheets" { try await securitySheets() }
+            else { try await securityExercise() }
             try finish(success: true, failure: nil)
             // Leave this Swift MainActor job before AppKit enters its termination loop.
             // This mirrors a normal menu action rather than nesting terminate inside a task.
@@ -184,9 +191,180 @@ import OpenLXSSHCore
         try capture("reopen-window.png")
     }
 
-    private func windows() -> [NSWindow] {
-        guard let window = delegate.mainWindow else { return [] }
-        return [window.attachedSheet, window].compactMap { $0 }
+    private func securitySheets() async throws {
+        try await click("security.open")
+        try await click("keys.generate")
+        try await click("key.protection")
+        try await click("key.create")
+        try await wait("sheet-key-created") { self.model.keys.count == 1 }
+        try await click("security.done")
+        try await wait("sheet-manager-closed-after-create") { self.delegate.mainWindow?.attachedSheet == nil }
+        try check("sheet-manager-closed-after-create", true)
+        let key = try await model.repository.securityMetadata().keys[0]
+        try await click("host.add")
+        try await type("host.name", "Sheet lifecycle fixture")
+        try await type("host.address", "sheet.invalid")
+        try await type("host.username", "fixture")
+        try await popup("host.authentication", value: "privateKey")
+        try await popup("host.key", value: key.id.uuidString)
+        try await click("host.save")
+        try await wait("sheet-host-editor-closed") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        try check("sheet-host-editor-closed", true)
+        try await click("security.open")
+        try await click("key.public." + key.id.uuidString)
+        try await click("public.close")
+        try await click("key.delete." + key.id.uuidString)
+        try await click("key.delete.confirm")
+        try await wait("sheet-shared-key-error-visible") { self.find("issue.dismiss", as: NSButton.self) != nil }
+        try check("sheet-shared-key-error-visible", true)
+        try await click("key.delete.cancel")
+        let linkedHost = try await model.repository.securityMetadata().hosts[0]
+        try await model.repository.apply([.deleteHost(linkedHost.id)])
+        try await click("security.refresh")
+        try await click("key.delete." + key.id.uuidString)
+        try await click("key.delete.confirm")
+        try await wait("sheet-key-deleted") { self.find("key.delete.confirm", as: NSButton.self) == nil }
+        try await click("security.done")
+        try await wait("sheet-manager-closed-after-delete") { self.delegate.mainWindow?.attachedSheet == nil }
+        try check("sheet-manager-closed-after-delete", true)
+        try check("sheet-key-metadata-deleted", try await model.repository.securityMetadata().keys.isEmpty)
+    }
+
+    private func securityExercise() async throws {
+        if options.phase == "security" {
+            try check("security-fresh", model.hosts.isEmpty)
+            try await click("security.open")
+            try await click("keys.generate")
+            try await type("key.passphrase", UUID().uuidString)
+            // Use one ephemeral string solely in secure fields, never in reports/arguments/files.
+            try await click("key.editor.cancel")
+            try await click("keys.generate")
+            let phrase = UUID().uuidString
+            try await type("key.passphrase", phrase)
+            try await type("key.confirm", phrase)
+            try await click("key.remember")
+            try await click("key.create")
+            try await wait("generated-key") { self.model.keys.count == 1 }
+            try await click("security.done")
+            try await wait("security-manager-dismissed-after-key") { self.delegate.mainWindow?.attachedSheet == nil }
+            try check("security-manager-dismissed-after-key", true)
+            try await click("host.add")
+            try await type("host.name", "Security GUI host")
+            try await type("host.address", "security-gui.invalid")
+            try await type("host.username", "fixture")
+            try await type("host.password", UUID().uuidString)
+            try check("secure-password-control", find("host.password", as: NSSecureTextField.self) != nil)
+            try await click("host.remember")
+            try await click("host.save")
+            try await wait("credential-committed") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+            try check("host-remember-explicit", model.hosts[0].savePasswordAuthorized && model.hosts[0].credentialRef != nil)
+            try await selectFirstHost()
+            try await click("host.copy")
+            try await wait("shared-password-copy") { self.model.hosts.count == 2 }
+            try await click("security.open")
+            let key = try await model.repository.securityMetadata().keys[0]
+            try await click("key.public." + key.id.uuidString)
+            try await click("public.copy")
+            try await click("public.close")
+            try await click("key.copy." + key.id.uuidString)
+            let publicKey = try await model.security.publicKey(key.id)
+            try check("clipboard-public-only", NSPasteboard.general.string(forType: .string) == publicKey.copyString)
+            try capture("security-manager.png")
+            try await click("security.done")
+            try await wait("security-manager-dismissed-after-public") { self.delegate.mainWindow?.attachedSheet == nil }
+            try check("security-manager-dismissed-after-public", true)
+            // Simulate an interrupted, unconfirmed creation only after releasing this
+            // process's KeyStore/journal. The next real App launch must load the record.
+            try await model.security.close()
+            let unrelated = options.directory.appendingPathComponent("preserved-recovery-fixture")
+            try Data("preserve".utf8).write(to: unrelated)
+            let journal = try SecurityJournal(parent: AppDataLocation.canonical(options.directory))
+            try journal.set(.init(id: UUID(), kind: .password, state: .prepared))
+        } else if options.phase == "security-read" {
+            let metadata = try await model.repository.securityMetadata()
+            try check("security-restart-metadata", metadata.hosts.count == 2 && metadata.keys.count == 1 && metadata.credentials.count == 2)
+            for credential in metadata.credentials {
+                let kind: OpenLXSSHSecurity.CredentialReference.Kind = credential.purpose == .password ? .password : .privateKeyPassphrase
+                switch await model.security.credentials.read(.init(id: credential.id, kind: kind)) {
+                case .available: break
+                default: throw Failure.check("signed-app-keychain-read")
+                }
+            }
+            try check("signed-app-keychain-read", true)
+            try check("security-no-connection", model.connectionNotice == nil && metadata.hosts.allSatisfy { $0.lastConnectedAt == nil })
+            let key = metadata.keys[0]
+            try await click("host.add")
+            try await type("host.name", "Shared key host")
+            try await type("host.address", "shared-key.invalid")
+            try await type("host.username", "fixture")
+            try await popup("host.authentication", value: "privateKey")
+            try await popup("host.key", value: key.id.uuidString)
+            try await click("host.save")
+            try await wait("host-key-associated") { self.model.hosts.count == 3 && self.delegate.mainWindow?.attachedSheet == nil }
+            try await click("security.open")
+            let overview = try await model.security.overview()
+            guard let review = overview.recoveryReviews.first(where: { $0.canDiscard }) else { throw Failure.missing("prepared-recovery-record") }
+            let unrelated = options.directory.appendingPathComponent("preserved-recovery-fixture")
+            let beforeReview = try Data(contentsOf: unrelated)
+            try await click("recovery.review." + review.id.uuidString)
+            try check("prepared-discard-explicit-confirmation", find("recovery.discard", as: NSButton.self)?.title == "仅丢弃恢复记录，不删除任何文件/Keychain")
+            try await click("recovery.discard")
+            try await wait("recovery-record-discarded") { self.find("recovery.review." + review.id.uuidString, as: NSButton.self) == nil }
+            let reviewed = try await model.security.overview()
+            try check("prepared-discard-record-only", try Data(contentsOf: unrelated) == beforeReview && reviewed.recoveryReviews.isEmpty)
+            try check("prepared-discard-preserves-metadata", reviewed.metadata.hosts == overview.metadata.hosts && reviewed.metadata.keys == overview.metadata.keys && reviewed.metadata.credentials == overview.metadata.credentials)
+            for credential in metadata.credentials {
+                let kind: OpenLXSSHSecurity.CredentialReference.Kind = credential.purpose == .password ? .password : .privateKeyPassphrase
+                if case .available = await model.security.credentials.read(.init(id: credential.id, kind: kind)) {} else { throw Failure.check("prepared-discard-preserves-keychain") }
+            }
+            try check("prepared-discard-preserves-keychain", true)
+            try await click("key.delete." + key.id.uuidString)
+            try await click("key.delete.confirm")
+            try await wait("shared-key-refused") { self.find("issue.dismiss", as: NSButton.self) != nil }
+            try check("shared-key-delete-refused", try await model.repository.securityMetadata().keys.count == 1)
+            try await click("key.delete.cancel")
+            let keyFile = options.directory.appendingPathComponent("Keys/" + key.id.uuidString + ".openssh")
+            let beforeForget = try Data(contentsOf: keyFile)
+            try await click("key.forgetPassphrase." + key.id.uuidString)
+            try await wait("key-passphrase-forgotten") { self.find("key.forgetPassphrase." + key.id.uuidString, as: NSButton.self) == nil }
+            let forgotten = try await model.repository.securityMetadata()
+            try check("key-passphrase-detached", forgotten.keys.first { $0.id == key.id }?.passphraseCredentialRef == nil)
+            try check("forget-keeps-key-file", try Data(contentsOf: keyFile) == beforeForget)
+            if let ref = key.passphraseCredentialRef {
+                if case .missing = await model.security.credentials.read(.init(id: ref, kind: .privateKeyPassphrase)) {} else { throw Failure.check("forgotten-keyphrase-absent") }
+            }
+            try check("forgotten-keyphrase-absent", true)
+            let keyHost = try await model.repository.securityMetadata().hosts.first { $0.keyRef == key.id }!
+            try await model.repository.apply([.deleteHost(keyHost.id)])
+            try await click("security.refresh")
+            try await click("key.delete." + key.id.uuidString)
+            try await click("key.delete.confirm")
+            try await wait("key-deletion-dialog-closed") { self.find("key.delete.confirm", as: NSButton.self) == nil }
+            try check("unshared-key-deleted", try await model.repository.securityMetadata().keys.isEmpty)
+            try await click("security.done")
+            try await wait("security-manager-dismissed-after-recovery-delete") { self.delegate.mainWindow?.attachedSheet == nil }
+            try check("security-manager-dismissed-after-recovery-delete", true)
+        } else {
+            let metadata = try await model.repository.securityMetadata()
+            for host in metadata.hosts where host.credentialRef != nil { try await model.security.forgetHostPassword(host.id) }
+            for host in metadata.hosts { try await model.repository.apply([.deleteHost(host.id)]) }
+            for key in metadata.keys { try await model.security.deleteKey(key.id) }
+            try await model.security.retryCleanup()
+            let cleaned = try await model.repository.securityMetadata()
+            try check("security-exact-cleanup", cleaned.hosts.isEmpty && cleaned.keys.isEmpty && cleaned.credentials.isEmpty && cleaned.tickets.isEmpty)
+            for credential in metadata.credentials {
+                let kind: OpenLXSSHSecurity.CredentialReference.Kind = credential.purpose == .password ? .password : .privateKeyPassphrase
+                if case .missing = await model.security.credentials.read(.init(id: credential.id, kind: kind)) {} else { throw Failure.check("keychain-absent-after-cleanup") }
+            }
+            try check("keychain-absent-after-cleanup", true)
+            try check("recovery-empty", try await model.security.overview().pendingCount == 0)
+        }
+    }
+
+    private func interactiveWindow() -> NSWindow? {
+        guard var window = delegate.mainWindow else { return nil }
+        while let sheet = window.attachedSheet { window = sheet }
+        return window
     }
     private func find<T: NSView>(_ id: String, as type: T.Type) -> T? {
         func visit(_ view: NSView) -> T? {
@@ -194,7 +372,7 @@ import OpenLXSSHCore
             for child in view.subviews { if let value = visit(child) { return value } }
             return nil
         }
-        for window in windows() { if let view = window.contentView, let value = visit(view) { return value } }
+        if let view = interactiveWindow()?.contentView { return visit(view) }
         return nil
     }
     private func click(_ id: String) async throws {
@@ -224,18 +402,42 @@ import OpenLXSSHCore
     }
     private func selectFirstHost() async throws {
         try await wait("hosts.table") { self.find("hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
-        guard let table = find("hosts.table", as: NSTableView.self) else { throw Failure.missing("hosts.table") }
+        let table = try await nativeHostTable()
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try await pause()
     }
+    private func nativeHostTable() async throws -> NSTableView {
+        try await wait("hosts.table") { self.find("hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
+        guard let candidate = find("hosts.table", as: NSTableView.self), let content = candidate.window?.contentView else { throw Failure.missing("hosts.table") }
+        let row = candidate.rowView(atRow: 0, makeIfNecessary: true)
+        let point = candidate.convert(NSPoint(x: 60, y: row?.frame.midY ?? candidate.rect(ofRow: 0).midY), to: content)
+        var hit = content.hitTest(point)
+        while let view = hit {
+            if let table = view as? NSTableView { return table }
+            hit = view.superview
+        }
+        throw Failure.missing("hittable-host-table")
+    }
     private func doubleClickFirstHost() async throws {
-        guard let table = find("hosts.table", as: NSTableView.self), let window = table.window else { throw Failure.missing("hosts.table") }
-        let point = table.convert(NSPoint(x: 60, y: table.rect(ofRow: 0).midY), to: nil)
-        guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 2, pressure: 1) else { throw Failure.missing("double-click") }
-        guard let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime + 0.01, windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 2, pressure: 0) else { throw Failure.missing("double-click-up") }
-        // NSTableView tracks until mouseUp. Queue the matching event before entering tracking.
-        NSApp.postEvent(up, atStart: true)
-        table.mouseDown(with: down)
+        let table = try await nativeHostTable()
+        guard let window = table.window else { throw Failure.missing("hosts.table") }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(table)
+        table.layoutSubtreeIfNeeded()
+        let row = table.rowView(atRow: 0, makeIfNecessary: true)
+        let local = NSPoint(x: table.bounds.minX + 60, y: row?.frame.midY ?? table.rect(ofRow: 0).midY)
+        try check("double-click-local-row", table.row(at: local) == 0)
+        let point = table.convert(local, to: nil)
+        let time = ProcessInfo.processInfo.systemUptime
+        for click in 1...2 {
+            guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: time + Double(click) * 0.03, windowNumber: window.windowNumber, context: nil, eventNumber: click * 2, clickCount: click, pressure: 1),
+                  let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: time + Double(click) * 0.03 + 0.01, windowNumber: window.windowNumber, context: nil, eventNumber: click * 2 + 1, clickCount: click, pressure: 0) else { throw Failure.missing("double-click-pair") }
+            // Dispatch from the App event loop so NSApplication.currentEvent is the actual
+            // down event. Direct mouseDown calls retain a stale currentEvent after sheets.
+            NSApp.postEvent(down, atStart: false)
+            NSApp.postEvent(up, atStart: false)
+            try await Task.sleep(for: .milliseconds(60))
+        }
         actions.append("doubleClick.hosts.table")
         try await pause()
     }

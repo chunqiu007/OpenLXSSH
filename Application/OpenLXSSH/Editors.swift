@@ -1,10 +1,15 @@
 import AppKit
 import SwiftUI
 import OpenLXSSHCore
+import OpenLXSSHSecurity
 
 struct HostEditor: View {
     @ObservedObject var model: AppModel
     @State private var draft: HostDraft
+    // Short-lived secure input only, never part of HostDraft/ObservableObject/Codable state.
+    @State private var password = ""
+    @State private var remember = false
+    @State private var forgetExisting = false
     var dismiss: () -> Void
     init(model: AppModel, host: HostConfiguration?, folderID: UUID?, dismiss: @escaping () -> Void) {
         self.model = model; self.dismiss = dismiss
@@ -36,12 +41,17 @@ struct HostEditor: View {
                 field("保活失败次数", "host.count", $draft.count)
             }
             if draft.configuration.authentication.needsKey {
-                Text(model.keys.isEmpty ? "暂无已登记私钥。密钥管理尚未集成；可先保存配置，连接前必须选择有效私钥。" : "仅列出已登记的密钥引用；本页不读取、导入或复制私钥内容。")
+                Text(model.keys.isEmpty ? "暂无已登记私钥。请从主窗口的密钥与凭据管理导入或生成；连接前必须选择有效私钥。" : "仅列出已登记的密钥引用；多台主机可关联同一私钥。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Toggle("记住密码（尚缺安全保存授权条件）", isOn: .constant(false)).disabled(true)
-                Text(draft.configuration.credentialRef == nil ? "本版本只保存主机元数据，不收集或保存密码。认证与 Keychain 将独立集成。" : "此配置已有凭据引用，本页仅保留引用，不读取或重新保存秘密。")
+                NativeSecureField(id: "host.password", placeholder: "密码（不回显）", text: $password).frame(height: 26)
+                NativeButton(title: remember ? "已授权记住密码 · 点击取消" : "记住密码（默认不保存）", id: "host.remember") { remember.toggle() }.fixedSize()
+                if draft.configuration.credentialRef != nil {
+                    NativeButton(title: forgetExisting ? "保存时解除旧凭据关联" : "忘记此主机已存密码", id: "host.forget") { forgetExisting.toggle() }.fixedSize()
+                }
+                Text("密码仅在明确选择记住时写入本机 file-based Keychain。不记住时输入立即丢弃，未来连接时重新人工输入；当前不会认证。已有共享凭据仅解除当前主机关联。")
                     .font(.caption).foregroundStyle(.secondary)
+                KeychainPolicyNotice()
             }
             Text("保活 0 表示禁用；间隔最多 3600 秒，失败次数 1–10。保存配置不代表已通过连接边界校验。").font(.caption).foregroundStyle(.secondary)
             IssueView(issue: model.issue) { model.issue = nil }
@@ -49,13 +59,17 @@ struct HostEditor: View {
                 Spacer()
                 NativeButton(title: "取消", id: "editor.cancel") { dismiss() }.fixedSize()
                 NativeButton(title: "保存", id: "host.save", enabled: !model.isWriting) {
+                    let choice: PasswordChoice = remember ? .remember(SecretBytes(utf8: password)) : (forgetExisting ? .forget : (draft.configuration.credentialRef == nil ? .manual : .preserve))
+                    password = ""
                     Task {
-                        do { if await model.saveHost(try draft.value(), isNew: draft.isNew) { dismiss() } }
-                        catch { model.issue = .sanitized(error) }
+                        do { if await model.saveHostSecurely(try draft.value(), isNew: draft.isNew, password: choice) { dismiss() } }
+                        catch { model.issue = .security(error) }
                     }
                 }.fixedSize()
             }
         }.padding(24).frame(width: 530)
+        .onDisappear { password = "" }
+        .onChange(of: draft.configuration.authentication) { _, _ in password = ""; remember = false }
     }
     private func field(_ label: String, _ id: String, _ binding: Binding<String>) -> some View {
         GridRow { Text(label); NativeField(placeholder: label, id: id, text: binding).frame(height: 25) }

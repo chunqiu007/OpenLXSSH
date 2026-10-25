@@ -28,7 +28,10 @@ import SwiftUI
         #if HOST_PROBE
         let options = try NativeSmoke.Options(arguments)
         smoke = options
-        model = AppModel(repository: AppRepository(location: options.map { .isolated($0.directory) } ?? .applicationSupport))
+        let location = options.map { AppDataLocation.isolated($0.directory) } ?? .applicationSupport
+        let repository = AppRepository(location: location)
+        model = AppModel(repository: repository, security: SecurityCoordinator(repository: repository, location: location,
+                         credentials: SystemCredentials(testNamespace: options?.namespace)))
         #else
         guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw CocoaError(.validationMissingMandatoryProperty) }
         model = AppModel(repository: AppRepository())
@@ -79,8 +82,9 @@ import SwiftUI
         terminating = true
         model.windowClosed()
         let repository = model.repository
+        let security = model.security
         Task.detached {
-            do { try await repository.close() }
+            do { try await security.close(); try await repository.close() }
             catch { /* Exit still releases owned resources; never print database descriptions. */ }
             // AppKit may be inside its terminateLater nested event loop. Use the run loop,
             // not a MainActor task/main-queue block that can be excluded by that loop.

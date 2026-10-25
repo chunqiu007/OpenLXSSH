@@ -2,9 +2,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-all}"
-case "$MODE" in all|build|gui) ;; *) printf 'Use all, build, or gui.\n' >&2; exit 64 ;; esac
+case "$MODE" in all|build|gui|signed-security) ;; *) printf 'Use all, build, gui, or signed-security.\n' >&2; exit 64 ;; esac
 LOGS="$ROOT/DerivedData/Verification"
 mkdir -p "$LOGS"
+if [[ "$MODE" == signed-security ]]; then
+    "$ROOT/Scripts/build-app.sh" HostProbe build > "$LOGS/HostProbe-build.log" 2>&1
+    python3 "$ROOT/Scripts/verify-signed-app.py"
+    exit $?
+fi
 if [[ "$MODE" != gui ]]; then
     for configuration in Debug Release; do
         "$ROOT/Scripts/build-app.sh" "$configuration" build-for-testing > "$LOGS/${configuration}-build.log" 2>&1
@@ -39,6 +44,10 @@ for line in (logs / f'{config}-libraries.log').read_text().splitlines()[1:]:
 lock = json.loads((root / 'OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved').read_text())
 assert len(lock['pins']) == 1
 assert lock['pins'][0]['state'] == {'revision':'b83108d10f42680d78f23fe4d4d80fc88dab3212', 'version':'7.11.1'}
+project = (root / 'OpenLXSSH.xcodeproj/project.pbxproj').read_text()
+assert 'relativePath = Packages/OpenLXSSHSecurity' in project
+assert 'productName = OpenLXSSHSecurity' in project
+assert 'OpenLXSSHTransport' not in project
 print(f'{config}: arm64 / min26 / module / runtime libraries / GRDB pin checked')
 PY
     done
@@ -55,15 +64,21 @@ os.chmod(data, 0o700)
 (data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
 (logs / 'gui-data-path.txt').write_text(str(data) + '\n')
 binary = root / 'DerivedData/HostProbe/Build/Products/HostProbe/OpenLXSSH.app/Contents/MacOS/OpenLXSSH'
-for phase in ('exercise', 'reopen'):
+for phase in ('exercise', 'reopen', 'security-sheets'):
+    phase_data = data
+    if phase == 'security-sheets':
+        phase_data = pathlib.Path(tempfile.mkdtemp(prefix='OpenLXSSH-AppSmoke-'))
+        os.chmod(phase_data, 0o700)
+        (phase_data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
+        (logs / 'gui-security-sheets-data-path.txt').write_text(str(phase_data) + '\n')
     with (logs / f'gui-{phase}.log').open('w') as log:
         try:
-            result = subprocess.run([str(binary), '--self-test-data-dir', str(data), '--self-test-phase', phase], stdout=log, stderr=subprocess.STDOUT, timeout=120)
+            result = subprocess.run([str(binary), '--self-test-data-dir', str(phase_data), '--self-test-phase', phase], stdout=log, stderr=subprocess.STDOUT, timeout=120)
         except subprocess.TimeoutExpired:
             raise SystemExit(f'Native GUI {phase} timed out; owned process was terminated; inspect {log.name}')
     if result.returncode:
         raise SystemExit(f'Native GUI {phase} exited {result.returncode}; inspect sanitized log {log.name}')
-    report = json.loads((data / f'smoke-{phase}.json').read_text())
+    report = json.loads((phase_data / f'smoke-{phase}.json').read_text())
     assert report['passed'] and not report['productRuntimeVerified']
     assert report['checks'] and all(check['passed'] for check in report['checks'])
     print(f'HostProbe native GUI {phase}: {len(report["checks"])} checks passed')
