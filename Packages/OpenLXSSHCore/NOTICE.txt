@@ -1,0 +1,62 @@
+OpenLXSSHCore dependency notice
+
+The sole package dependency is GRDB.swift, exact version 7.11.1, tag v7.11.1,
+revision b83108d10f42680d78f23fe4d4d80fc88dab3212.
+Source: https://github.com/groue/GRDB.swift.git
+License: MIT. Full required attribution is in ThirdPartyNotices/GRDB-LICENSE.txt.
+The consumer distributing GRDB must preserve that notice in the final distribution.
+
+The selected GRDB product uses GRDBSQLite and links the operating system's sqlite3.
+This package does not vendor SQLite, SQLCipher, Homebrew libraries, or an additional
+runtime package. No optional documentation plugin is enabled. The system SQLite
+runtime version varies with macOS and is not pinned by Package.resolved.
+
+Core deployment baseline macOS 15 exists only to allow tests on the development
+host; the formal OpenLXSSH App's macOS 26 requirement is unchanged.
+
+Storage integration contract
+- Reserve an App-owned leaf directory whose parent already exists. The core
+  creates/tightens this leaf to 0700, the DB, initialization lock, and existing
+  sidecars to 0600, rejects
+  non-regular files/symlinks/hardlinks, uses foreign keys, WAL, FULL synchronous,
+  and a five-second busy timeout. A stable flock file serializes initialization
+  and migration discovery across processes (also with a five-second timeout).
+  Do not share the directory with unrelated data; only the fixed SQLite artifacts
+  and the App's initialization lock are examined/tightened, not arbitrary contents.
+  Existing-file permission checks use fstatat/fchmodat with AT_SYMLINK_NOFOLLOW
+  (and inode/owner/link validation) rather than opening/closing SQLite files,
+  which could release process-owned POSIX locks. An already compromised same-UID
+  process can still race filesystem paths; this is not claimed to be prevented.
+- All identities/references are UUIDs. No passwords, OTPs, private-key bytes,
+  arbitrary file paths, terminal output, or arbitrary cleanup error messages are
+  accepted. A reference is metadata, not evidence of an external secret's presence.
+- Register credentials only after explicit user saving authorization. Password
+  hosts require their own authorization flag before linking a saved password.
+  Private-key passphrases are separate credential references on the managed key.
+- Keychain/filesystem work cannot join the SQLite transaction. An external worker
+  must enumerate its App-owned stable IDs on startup, reconcile absent registry
+  entries via scheduleOrphanCleanup, perform idempotent deletion of ticket targets,
+  and call completeCleanup only on success/already absent. Retry failures via
+  recordCleanupFailure. Never delete arbitrary paths derived from a ticket.
+- Deleting a host retains resource metadata even when it becomes unused. Resource
+  deletion is explicit, refuses all live references, then atomically removes the
+  registry row and persists a cleanup ticket. Completed tickets are tombstones:
+  use fresh UUIDs when creating new resources. No ticket is automatically executed.
+- Repeated registrations of identical metadata and repeated deletions/completion
+  are idempotent; conflicting UUID reuse is rejected. Host add is deliberately an
+  INSERT (duplicate ID fails), edit requires an existing host, copy creates a new
+  ID and resets connection history. markConnected only advances the stored time.
+- v1_host_metadata -> v2_settings_and_cleanup is an additive, transactional GRDB
+  migration. v1 already required explicit credential authorization; v2 backfills
+  host authorization only for preexisting authorized password references. No
+  unknown future schema is opened and no migration erases a database.
+- History range: 0...100000 (default 10000). Font size: 6...72 pt. Colors: #RRGGBB.
+  Keepalive interval: 0...3600 seconds (0 disables), count: 1...10 (default 30/3).
+  Core validates storage boundaries, not SSH command-line/config construction.
+
+Tests use real temporary databases and a test-only executable target. Abrupt
+_exit modes bypass SQLite cleanup in a child created by tests, proving committed
+WAL recovery, persistent deletion/orphan tickets, and rollback of an uncommitted,
+spilled transaction. These tests do
+not simulate a machine power loss, filesystem failure, Keychain atomicity, or the
+macOS 26 runtime. The executable is not a library product or a production helper.

@@ -24,7 +24,7 @@
 | P1-02 受控配置与 HostTrustStore 原型 | 通过（仅本地信任/配置原型范围） | `Experiments/P1-02-HostTrustProbe/`；`docs/adr/p1-02-host-trust.md`；`docs/reports/p1-02-host-trust.md`；主管独立22项测试与Release CLI通过，工程师Debug/Release/TSan证据见实验 `.build/verification/`；系统ssh -G/-vvG、ssh-keygen -F/-l真实本地对照 | 仅本地配置/公钥/文件证据：显式首次/新算法确认、匹配、变化拒绝、非默认端口/地址编辑、代次与旧确认、原子写与跨进程并发、权限/链接/恶意存储。未启动 sshd 或连接 SSH；真实握手公钥绑定、SSH/SFTP 集成、认证/MFA、macOS 26 runtime 与掉电未验证，产品 AC-04/AC-12/AC-25 仍未执行。 |
 
 | P1-03 凭据与私钥原型 | 进行中（本地密钥通过；真实Keychain缺profile授权） | `docs/reports/p1-03-credential-key.md`；主管独立全量R1共41项=40通过+1真实Keychain -34018；四种真实Ed25519/RSA有/无口令本地操作及引用通过；已签名fixture严格验证/运行时appID匹配 | 正确现有开发签名仍未授权DP访问组，Apple TN3137明确需合法profile。无成功新增条目；精确清理请求被拒，saveSucceeded=false。跨启动/升级真实读取未执行；不fallback、不弱化测试。 |
-| P1-04A Askpass本机控制面 | 进行中（fixture行为通过，生产身份未证明） | `docs/reports/p1-04-askpass.md`；主管独立verify.sh退出0，Debug/Release各14单测+20真实本机跨进程场景通过 | Unix socket LOCAL_PEERTOKEN不是冻结消息身份，重复核验不证明消除PID/exec竞态；单镜像ad-hoc fixture不等于正式App/helper信任根。P1-04B临时Mach审计消息可行性验证中；无真实SSH/MFA/秘密投递。 |
+| P1-04A/B/C Askpass本机控制面 | C本地范围通过；P1-04整体进行中 | `docs/reports/p1-04-askpass.md`；主管独立C verify.sh退出0，Debug/Release各16单测+28真实Mach跨进程场景通过；B双向冻结审计5场景也独立通过 | 活跃代码已移除旧socket回答路径。逐消息audit+签名、不同identifier/同Team、受控parent、错误signer/重放/queuedexec、reply rights与FD/port回收通过。真实SSH/PTY/force、MFA、macOS26/Sandbox与正式打包仍未验证；P1-06A本地系统readpass打包实现中。 |
 
 P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等产品条目的状态；尤其“未使用 Shell”不能替代完整产品参数/配置与真实主机信任验证。阶段 1 门槛尚未达到。
 
@@ -32,6 +32,11 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 
 - P2-LOCAL-A：主管独立16项测试与真实Release原生窗口13项自检通过；稳定1.20压力尾部3断言失败已独立复现，暂选精确锁定1.99.1预览，见 `docs/adr/p2-terminal-version-selection.md` 和 `docs/reports/p2-local-terminal.md`。
 - 本地资源20周期FD3→3、弱视图0；主管短时App+fixture峰RSS140608KiB，不是PERF/长测。人工IME未测，Vim严格ZWJ断言失败保留；远端TUI、嵌套SSH、macOS26、200次/24小时均未通过，AC-13/14/15/28/29等状态不变。
+
+## 阶段 4 数据层记录（不替代App功能）
+
+- P4-DATA-A：`Packages/OpenLXSSHCore/` 主管代码审查和独立29项真实SQLite测试通过，见 `docs/reports/p4-data-core.md`。包含主机/分组/收藏/搜索/设置、迁移回滚、共享删除票据、跨进程锁与异常退出WAL恢复；不代表UI/真实Keychain/私钥跨存储或掉电验收。
+- P4-APP-A正式Xcode Target与原生主机UI实现中；产品AC仍未据数据层测试直接标通过。
 
 ## 1. 状态与证据格式
 

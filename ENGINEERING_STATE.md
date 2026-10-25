@@ -24,9 +24,11 @@
 | P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
 | P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
 | P1-03 / R1 | software-engineer | 本地私钥/策略通过；主管完整41项=40通过+1真实Keychain失败，正确开发签名仍缺profile授权 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md` |
-| P1-04A/B/C | software-engineer | A行为通过但socket身份不足；B冻结Mach审计/不同镜像双向签名5场景主管独立通过；C迁移中 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
+| P1-04A/B/C | software-engineer | C主管审查/独立双配置16单测+28真实Mach场景通过；P1-06A系统readpass打包集成中，真实SSH仍未测 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
 | P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |
-| P4-DATA-A | software-engineer | GRDB真实持久化独立包实现中；未审查 | `Packages/OpenLXSSHCore/`（独占所有权） |
+| P4-DATA-A | software-engineer | 核心主管审查/独立29真实DB测试通过；UI/外部资源一致性未验收 | `Packages/OpenLXSSHCore/`、`docs/reports/p4-data-core.md` |
+| P4-APP-A | software-engineer | 正式OpenLXSSH Xcode Target/原生主机UI实现中 | 独占 `Application/OpenLXSSH/`、`OpenLXSSH.xcodeproj/`、根Scripts/build-app.sh/verify-app.sh、`Tests/OpenLXSSHAppTests/` |
+| P3-LOCAL-A | software-engineer | 固定原生库/结构化接口与本地文件策略实现中；无远端互通 | `Experiments/P3-RemoteFileProbe/` 与限定文件策略ADR |
 
 ## P1-01 审查与验证
 
