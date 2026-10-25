@@ -31,7 +31,7 @@
 - Task ID：`P0-02`；执行者：`software-engineer`；状态：待主管独立审查（子任务完成不代表整体 Goal 完成）。
 - 证据报告：`docs/reports/p0-01-environment.md`（P0-01）；`docs/reports/p0-02-git-baseline.md`（本任务）。
 - P0-02 范围：仅在 `/Users/liuwenshuo/Desktop/OpenLXSSH` 根目录初始化 Git；新增根目录 `.gitignore`；保留并纳入基线的交接文档、P0-01 报告和状态文件；排除 `.DS_Store`、构建产物、个人状态、测试输出和本地秘密/凭据文件。
-- P0-02 提交：见 `docs/reports/p0-02-git-baseline.md` 中的实际 commit hash、文件清单、命令结果和无 remote 记录。
+- P0-02 提交：基线提交为 `4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`（`chore: establish OpenLXSSH git baseline`）；后续报告/状态补录提交见 `git log`。实际文件清单、命令结果和无 remote 记录见 `docs/reports/p0-02-git-baseline.md`。
 - P0-01 主管审查：已读取实际报告与状态改动，并独立复跑 `sw_vers`、架构、Xcode/SDK、Swift/Clang、OpenSSH 路径/版本、受控 `ssh -G` 配置展开和辅助工具检查；结果与报告一致。未发现无关文件或敏感信息泄漏。
 - 核心事实：Apple Silicon `arm64`；实际宿主为 macOS 15.8.1 (Build 24H32)，低于需求的 macOS 26；Xcode 26.3 (17C529) 与 macOS 26.2 SDK (SDK build 25C58) 可用；Swift 6.2.4、Apple Clang 17.0.0、系统 OpenSSH 9.9p2 / LibreSSL 3.3.6、`xcbeautify` 3.2.1 可用。
 - 构建证据：临时 Swift 源文件以 `arm64-apple-macosx26.0` 目标真实编译/运行成功，Mach-O `minos 26.0`、SDK 26.2；未创建 App 或执行项目构建。

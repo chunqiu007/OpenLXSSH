@@ -33,23 +33,31 @@
 
 ## 3. 实际 Git 操作
 
-以下命令均在 `/Users/liuwenshuo/Desktop/OpenLXSSH` 执行：
+以下命令均在 `/Users/liuwenshuo/Desktop/OpenLXSSH` 执行；退出状态按实际结果记录：
 
-1. `git init -b main`：在项目根目录创建唯一 `.git`，退出码 `0`。
-2. `git status --short --branch`：初始化后显示 `## No commits yet on main`；`.DS_Store` 未列出，符合忽略规则。
-3. `git check-ignore -v --no-index`：检查 `.DS_Store`、`DerivedData/Build/Products/app`、`.build/arm64-apple-macosx/debug/app`、`Sample.xcodeproj/xcuserdata/user.xcuserdatad/UserInterfaceState.xcuserstate`、`Tests.xcresult`、`.env.local`、`id_ed25519` 等路径均命中预期规则；`Sources/App/main.swift`、`Tests/AppTests.swift`、`Package.swift`、`Package.resolved`、`OpenLXSSH.xcodeproj/project.pbxproj`、`docs/requirements.md` 未命中规则。
-4. `git config --get-regexp '^(remote\\.|branch\\.)'`：无输出、退出码 `1`，未配置 remote 或跟踪分支。
-5. `git add --all`：仅暂存未被忽略的本项目文件；`.DS_Store` 和其他本地状态/凭据模式未进入暂存区。
-6. `git commit -m "chore: establish OpenLXSSH git baseline"`：创建本地基线提交；实际 hash 在提交完成后补录于本报告和 `ENGINEERING_STATE.md`。
+1. 初始 `git status --short --branch`：退出码 `128`，当前目录及父目录不是 Git 仓库。
+2. `git init -b main`：退出码 `0`，在项目根目录创建唯一 `.git`。
+3. `git rev-parse --show-toplevel`：退出码 `0`，输出 `/Users/liuwenshuo/Desktop/OpenLXSSH`。
+4. 初始化后 `git status --short --branch`：退出码 `0`，显示 `## No commits yet on main`；`.DS_Store` 未列出，符合忽略规则。
+5. `git check-ignore -v --no-index`：忽略路径均命中预期规则；源码、Package 输入、Xcode 工程项目文件和正式文档均未命中。循环对每个候选路径处理未匹配的退出码 `1`，整体检查按预期完成。
+6. `git config --get-regexp '^(remote\\.|branch\\.)'`：无输出、退出码 `1`，未配置 remote 或跟踪分支；`git remote -v` 退出码 `0` 且无输出，未设置 remote。
+7. `git add --all`：退出码 `0`，仅暂存未被忽略的本项目文件；`.DS_Store` 和其他本地状态/凭据模式未进入暂存区。
+8. `git diff --cached --check`：退出码 `0`，无空白错误。
+9. `git commit -m "chore: establish OpenLXSSH git baseline"`：退出码 `0`，创建本地基线提交，短 hash 为 `4ccebe7`。
+10. 提交后复核：`git rev-parse --show-toplevel` 退出码 `0`，仍输出 `/Users/liuwenshuo/Desktop/OpenLXSSH`；`git status --short --branch` 退出码 `0`，输出 `## main`；`git remote -v` 无输出；`git config --get-regexp '^(remote\\.|branch\\.)'` 无输出；`git ls-files` 和 `git show --stat --oneline --decorate 4ccebe7` 均与下列清单一致。
+
+基线提交完成后，为把实际 hash、最终状态和退出状态补录到本报告及 `ENGINEERING_STATE.md`，产生了仅限文档记录的后续工作区修改；该修改不改变基线文件范围或忽略策略。
+
 
 ## 4. 基线内容与验收
 
 初始基线应包含本项目当前相关的交接、需求、架构、执行计划、验收、P0-01 报告、状态文件、配置启动说明、本次 `.gitignore` 和本报告；不包含 `.DS_Store`、未跟踪秘密/凭据、构建产物或个人配置。
 
-- 基线 commit hash：待基线提交创建后补录。
-- 基线文件清单：以提交后的 `git ls-files` 和 `git show --stat --oneline` 实际输出为准，并在提交后补录。
-- 提交后状态：以提交后的 `git status --short --branch` 实际输出为准，并在提交后补录。
-- remote：未配置；本任务不执行 push。
+- 基线 commit hash：`4ccebe7d612afef1eaf20b890c2ce3df0b27b8d7`（`chore: establish OpenLXSSH git baseline`）。
+- 基线文件清单（`git ls-files`）：`.gitignore`、`AGENTS.md`、`ENGINEERING_STATE.md`、`ZCODE_SETUP.md`、`docs/acceptance.md`、`docs/architecture.md`、`docs/execution-plan.md`、`docs/reports/p0-01-environment.md`、`docs/reports/p0-02-git-baseline.md`、`docs/requirements.md`。
+- `git show --stat --oneline --decorate HEAD`：`4ccebe7 (HEAD -> main) chore: establish OpenLXSSH git baseline`，10 files changed，1098 insertions。
+- 提交后状态：`git status --short --branch` 输出 `## main`，无未提交或未跟踪文件；`.DS_Store` 仍以忽略文件存在，不影响干净工作区。
+- remote：`git remote -v` 无输出，`git config --get-regexp '^(remote\\.|branch\\.)'` 无输出；未配置 remote，也未执行 push。
 
 ## 5. 限制与后续边界
 
