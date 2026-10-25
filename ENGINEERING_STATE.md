@@ -24,7 +24,8 @@
 | P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
 | P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
 | P1-03 / R1/R2 | software-engineer | DP仍-34018；file-based候选主管真实CRUD/ACL/升级/拒绝与6策略测试通过，ADR选择显式生产路线 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md`、`docs/adr/p1-03-file-keychain-selection.md` |
-| P4-CREDENTIAL-A | software-engineer | 正式安全包实现中，独占新目录 | `Packages/OpenLXSSHSecurity/` |
+| P4-CREDENTIAL-A | software-engineer | 主管审查/独立20测试+真实签名CRUD通过，自建临时Keychain锁回退恢复已证；App集成中 | `Packages/OpenLXSSHSecurity/`、`docs/reports/p4-security-core.md` |
+| P5-TRUST-A | software-engineer | 正式共享Trust主管独立30测试通过，PID-safe工具修复 | `Packages/OpenLXSSHTrust/`、`docs/reports/p5-shared-trust.md` |
 | P5-TRANSPORT-A | software-engineer | 正式SSH/Askpass/终端会话包实现中，未审查 | `Packages/OpenLXSSHTransport/` 与限定ADR |
 | P1-04A/B/C、P1-06A | software-engineer | C主管双配置16单测+28Mach通过；P1-06A主管Release真实readpass三场景通过（工程师回归29Mach）；真实SSH未测 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
 | P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |

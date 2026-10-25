@@ -23,6 +23,16 @@ Apple 对应公开源码：[readpass.c](https://github.com/apple-oss-distributio
 5. 仅在能证明其他 `read_passphrase` 来源不可达的、用户授权的受限认证模式中，才考虑单次自动使用 Keychain 长期秘密。单凭 password-only 配置、第一条提示或提示文字不构成完整证明。P1-04 初始实验不得默认自动投递；AUTH-02 完整自动使用要求仍保留，不能因此从验收清单移除。
 6. 若原型实测证明系统接口不能满足已确认认证需求，按架构授权比较成熟替代实现/最小上游适配并记录证据，不能以削减安全要求或功能替代。
 
+## 后续源码证据：受限认证与本地事件（待实际SSH实测）
+
+2026-10-26补充只读对照Apple OpenSSH-346.120.3（9.9p2）：
+
+- ssh.c登录返回后、PTY/shell channel-open确认前执行LocalCommand；固定签名helper的`--authenticated-event`只证明外层用户认证已成功，不证明远端终端就绪。事件必须Mach审计/签名/直属ownedssh/代次验证，取消后丢弃。此受控常量命令需在Transport ADR作为SEC03最小例外：无用户字段、无%h/%r/%n，bundle路径POSIX引用与%转义、SHELL=/bin/sh、清启动环境、禁escape；不是开放任意LocalCommand。
+- 严格password-only封闭配置可排除key/KBI/FIDO/hostkey询问/mux/hostbased/provider。userauth_passwd先读取初始密码、send(change=0)，之后才注册改密handler。因此首个合法无hint请求若存在可作为单次显式授权自动额度候选，之后全部人工；不能只因NumberOfPasswordPrompts=1认为改密循环也有限。
+- 自动候选还须固定BatchMode=no、PKCS11Provider=none、AddKeysToAgent=no、Apple UseKeychain=no、独立strict配置与白名单环境，清旧hint、force。不匹配系统build/版本/签名或混合模式退回人工；公开源码标签不证明本机全部补丁完全对应，仍需真实隔离服务认证/改密/取消实测。
+
+这些新证据更新了“完全无法区分”的设计空间，但不允许通用prompt分类或静默投递；正式实现和对抗测试在Transport包任务中推进，未作产品通过声明。
+
 ## 必须验证
 
 - PTY 存在、无 DISPLAY 时本地 Askpass force；远端仿提示不触发控制面。
