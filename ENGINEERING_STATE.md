@@ -24,8 +24,9 @@
 | P1-01 | software-engineer | 本地无网络 PTY 范围通过；报告已补齐 | `Experiments/P1-01-PTYProbe/`、`docs/reports/p1-01-pty.md` |
 | P1-02 | software-engineer | 本地信任/配置范围通过，真实握手未验证 | `Experiments/P1-02-HostTrustProbe/`、`docs/adr/p1-02-host-trust.md`、`docs/reports/p1-02-host-trust.md` |
 | P1-03 / R1 | software-engineer | 本地私钥/策略通过；主管完整41项=40通过+1真实Keychain失败，正确开发签名仍缺profile授权 | `Experiments/P1-03-CredentialKeyProbe/`、`docs/reports/p1-03-credential-key.md` |
-| P1-04A | software-engineer | 主管审查并独立双配置14单测/20跨进程通过，但socket身份证明仍PARTIAL | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
-| P2-LOCAL-A | software-engineer | 独立本地终端探针实现中，非阶段2通过 | `Experiments/P2-TerminalProbe/` 与 `docs/adr/p2-terminal-version-selection.md` |
+| P1-04A/B/C | software-engineer | A行为通过但socket身份不足；B冻结Mach审计/不同镜像双向签名5场景主管独立通过；C迁移中 | `Experiments/P1-04-AskpassProbe/`、`docs/reports/p1-04-askpass.md` |
+| P2-LOCAL-A | software-engineer | 本地16项/原生窗口主管独立通过；IME/Vim ZWJ与完整P2仍PARTIAL | `Experiments/P2-TerminalProbe/`、`docs/adr/p2-terminal-version-selection.md`、`docs/reports/p2-local-terminal.md` |
+| P4-DATA-A | software-engineer | GRDB真实持久化独立包实现中；未审查 | `Packages/OpenLXSSHCore/`（独占所有权） |
 
 ## P1-01 审查与验证
 
@@ -48,7 +49,7 @@
 ## 已核实的环境与依赖
 
 - Apple Silicon arm64、8 CPU、16GiB物理内存；主管实测数据卷可用约89.6GiB（瞬时值）；宿主 macOS 15.8.1/24H32，不是 macOS 26。Xcode 26.3、macOS 26.2 SDK、Swift 6.2.4、系统 OpenSSH 9.9p2、xctest/xctrace 可用。
-- SwiftTerm 暂在 P2 比较稳定 v1.20.0 与 v1.99.1（2.0 前预览）；GRDB 暂选 v7.11.1/系统 SQLite；P3 初始候选 libssh2 1.11.1 + OpenSSL 静态库。主管独立重建探针通过，详见依赖清单和 ADR。CMake 缺失；替代加密后端/最终 App 打包未验证；Homebrew 只用于临时探针。
+- SwiftTerm本地选v1.99.1预览并锁提交：主管独立16测试/原生Release窗口通过，稳定v1.20同场景尾部丢失已独立复现；完整P2与产品依赖仍待集成，详见P2 ADR/报告。GRDB暂选v7.11.1/系统SQLite；P3初始候选libssh2 1.11.1+OpenSSL静态库。CMake缺失；替代后端/最终App打包未验证；Homebrew仅临时探针。
 - 尚无 Linux guest/隔离 SSH 服务；未启动本机 sshd。推荐 UTM + 官方 Ubuntu ARM64、2 vCPU/4 GiB RAM/20 GiB 动态磁盘起步，NAT/private 网络、一次性测试账户，不暴露 LAN；方案待用户确认。
 - 有 1 个 Apple Development 身份；Developer ID Application/Installer 0。正式 Team/Bundle ID、公证凭据、上传授权和 macOS 26 双机运行条件尚未准备。
 
@@ -60,7 +61,7 @@
 
 ## 下一项具体工作
 
-完成 P1-03 本地私钥/引用测试并独立审查；真实 Keychain 的 -34018 需在后续有明确签名/entitlements 的最小 App 中复验，不降级或跳过伪造通过。继续 P1-04 控制面桥接，安全约束见 `docs/adr/p1-04-askpass-authentication-context.md`：Askpass无可靠挑战类型，未知提示人工输入，自动投递前提未证实前禁止启用。真实 SSH/SFTP 握手与认证仍待隔离服务。
+P1-03已审查并提交8524a77，本地密钥/引用通过，DP真实Keychain需合法profile授权。推进P1-04C将有界请求迁移到已独立验证的冻结Mach消息身份，不让响应继续走旧socket；未知挑战人工输入，自动长期秘密前提未证实前禁止启用。P2本地候选已审查，人工IME/macOS26/远端待测。等待P4-DATA-A交付后审查真实数据库，再建立正式原生App目标/UI集成；真实SSH/SFTP验收仍待隔离服务。
 
 ## 待外部条件
 
