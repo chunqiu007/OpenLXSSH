@@ -69,3 +69,4 @@ id_ecdsa.*
 .ssh/
 /credentials/
 /secrets/
+/local-secrets/
