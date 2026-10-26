@@ -10,7 +10,7 @@
 
 ## 当前实际状态
 
-正式OpenLXSSH Xcode App/Target已存在，arm64/min26。主机/安全管理、SSH标签和P6A按需SFTP浏览/安全操作均已完成本地独立审查；P6A+认证撤销R1主管89tests/signed、LocalGUI通过，提交90084e4。正在实现P6B1上传下载/Finder/任务及传输关闭保护。已生成P6A时点未签名内部候选UUID996cff64并verify，但Gatekeeper false、非最终Release；无真实服务器互通或目标mac26运行。
+正式OpenLXSSH Xcode App/Target已存在，arm64/min26。主机/安全管理、SSH、SFTP浏览/安全操作与上传下载/独立任务/传输关闭保护均已完成本地分项审查；B1含late-risk/history R1主管103tests/原生GUI/签名回归通过并提交40853f3。有限Instruments已记录成功与失败局限；签名稳定性driver仅静态准备未运行。整体待真实互通/目标mac26/长测/正式发布与人工验收，不是完成V1.0。
 
 | Task | 实际结果/主管证据 | 主要文件 |
 | --- | --- | --- |
@@ -40,12 +40,12 @@
 
 ## 正在委派与文件所有权
 
-- 恢复核对：当前实际HEAD c9d5c07，P6A App与主管文档未提交改动均保留；原执行者/审查者不可恢复已按原区域重新派工，不重建或覆盖已有工作。用户正式Goal及运行时当前active持续，新增环境/外部操作边界不变。
-- App P6A原工程师agent_f677已交付停写，运行恢复后SendMessage不可恢复。P6A主管all/signed已exit0（85tests/LocalGUI14），尚待只读专项审查后提交；不覆盖已有工作。
+- 复核外部条件：宿主仍macOS15.8.1；docker/podman/colima/lima/UTM/QEMU/multipass命令均未发现，未新建SSH服务。已有AppleDevelopment1、DeveloperID Application/Installer均0（只报告计数）。未收到新增环境/Apple公证上传授权。
+- B1已交付13文件/工程师99/all+GUI/signed，主管独立all/signed99通过，尚未提交。专项审查agent_3c20bdec-4492-4c08-9774-eb257ad1236a确证两P2：late-risk窗口关闭可新挂continuation导致清理等待环；历史移除未绑定已显示终态集合、后续snapshot可能吞新retained报告且跨freeze。已派App68 P6B1-LATE-RISK/HISTORY-R1先红测/最小修复，未算里程碑通过。
 - P6A认证撤销R1已主管独立89tests/signed通过，原P2定向resolved，整合提交90084e4。App工程师agent_68d3d86f-9ad4-43cc-af1e-d0df030e6887现获P6-APP-TRANSFER-B1唯一App/xcode/构建脚本/AppTests写范围，实现raw选择入队、任务/冲突风险UI、FinderfileURL、window/quit有任务保护；不改Packages/文档，不提交。
 - Files新增agent_876bf232-8daa-4307-9bff-57fa44d40b1c，原7b不可恢复：TARGETED-IDLE-CLOSE-R1+LOCAL-ROOT-FD-R1已交付4文件，主管独立Release34通过并提交b034db2（工程师双配置107/新增10重复200），App可接两兼容API，当前无包写入。
 - 打包实际R2 agent_409da4aa-9f36-42fe-86e8-3b96d7419bf6已交付5文件，主管独立101tests与真实unsignedpack重跑exit0。P6A时点候选UUID996cff64-e5cc-4efe-b4b3-80b3b0a3e4e5，Gatekeeper false/无有效发布签名/未公证上传，非最终Release。首失败UUIDadc54006保留。证据适配精确hidden-native/archive映射，不称strip；当前无写入。
-- Files工程师 agent_7b556d2b-7a15-416f-9e3f-cd1ac6a69082：P7-FILES-INTEGRITY-R2主管Release57通过提交25f802d；R3同service根自拷组件边界修正/新3测试，主管Release16通过提交ff00e7d，工程师双配置89；无当前写入。
+- B1含R1已主管验收：独立103tests/GUI15/8/7/17/17/14/18/17/signed12/8/15/5 exit0，原两P2专项复核resolved，本地提交40853f3；无App业务写入。P7-PROFILING-LOCAL-A有限采样已结束：TimeProfiler/Leaks trace成功、Allocations exit20歧义无trace、Leaks空表不能推零泄漏、独立leaks-atExit短时0；源/原HostProbe包hash未变、自有PID均结束。详见docs/reports/p7-local-instruments.md。
 - 只读安全审查 agent_4e309475-302a-47cd-bc5d-e86f2a60203d：三项缺陷已交付，最小复现细节已记录；主管已读对应实现确认，后续修复只读复核。
 - 安全修复 agent_d1ddbcb3-c32e-4b6f-9666-78ea5055f4bb：P7-SECURITY-ACL-R1已交付7文件，主管读差异/11新ACL tests并独立Release31全部通过；拒任意ACL/查询失败、不改用户ACL，正式签名App待统一复验。原Security工程师不可恢复，不覆盖其他区域。
 - 打包准备 agent_ea4ea432-0755-41f2-9899-9a167506dcb2：P8-PACKAGING-R1四项已修，主管独立83fixtures与只读定向复核均通过，5源码/说明+报告提交f1802e2；尚未真实候选build/pack，当前无写入。
@@ -60,7 +60,8 @@
 - Security新增 agent_d1：P6-SECURITY-AUTH-MATERIAL-A已交付；主管独立Release8与真实四组合libssh2离线memory解析/签验通过，提交b0c3f4d，当前无写入。API仅精确UUID→SecretBytes、caller核Core授权，不经任意路径读私钥。
 - Files下一接口 agent_7b：P6-FILES-SERVICE-OPERATIONS-A已主管读两文件、独立Release97通过，提交7a574ab，当前无写入。withServiceOperation raw默认serialized、安全操作/probe callerScheduled；有界128、activework含ops、shutdown单flight等待cleanup，禁closure自等待shutdown。
 - Security工程师 agent_54e6a1a7-3a1a-4f21-ab8f-438c0aa9a942：原正式包已完成；本次SendMessage不可恢复，ACL修复已交agent_d1，不重试旧ID。
-- 稳定性驱动构建 agent_091f9d0e-836e-4b72-9773-05cf540931ad：P7-STABILITY-DRIVER-BUILD-B，仅Tests/StabilityAcceptance，补真实min26 driver独立离线构建/wrapper及已有Development严格离线签名验证，不运行driver/不网络/不长测；原4e不可恢复，避免重复旧prep。
+- 稳定性驱动构建 agent_091f9d0e-836e-4b72-9773-05cf540931ad：BUILD-B已交付6文件，主管独立真实record来源/11对象min26/linkmap/严格Development签名verify及offline34+6+12通过，提交8d307a2。成功UUIDdriver-8f5d1fcc，signed-static-only-not-run；没有执行driver/网络/长测，无当前写入。
+- P7秘密/候选内容只读agent_478检查344tracked/index、显式secret出口与P6A候选，未见实际秘密；根ignore合成路径缺口已主管小修12敏感/7source例通过，不等全历史/运行时泄漏证明，详见docs/reports/p7-secret-artifact-check.md。
 - 当前活动提交：c9d5c07稳定性驱动准备/R1（主管offline34+6/typecheck），之前fb388a4工程检查点；P6A尚未提交。完整历史使用git log，不用旧状态文字推定工作区clean。
 - 整体相关本地提交后续：f1802e2候选打包器（83fixtures，未实际pack）、ff00e7d根自拷边界、1e275b1三包ACL、0e0bf7d本地大文件压力夹具、b0c3f4d认证专用内存私钥、7ed142e原生SSH集成/ACL/R2、7a574ab文件操作生命周期。所有本地提交仅相关文件，没有远程推送。
 
@@ -89,4 +90,4 @@
 
 ## 下一项具体动作
 
-继续P6-APP-TRANSFER-B1入队/任务UI/Finder/传输关闭保护，包rootFD+targetedclose已主管验收b034db2可用；工程师交付后主管读diff、真实Local native行为/取消/路径/关闭竞态独立复验，必要修复后提交。并行真实稳定性driver只构建/严格Development离线签名，不运行网络或长测。B1全部收口再生成新完整候选（不覆盖P6A内部候选）。真实互通需新增环境授权，目标mac26、DeveloperID、公证具体产物授权、双机/企业人工仍外部条件；先完成所有独立本地工作，整体未完成。
+当前无代码写入。先提交已核对状态/验收/有限采样报告，基于干净源码生成包含B1/R1的最新Development离线严格签名内部候选并独立verify，更新交付检查点与prompt-to-artifact审计；不是DeveloperID/Gatekeeper通过。然后集中记录真正外部阻塞：新增隔离运行环境授权、目标macOS26、真实200/24h、DeveloperID/具体产物公证批准、双机/企业人工。不得为补缺擅自安装VM/起宿主sshd/连生产/上传，整体不能COMPLETE。

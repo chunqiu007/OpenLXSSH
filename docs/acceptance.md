@@ -78,14 +78,14 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-15 | TERM-05 | Vim/Neovim、tmux、htop/btop、Docker 日志以及指定 Claude Code/OpenCode 版本的终端显示与输入可用 | 未执行 |
 | AC-16 | TERM-06～07 | 按主机保活，断线保留当前输出且仅手动重连，连接/认证中关闭可清理 | 未执行 |
 | AC-17 | FILE-01～02 | 文件面板默认隐藏，打开才直连认证；适用的密码、私钥、MFA 与信任验证通过，允许重复 MFA | 进行中：正式libssh2/共享Trust按需入口、原生Local面板+synthetic挑战、生产TCP前授权撤销R1主管89/signed通过；真实SFTP/MFA/mac26未验。见 `docs/reports/p6a-native-files-ui.md` |
-| AC-18 | FILE-03～04 | 浏览、创建目录、重命名、文件/目录删除、Finder 拖入；目标和错误信息正确 | 进行中：真实Local原生浏览/mkdir/安全rename/精确删除计划和能力probe已主管复验；上传下载/Finder拖入P6B尚未实现，真实远端未验。见 `docs/reports/p6a-native-files-ui.md` |
-| AC-19 | FILE-03、07 | 单文件、多文件、整目录往返内容一致；中文/空格/特殊字符和符号链接按明确策略处理，无越界或循环 | 进行中：本地根目录漏拷、源等长修改混合内容缺陷已修，主管Release57项含13新回归通过（修前8项36断言失败保留）。真实SFTP与App文件UI仍未执行，不能标整体通过。见 `docs/reports/p6-files-core.md`、`docs/reports/p7-core-review.md` |
-| AC-20 | FILE-05～06 | 覆盖/跳过/重命名及本次批量策略生效，唯一临时文件和提交不会误覆盖竞争目标 | 未执行 |
-| AC-21 | FILE-05～07 | 大文件取消、断线、权限不足、磁盘空间不足及不支持的安全覆盖有明确失败结果，不破坏既有文件 | 未执行 |
-| AC-22 | FILE-08～09 | 关闭 SSH 标签、切标签、隐藏 SFTP 面板后任务继续且可见；空闲连接可释放 | 未执行 |
+| AC-18 | FILE-03～04 | 浏览、创建目录、重命名、文件/目录删除、Finder 拖入；目标和错误信息正确 | 进行中：App本地原生浏览/安全操作与B1上传下载/fileURL注册回调主管103tests/GUI通过，人工Finder/NSOpenPanel、真实远端仍待。见 `docs/reports/p6a-native-files-ui.md`、`docs/reports/p6b1-native-transfers.md` |
+| AC-19 | FILE-03、07 | 单文件、多文件、整目录往返内容一致；中文/空格/特殊字符和符号链接按明确策略处理，无越界或循环 | 进行中：根枚举/源变化/根自拷缺陷已复验；B1真实Local单多/树/特殊原名往返SHA、链接拒绝主管103+GUI通过，核心2GiB/1000已独立实跑。真实SFTP/mac26仍待。见 `docs/reports/p6b1-native-transfers.md` |
+| AC-20 | FILE-05～06 | 覆盖/跳过/重命名及本次批量策略生效，唯一临时文件和提交不会误覆盖竞争目标 | 进行中：AppB1真实Local批策略/单项改名/独立风险、竞争原目标保留主管103tests/GUI通过；远端服务能力与最终nonCAS剩余风险仍待真实验收，见 `docs/reports/p6b1-native-transfers.md` |
+| AC-21 | FILE-05～07 | 大文件取消、断线、权限不足、磁盘空间不足及不支持的安全覆盖有明确失败结果，不破坏既有文件 | 进行中：正式核心本地2GiB取消及App4MiB真25%取消/断开retained/旧inode+SHA保留通过；真实网络断线/远端权限/磁盘满与能力不足未验，见 `docs/reports/p7-local-file-stress.md`、`docs/reports/p6b1-native-transfers.md` |
+| AC-22 | FILE-08～09 | 关闭 SSH 标签、切标签、隐藏 SFTP 面板后任务继续且可见；空闲连接可释放 | 进行中：AppB1真实Local任务跨hide/切主机/切关SSH标签继续，任务入口及定向idle/leased保护主管复验通过；真实远端/mac26仍待。见 `docs/reports/p6b1-native-transfers.md` |
 | AC-23 | LIFE | 无传输时标签关闭、主窗口关闭和退出正确；隐藏/最小化保持连接；重开不恢复或触发认证 | 进行中：无传输App原生关闭/重开/带活动逻辑tab退出/重叠window+Quit及永久admission回归主管通过；真实SSH进程、SFTP整合与mac26仍待。见 `docs/reports/p5-native-session-ui.md` |
-| AC-24 | LIFE、FILE-08 | 有传输时窗口关闭/退出均拦截；继续保留窗口，取消并关闭正确终止，文件不被静默破坏 | 未执行 |
-| AC-25 | SEC-02、AUTH、KEY | 源码、配置、数据库、参数、日志、测试截图和提交中没有秘密；测试不使用真实公司凭据 | 未执行 |
+| AC-24 | LIFE、FILE-08 | 有传输时窗口关闭/退出均拦截；继续保留窗口，取消并关闭正确终止，文件不被静默破坏 | 进行中：AppB1主管103tests/原生window+Quit共享决定/继续/取消真退出、晚风险及历史集合R1复验通过；真实SSH/SFTP清理/mac26仍待。见 `docs/reports/p6b1-native-transfers.md` |
+| AC-25 | SEC-02、AUTH、KEY | 源码、配置、数据库、参数、日志、测试截图和提交中没有秘密；测试不使用真实公司凭据 | 进行中：344tracked/index、显式认证/日志/argv/env/DB出口及P6A内部候选只读检查未见实际秘密；未覆盖全历史/运行时/所有日志，不作全证明。见 `docs/reports/p7-secret-artifact-check.md` |
 | AC-26 | SEC-04 | 固定依赖及传递依赖、许可证与来源记录；Sandbox/权限选择有证据，无关闭系统保护的绕过 | 未执行 |
 | AC-27 | 数据一致性 | 数据迁移、异常中断、重启、重复保存、Keychain/私钥删除引用失败均可恢复，不错配凭据 | 进行中：Core迁移/真实WAL异常退出/事务与共享引用、App补偿/清理重启有局部证据；App R1提交后清理语义和prepared恢复入口主管已复验。尚缺目标系统及整体认证/文件集成回归，未标通过。见 `docs/reports/p4-data-core.md`、`docs/reports/p4-security-core.md` |
 
@@ -93,12 +93,12 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 
 | 验收 ID | 场景 | 必要证据 | 当前状态 / 证据 |
 | --- | --- | --- | --- |
-| AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | 未执行 |
-| AC-29 | 5 个独立普通 SSH 会话真实连续运行 24 小时 | 实际起止时间、有效连接时长、采样、负载和错误；不以短测、改时钟或重启拼接冒充 | 未执行 |
+| AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | 待外部条件：真实min26驱动已链接/Development严格静态签名、offline34+6+12主管通过；无隔离服务器/目标系统，200真实未执行。见 `docs/reports/p7-stability-driver-preparation.md` |
+| AC-29 | 5 个独立普通 SSH 会话真实连续运行 24 小时 | 实际起止时间、有效连接时长、采样、负载和错误；不以短测、改时钟或重启拼接冒充 | 待外部条件：有限真实驱动/连续计时判定已准备，不是长测；缺隔离服务/macOS26实际运行，24h尚未执行 |
 | AC-30 | 大量输出与快速标签切换 | 声明输入速率/持续时间；队列有界、UI 可响应，渲染与输入正确，停止压力后能恢复 | 未执行 |
 | AC-31 | 大文件和多文件传输 | 默认至少 2 GiB 单文件及 1,000 个小文件测试集，记录往返摘要、速度、峰值内存、取消/断线结果；资源不够时报告实际限制 | 进行中：正式Files本地Release2GiB/1000往返+25%取消、SHA/原名/资源/精确清理，主管独立完整模式通过；真实远端/网络断线和App尚未验，不标整体通过。见 `docs/reports/p7-local-file-stress.md` |
 | AC-32 | 关闭主窗口或退出后资源检查 | 无不应存在的所属 ssh/认证辅助进程、文件连接、PTY/FD 或终端对象 | 未执行 |
-| PERF-R | 空闲 <200 MB、5 普通会话 <500 MB 的努力目标 | Release、相同负载和计量方式，App＋所属子进程；记录均值/峰值/趋势与未达原因，属于报告项 | 未测量 |
+| PERF-R | 空闲 <200 MB、5 普通会话 <500 MB 的努力目标 | Release、相同负载和计量方式，App＋所属子进程；记录均值/峰值/趋势与未达原因，属于报告项 | 未完成目标测量：HostProbe有限Local TimeProfiler/Leaks采样有局部证据，Allocations exit20无trace、Leaks空表不能推零泄漏，leaks-atExit短时0仅替代结果；非Release5真实会话。见 `docs/reports/p7-local-instruments.md` |
 
 2 GiB 与 1,000 文件是执行基准的初始定义，不扩大产品功能；环境不足时不能直接将较小样本记为完整通过。基准中记录机器内存、macOS/SDK、版本、历史行数、终端尺寸、服务器配置、采样间隔与测量方法。共享内存计量与子进程汇总口径保持一致，避免单一数字误导。
 
@@ -121,4 +121,4 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 
 - 任何已知秘密泄漏、主机身份校验绕过、静默文件损坏、持续无界资源增长或无法安装运行的问题都阻止完成。
 - 一般界面细节记录并按影响处理，不无限扩张首版；必要功能或验证缺失不能包装成普通已知限制。
-- 整体结论：产品实现与本地分项验证进行中；核心审查三项缺陷待修复复验，真实互通、目标系统、长期与外部人工验收未完成，无整体通过声明。
+- 整体结论：必要功能已有本地实现和分项审查，所发现核心/认证/生命周期缺陷已逐项修复复验；真实互通、目标系统、长期、正式发布与外部人工验收未完成，无整体通过声明。
