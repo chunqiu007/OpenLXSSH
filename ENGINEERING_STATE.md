@@ -46,12 +46,13 @@
 | P7-STABILITY-DRIVER-VOUCHER-REBUILD / agent_091f9d0e-836e-4b72-9773-05cf540931ad | driver-71e5e2da新UUID离线11对象min26、链接/Development严格签名通过；主管独立record verify exit0，未运行driver | 报告及精确hash见 `docs/reports/p7-stability-driver-preparation.md`；无当前build |
 | AUTH-REAL-MULTIPROMPT-PINNED-EVIDENCE / agent_87507387-f248-48e2-bcba-807bd602fef8 | 固定MINA2.20.0/commit2221febd…源码与许可研究已交付；后续真实构建/运行和六场景证据已由独立任务补齐 | 来源见`docs/reports/auth-multiprompt-backend-evidence.md`，实测见`docs/reports/real-mina-kbi.md`；原研究任务无当前写入 |
 | REAL-SFTP-DISKFULL-PREP-A / agent_80f0dacc-5fe4-42ec-ac4b-3ac1155adba0 | 只读调查确证既有/dev/shm独立64MiB可写，与/tmp relay元数据分离；现仅新`Tests/DiskFullAcceptance/`离线准备8MiB上传/最大60MiB filler及heldFD有限管理helper | 不Docker/端口/live，不填宿主卷；须真实errno28+full状态与原始SFTP失败联合、先release再核原SHA/清理，source/离线交主管审 |
-| REAL-SFTP-COMBINED-AUTH-PREP-A / agent_12500230-e749-48c1-ada3-95f1f8b3869b | OpenSSH12案已实测，主管独立核12原报告/契约/提示计算及资源证据通过，报告`docs/reports/real-openssh-four-auth.md`；现onlyRealIntegration新独立SFTP组合认证source/offline | OpenSSH*/Mina*实现冻结；新增显式ordered auth与KBI once-budget及实际微型SFTP往返，未审不live；主管d48抽验不受新源码影响 |
-| REAL-SFTP-DISCONNECT-LIVE-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 已审driver65fb389f…唯一16MiB实测真实transport/write/-43，主管原件无损/精确残留清理通过；receipt缺失整案PARTIAL。两文件atime R1主管源审/独立13Python+47Swift通过，原driver不变，原证据不追认 | source/runtime停写，无新upload/receipt/verify；报告`docs/reports/real-sftp-disconnect.md`，独立管理后验/清理路径保留 |
+| SFTP-KBI-UNEXPECTED-SHAPE-A / agent_12500230-e749-48c1-ada3-95f1f8b3869b | App62静态主管已审；真实矩阵5pass（passwordonly+keyonly四密钥各79bytes往返/清理）、1fail（key-kbd edplain完成A/B/C/3reads/3reply后第4callback被unknown拒绝），4MFA未尝试，原失败保留 | relay4660已TERMwait0/6accepted6finished0reject0cleanup；现只新增未知回调bounded长度/SHA/count/echo元数据，仍拒绝不回答，源审后单诊断case，不猜zero合法换绿 |
+| PRIMARY-DISCONNECT-R1-LIVE-A / 主管 | 原首案3a3…receipt缺失仍PARTIAL，R1独立13Python/47Swift通过；主管新casefb2a3e51…真实25%断连/精确receipt/transportwrite-43/新显式SFTP binding核原metadata+SHA/精确temp和localdata清理全闭环通过，两relay各1/1/0/0wait0 | 证据`DerivedData/Verification/primary-disconnect-r1-live-232259aa-f6de-49e2-9ef4-b94818dfda8a/`，不覆盖原失败；source已提交b28841e |
+| APP-REAL-KEYONLY-PREP-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 仅新HostProbe显式真实测试分支/严格契约/原生controls与隔离store接线source/offline，非probe substitutes；默认生产扫描与安全gate不改 | 首案只无口令keyonly真实SSH和按需SFTP只读浏览/关闭，不扩传输生命周期；源码审后才live，不改产品Packages/环境 |
 | AUTH-MINA-SOURCE-FOCUSED-REVIEW / agent_d2f36ff0-8a0d-483f-8a57-48e84427d2a8 | 只读原P2已定向resolved，无确证P0/P1；新16tests/旧13failures符合证据，不等运行验收 | 本轮停写，无当前任务 |
 | 主管 | 已收到用户本人授权继续，管理Docker官方安装/磁盘/签名与许可边界、文档与独立验收；此前已验本地里程碑不重做 | 安装不代接受订阅协议或系统凭据，真实SSH/SFTP分小里程碑推进，mac26/发布/人工仍待 |
 
-当前两位工程师并行写互不重叠的RealIntegration（SFTP组合认证source/offline）及新DiskFullAcceptance（有界ENOSPC source/offline），共享接口/产品/环境不改。Disconnect原driver冻结，2c仅修coordinator atime误判与离线回归；唯一runtime已有typed失败和主管独立管理后验/精确清理，receipt缺失仍PARTIAL。主管同d48独立password-kbd亲跑通过并释放root有限relay，当前无测试listener。rootfixture/relay与MINAmanaged/image/server源码冻结，五个获批隔离容器保留原CID。runtime凭据与原sourcecorpus只留隔离目录；不记录秘密、普通终端内容或加密wire。
+当前三位工程师并行写互不重叠的RealIntegration（只增加未知KBI形状元数据）、Application/AppTests/新独立脚本（真实App首案source/offline）及新DiskFullAcceptance（有界ENOSPC source/offline）；共享接口/产品Packages/环境不改。125的SFTP矩阵本轮已停runtime并清自有relay，5pass/1fail/4notattempted如实保留；MINA工程师仅只读研究固定源码额外回调。Disconnect新案已主管闭环通过，原失败证据保留；主管d48独立password-kbd已通过。rootfixture/relay与MINAmanaged/image/server冻结，五个获批容器原CID保留；不记录秘密、普通终端内容或加密wire。
 
 ## 关键技术决定与限制
 
@@ -64,7 +65,7 @@
 
 ## 产物、提交与证据
 
-- 实际分支`development/p1-prototypes`，候选来源`8b6396199db273493a438679df0020fa6ef7c3a4`；此前修复`d331188`、压力`ba4a2ec`，全部本地提交、remote为空。候选生成时dirty=false，随后仅主管验收/产物/审计文档继续更新，不声称候选包含尚未提交的后续文档。
+- 实际分支`development/p1-prototypes`，最新已审本地检查点`b28841e`（OpenSSH四flow与断连源码/原首案事实），前一`ed92ac9`（真实基础SSH/SFTP与MINA六场景），完整远端文件提交`15012d3`。候选来源仍`8b6396199db273493a438679df0020fa6ef7c3a4`，dirty=false生成，不声称包含后续测试基础设施/报告。全部本地提交、remote为空；R1后fresh断连完整闭环为之后主管实测记录，待下一文档提交。
 - 最新完整内部候选：`DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，version0.1.0/build1、源8b63961/dirty=false，包含最终已审C SHA34ee7f…；Development严格签名/runtime、arm64/min26、系统runtime闭包/真实依赖许可、App/ZIP/manifest独立核验通过。`spctl` exit3/Gatekeeper false，未公证/上传/安装/运行min26。
 - ZIP 7,418,092 bytes，SHA256 `fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e`；App规范树摘要`499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066`；manifest SHA256`4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f`。
 - 旧9fed318/0608cf64与P6A候选均保留历史不覆盖，不含本轮修复，不再用作当前候选。主程序/helper中压力/adversary专用symbol匹配0；最终内容秘密delta未见确证新增秘密/敏感材料，范围局限见对应报告。
@@ -79,7 +80,7 @@
 - 官方Ubuntu24.04ARM64固定ref `docker.io/library/ubuntu:24.04@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d` 已真实build为image `sha256:7f633d33bf5af2fbee137385eba3e036ef7bbbcf18fe423d99b25be12d12a363`，受限no-network探针确认PAM链接Python3.12/包/路径/权限且未auth，主管hash/实际image/23tests复核通过。
 - 实际Engine29.9.2/Buildx0.38.1/Compose5.6.1两项兼容缺陷已按实证修复：selected inspect不支持format改严格有界文本；Compose构建context失败改wrapper内部固定builtin buildx。随后project `openlxssh-fixture-61ed25328c13` 四容器首次upHealthy，精确internal/namedvolumes/资源/caps/noegress通过；但纯internal不实际发布127ports，未将配置PortBindings冒充可达。当前采用有限测试转接保留网络隔离，来源/失败/无外网证据均本地.logs，不上传。
 - Apple Development现有1，DeveloperID Application/Installer均0（仅计数）；无公证上传批准。证书/profile/登录由用户安全准备，Agent不代答系统授权。
-- 已真实验证host15系统OpenSSH四flow正向（keyonly有/无口令Ed25519/RSA、passwordonly、key-kbd Ed25519无口令三轮、password-kbd三轮），MINA双prompt/zero/8s审批拒绝取消核心及完整远端2GiB/1000往返/25%取消/权限链接/当前服务提交能力。真实断连已出现typedtransport且未完整提交，但receipt缺失、原target后验尚待，不能判整案通过。仍缺错误口令/错误过期OTP/保存凭据gate、SFTP组合认证、hostkey变化/手动嵌套/TUI、磁盘满、正式App真实整合、200创建关闭/五会话连续24h及目标平台/发布。不能用mock/缩数据/短测/改时钟/拼接补缺。
+- 已真实验证host15系统OpenSSH四flow正向（keyonly有/无口令Ed25519/RSA、passwordonly、key-kbd Ed25519无口令三轮、password-kbd三轮），MINA双prompt/zero/8s审批拒绝取消核心及完整远端2GiB/1000往返/25%取消/权限链接/当前服务提交能力。断连首案receipt缺失/PARTIAL保留，R1后主管新case完整真实25%→精确TERMreceipt→transportwrite-43→新SFTP binding核原SHA和精确cleanup闭环通过。仍缺错误口令/错误过期OTP/保存凭据gate、SFTP组合认证、hostkey变化/手动嵌套/TUI、磁盘满、正式App真实整合、200创建关闭/五会话连续24h及目标平台/发布。不能用mock/缩数据/短测/改时钟/拼接补缺。
 - macOS26实机/双机安装、中文IME/像素、人工Finder/selector与公司允许环境验收待外部操作。详情与必须提供的记录见 `docs/acceptance.md` 和外部前提文档。
 
 ## 下一项具体动作
@@ -88,4 +89,4 @@
 
 **当前已核Engine-ready：** 外部GUI操作后settings LicenseTermsVersion2/2CPU/4096MiB/40960MiB磁盘/AutoStartfalse，Engine实物2CPU约4GiB；主会话未写许可/资源键。R2修后独立22tests、真实selected builder/context及Compose四服务loopback/internal/namedvolumes/权限资源均通过，证据 `DerivedData/Environment/ready-final-307c9ef8-4dc6-456a-8a77-00a71cd4284b/`。没有再要求用户重复授权或许可。
 
-下一项实际工作：真实OpenSSH四flow七正向与五observe及48bridge清理已核，主管同d48亲跑password-kbd关键抽验实际exit0/31.516s、primary1/OTP3/connected1/serverfileRemoved/close/PID释放，自己的relay4/4/0/0 TERMwait0、端口释放。唯一16MiB断连已有transport/write/-43和主管固定CID原target metadata/SHA无损/精确残留清理，但协调器receipt门未过，2c仅修atime误判R1并保留原runtime PARTIAL，不重跑或编造时间。125 onlyRealIntegration准备SFTP组合认证与密钥格式微型往返消费者；80f only新DiskFullAcceptance离线准备既有/dev/shm64MiB上的有界ENOSPC与heldFD恢复，不填/tmp或宿主卷。两源码审后再串行live；正式App真实接线调查已完成待后续窄任务。目标macOS26/200/24h/DeveloperID公证/人工仍未满足。
+下一项实际工作：SFTP组合矩阵五单方法成功（密码与有/无口令Ed25519/RSA），key-kbd Edplain三轮后第4typedcallback被unknown拒绝，四MFA未尝试。125先onlysource/offline增加不含原文的bounded shape字段、保持不回答不追加secretread；源码审后单次诊断，MINA工程师只读研究固定源码，不预先接受zero。完整证据见`docs/reports/real-sftp-combined-auth.md`。80f新DiskFullAcceptance离线准备/dev/shm有界ENOSPC与heldFD恢复，2c只HostProbe真实App首案接线source/offline，两审后另串行live。断连R1后主管新案完整闭环与OpenSSH四flow/亲跑MFA已过；旧断连失败保留。目标macOS26/200/24h/DeveloperID公证/人工仍未满足。

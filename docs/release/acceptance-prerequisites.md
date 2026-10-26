@@ -24,7 +24,7 @@
 - 首次/再次主机信任、非22端口、已知hostkey轮换阻止新握手，精确人工替换后恢复；不静默删库。
 - 正式App远端TUI、中文/Unicode/Emoji/组合字符、控制键、缩放、Bracketed Paste。嵌套SSH在远程终端手动执行，内层认证不接收本机保存秘密。
 - SFTP密码/私钥/适用交互认证、同握手信任、按需连接；目录/创建/重命名/精确删除计划、Finder拖入、整目录/特殊原名/链接策略。
-- 真实2GiB与1000文件往返摘要、双向25%取消、权限与当前服务提交能力已完成核心campaign；实际断连/磁盘满、另一不支持扩展的服务及正式App/mac26仍需补齐。现有结果见 `docs/reports/real-sftp-file-acceptance.md`，不以本地压力或少量微型往返替代缺项。
+- 真实2GiB与1000文件往返摘要、双向25%取消、权限与当前服务提交能力已完成核心campaign；主管另用R1全新16MiB case完成真实断连、精确receipt、新显式SFTP连接原目标无损及精确清理。首案缺回执PARTIAL仍保留；磁盘满、其他能力边界及正式App/mac26仍需补齐。结果见 `docs/reports/real-sftp-file-acceptance.md`、`docs/reports/real-sftp-disconnect.md`，不以本地压力或少量微型往返替代缺项。
 
 ## 长测与资源
 

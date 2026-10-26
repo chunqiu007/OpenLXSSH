@@ -1,6 +1,6 @@
 # 真实上传断连：原目标保护与协调器回执缺口
 
-日期2026-10-27（Asia/Shanghai），Task REAL-SFTP-DISCONNECT-PREP-A / LIVE-A。**唯一16MiB实测已得到真实transport失败及原目标无损的独立证据，但严格回执/显式新连接verify门未完成，任务保持PARTIAL；不算整项AC-21通过。** 没有重跑上传或编造终止时间。
+日期2026-10-27（Asia/Shanghai），Task REAL-SFTP-DISCONNECT-PREP-A / LIVE-A / PRIMARY-DISCONNECT-R1-LIVE-A。**修复后由主管亲跑全新16MiB用例，真实断连、精确receipt、新显式SFTP连接核原目标及清理闭环通过；原首案receipt缺失仍保留PARTIAL。** 不覆盖失败、不补造终止时间，不算整项AC-21或产品通过。
 
 ## 独立入口与前置审查
 
@@ -69,10 +69,29 @@ R1仅修改coordinator.py/test_static.py：显式稳定九字段dev/ino/uid/gid/
 
 原target无损、残留可准确报告和外部精确恢复获得实际证据；回执完整性和显式新连接verify未因此追认通过。
 
+## 主管修复后全新用例闭环
+
+在原失败已定位、R1独立13Python/47Swift通过后，主管明确安排**新的case与新的collect generation**，不是重放原case或给旧结果补回执。driver仍为65fb389f…，管理helper为已审R1 SHA `b40fe4e5c93ae49c16e80196a75ec0e70c01fb80fdb048eb4b1f9d8bf42112ae`。完整2GiB/1000 campaign未重跑。
+
+新case `fb2a3e51-9399-4e5f-8140-e14af3baf4e5`：16MiB真实上传于4,194,304bytes后，由外层精确TERM自己relay PID3620，生产返回transport/write/-43、非timeout/cancel/完整提交；consumer用时11.163s。R1当场生成原TERM requested/completed时刻和readySHA绑定的真实receipt，其SHA256：
+
+`9a90cc6f2892ff3aaeb12bdfd51ba20750cd8e463f912b4759dfe0343bee64cb`
+
+随后主管另启有限relay，**显式运行独立verify命令**（6.392s），新service binding与原binding不同，非产品自动重连。真实核73B原target metadata前后完全一致，SHA256前后：
+
+`f1eb736b5f0564d88dcc45d33bcdab698692258fbd71da706c72ce298d21822e`
+
+仅本case成功创建账本中的精确temp、sentinel和空根被清理，本地data按inode/SHA验证后移除；新service awaitclose、fixture socket0。上传/后验两有限180s relay均各accepted1/finished1/rejected0/cleanup_failed0、TERM/waitexit0，lsof确认无listener。真实result为 `verified-original-and-cleaned-exact-owned-paths`。
+
+主管亲跑命令/exit、receipt/两轮原报告摘要与清理证据：
+
+`DerivedData/Verification/primary-disconnect-r1-live-232259aa-f6de-49e2-9ef4-b94818dfda8a/`
+
+新case runtime metadata：`Tests/RemoteFileAcceptance/.runtime/disconnect-fb2a3e51-9399-4e5f-8140-e14af3baf4e5/`。原3a3…案PARTIAL不改，原receipt仍不存在。
+
 ## 剩余与限制
 
-- 本案runtime PARTIAL，严格receipt/new-service verify没有通过；原失败保留，不重复upload作为掩盖。
-- R1源码和离线回归审查单独验收，不把修复后绿测代替本次runtime回执。
+- 修复后新用例的完整断连闭环通过；原首案严格receipt门未过仍PARTIAL，历史与新结论分开。
 - 本案不覆盖下载断连、磁盘满、GUI生命周期、正式macOS26或长期稳定性。
 - SFTP路径检查非原子、覆盖非CAS；管理清理只适用本案成功创建账本和已核身份，不扩张为任意路径安全删除保证。
 - 正式Goal仍NOT COMPLETE。
