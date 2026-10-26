@@ -3,6 +3,17 @@ import SwiftUI
 
 @main enum OpenLXSSHEntry {
     @MainActor static func main() {
+        do {
+            #if HOST_PROBE
+            let real = try AppRealIntegrationArguments.parse(Array(CommandLine.arguments.dropFirst()), hostProbe: true)
+            #else
+            let real = try AppRealIntegrationArguments.parse(Array(CommandLine.arguments.dropFirst()), hostProbe: false)
+            #endif
+            if real.action == .help { print(AppRealIntegrationArguments.help); return }
+            if real.action == .validate { print("Real fixture syntax only; no file/network I/O."); return }
+        } catch {
+            FileHandle.standardError.write(Data("OpenLXSSH: real fixture flags refused.\n".utf8)); exit(64)
+        }
         let application = NSApplication.shared
         application.setActivationPolicy(.regular)
         let delegate: AppDelegate
@@ -32,10 +43,31 @@ import SwiftUI
     private enum CloseIntent { case window, quit }
     #if HOST_PROBE
     private let smoke: NativeSmoke.Options?
+    private var realIntegration: AppRealIntegration?
     #endif
 
     init(arguments: [String]) throws {
         #if HOST_PROBE
+        let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: true)
+        if real.action == .live {
+            guard let path = real.contractPath,
+                  let epoch = Bundle.main.object(forInfoDictionaryKey: "OpenLXSSHRealFixtureBuildEpoch") as? Double else { throw AppRealIntegrationFailure.contract }
+            try AppRealIntegration.validateSignature()
+            let input = try AppRealPublicMaterial.load(path, buildEpoch: epoch)
+            let store = try AppRealOwnedStore(runID: input.contract.runID)
+            let location = AppDataLocation.isolated(store.url), repository = AppRepository(location: location)
+            let credentials = AppRealNoCredentials(namespace: UUID(uuidString: input.contract.runID)!)
+            let security = SecurityCoordinator(repository: repository, location: location, credentials: credentials)
+            let environment = SessionEnvironment(location: location), facts = AppRealFilesFacts()
+            let builder = DirectSessionBuilder(repository: repository, security: security, environment: environment,
+                scanner: AppRealSystemScanner(seconds: real.scanSeconds))
+            let connector = AppRealFilesConnector(LibSSH2FilesConnector(repository: repository, security: security, environment: environment), facts: facts)
+            model = AppModel(repository: repository, security: security, location: location, sessionBuilder: builder, filesConnector: connector)
+            smoke = nil
+            super.init()
+            realIntegration = AppRealIntegration(delegate: self, options: real, input: input, store: store, facts: facts, credentials: credentials)
+            return
+        }
         let options = try NativeSmoke.Options(arguments)
         smoke = options
         let location = options.map { AppDataLocation.isolated($0.directory) } ?? .applicationSupport
@@ -50,6 +82,7 @@ import SwiftUI
         model = AppModel(repository: repository, security: SecurityCoordinator(repository: repository, location: location,
                          credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder, filesConnector: filesConnector)
         #else
+        _ = try AppRealIntegrationArguments.parse(arguments, hostProbe: false)
         guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw CocoaError(.validationMissingMandatoryProperty) }
         model = AppModel(repository: AppRepository())
         #endif
@@ -60,7 +93,8 @@ import SwiftUI
         buildMenu()
         showMainWindow()
         #if HOST_PROBE
-        if let smoke {
+        if let realIntegration { Task { await realIntegration.run() } }
+        else if let smoke {
             Task { await NativeSmoke(delegate: self, options: smoke).run() }
         }
         #endif
