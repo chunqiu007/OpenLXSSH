@@ -18,7 +18,7 @@
 - 直接密码：记住/未记住、Keychain不可用人工回退、错误密码有界；目标macOS26自动使用条件另核系统ssh版本/签名/认证前提，不按prompt投递。
 - 私钥/密码后接OTP：长期凭据与unknown挑战隔离，错误/过期OTP、多轮并发不串用；关闭后迟到答案无效。
 - 等待审批、拒绝、取消及零输入通知：受控模拟只证明交互状态机，不宣称兼容所有企业厂商。
-- fixture OpenSSH PAM会串行化多提示，**同一wire消息中多个提示**仍需成熟真实后端方案，不能拿多轮/单元测试冒充。
+- fixture OpenSSH PAM会串行化多提示，不能用多轮替代**同一wire消息中多个提示**。固定 Apache MINA SSHD2.20.0/commit2221febd396cd3daafdfbf2ff982c6d0eb69a203 的成熟后端方案已有源码/许可依据，public API支持单消息多/zero，protected多轮薄适配尚未编译；见 `docs/reports/auth-multiprompt-backend-evidence.md`。建议额外非特权服务仅127.0.0.1:22225、Java只在测试容器，需与原环境一并批准，未启动/互通。
 - 首次/再次主机信任、非22端口、已知hostkey轮换阻止新握手，精确人工替换后恢复；不静默删库。
 - 正式App远端TUI、中文/Unicode/Emoji/组合字符、控制键、缩放、Bracketed Paste。嵌套SSH在远程终端手动执行，内层认证不接收本机保存秘密。
 - SFTP密码/私钥/适用交互认证、同握手信任、按需连接；目录/创建/重命名/精确删除计划、Finder拖入、整目录/特殊原名/链接策略。

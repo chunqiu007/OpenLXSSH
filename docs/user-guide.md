@@ -42,6 +42,6 @@ App专属数据、信任、会话、恢复和私钥路径除了POSIX权限，还
 
 ## 安装与卸载边界
 
-正式Release候选尚未产出。候选打包器默认未签名内部用途，脚本成功/ZIP生成不意味着Gatekeeper、真实登录或双机安装通过；签名、公证状态须以该产物manifest和验收记录为准，不应移除隔离标记或关闭Gatekeeper解决问题。
+已有本地内部候选用于构建与封装核对，**尚无完成正式发布验收的 Release**。候选打包器默认未签名内部用途，可显式使用既有Development身份离线签名；脚本成功、strict验证或ZIP生成不意味着Gatekeeper、真实登录或双机安装通过。每个候选只覆盖manifest列出的具体源码，旧候选不代表后续修复。签名、公证状态以该产物manifest和验收记录为准，不应移除隔离标记或关闭Gatekeeper解决问题。
 
 后续正式安装应通过已签名/按授权公证的OpenLXSSH.app。卸载App不应假设同时删除Keychain或Application Support数据；需要清理凭据时先通过App精确解除引用/清理，保留失败项，不能宽泛删除用户Keychain或SSH目录。

@@ -2,6 +2,8 @@
 
 当前状态：正式 App、共享数据/安全/信任/SSH/文件包已有本地实现与分项证据，产品验收进行中，整体未通过。宿主 macOS 15 的 HostProbe 与正式 macOS 26 编译分别记录；尚无真实 SSH/SFTP 互通、24 小时长测或双机验收。包测试与构建不等于产品通过。
 
+当前检查点：P6B1/R1已有主管103tests/原生与签名回归；本轮五view有限渲染压力独立通过并提交ba4a2ec，见 `docs/reports/p7-app-output-stress.md`。正式Transport对抗发现的voucher检查与超时dead-name泄漏已最小修复，主管独立Release35/6/4/10/28/28及rights矩阵通过；最终C对应App105/Release/签名及退出回归已核，见 `docs/reports/p7-transport-adversarial.md`。真实网络与目标系统不因此通过。既有9fed318干净源Development内部候选不含本轮修复，仍待新候选。下方阶段历史记录仅指当时状态，当前实现/委派以 `ENGINEERING_STATE.md` 为准。
+
 ## 阶段 0 门槛与证据（不替代产品验收）
 
 阶段任务状态只表示对应的调查、文档或环境核对完成，不表示产品功能、整体 Goal 或阶段 0 后续任务全部完成。阶段任务通过不能把 AC-01～AC-38 或其他产品验收条目标记为通过。
@@ -86,18 +88,18 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-23 | LIFE | 无传输时标签关闭、主窗口关闭和退出正确；隐藏/最小化保持连接；重开不恢复或触发认证 | 进行中：无传输App原生关闭/重开/带活动逻辑tab退出/重叠window+Quit及永久admission回归主管通过；真实SSH进程、SFTP整合与mac26仍待。见 `docs/reports/p5-native-session-ui.md` |
 | AC-24 | LIFE、FILE-08 | 有传输时窗口关闭/退出均拦截；继续保留窗口，取消并关闭正确终止，文件不被静默破坏 | 进行中：AppB1主管103tests/原生window+Quit共享决定/继续/取消真退出、晚风险及历史集合R1复验通过；真实SSH/SFTP清理/mac26仍待。见 `docs/reports/p6b1-native-transfers.md` |
 | AC-25 | SEC-02、AUTH、KEY | 源码、配置、数据库、参数、日志、测试截图和提交中没有秘密；测试不使用真实公司凭据 | 进行中：344tracked/index、显式认证/日志/argv/env/DB出口及P6A内部候选只读检查未见实际秘密；未覆盖全历史/运行时/所有日志，不作全证明。见 `docs/reports/p7-secret-artifact-check.md` |
-| AC-26 | SEC-04 | 固定依赖及传递依赖、许可证与来源记录；Sandbox/权限选择有证据，无关闭系统保护的绕过 | 未执行 |
+| AC-26 | SEC-04 | 固定依赖及传递依赖、许可证与来源记录；Sandbox/权限选择有证据，无关闭系统保护的绕过 | 进行中：正式五包/App锁图、原生输入/许可及实际候选链接来源已核；非Sandbox/Hardened Runtime/空权限决策见 `docs/adr/v1-runtime-permissions.md`。目标系统/最终发布权限回归未验，无系统保护修改，不标整体通过 |
 | AC-27 | 数据一致性 | 数据迁移、异常中断、重启、重复保存、Keychain/私钥删除引用失败均可恢复，不错配凭据 | 进行中：Core迁移/真实WAL异常退出/事务与共享引用、App补偿/清理重启有局部证据；App R1提交后清理语义和prepared恢复入口主管已复验。尚缺目标系统及整体认证/文件集成回归，未标通过。见 `docs/reports/p4-data-core.md`、`docs/reports/p4-security-core.md` |
 
 ## 3. 性能与长期稳定性
 
 | 验收 ID | 场景 | 必要证据 | 当前状态 / 证据 |
 | --- | --- | --- | --- |
-| AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | 待外部条件：真实min26驱动已链接/Development严格静态签名、offline34+6+12主管通过；无隔离服务器/目标系统，200真实未执行。见 `docs/reports/p7-stability-driver-preparation.md` |
+| AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | 待外部条件：最终Transport修复对应新driver-71e5e2da已重建/Development严格静态签名并主管独立record核验；准备offline34+6+12已有证据。无隔离服务器/目标系统，200真实未执行。见 `docs/reports/p7-stability-driver-preparation.md` |
 | AC-29 | 5 个独立普通 SSH 会话真实连续运行 24 小时 | 实际起止时间、有效连接时长、采样、负载和错误；不以短测、改时钟或重启拼接冒充 | 待外部条件：有限真实驱动/连续计时判定已准备，不是长测；缺隔离服务/macOS26实际运行，24h尚未执行 |
-| AC-30 | 大量输出与快速标签切换 | 声明输入速率/持续时间；队列有界、UI 可响应，渲染与输入正确，停止压力后能恢复 | 未执行 |
+| AC-30 | 大量输出与快速标签切换 | 声明输入速率/持续时间；队列有界、UI 可响应，渲染与输入正确，停止压力后能恢复 | 进行中：五真实view/逻辑driver有限渲染输入压力，主管105tests及原生76检查/22轮、每view814108 bytes、heartbeat377.93ms、停止后恢复通过；不是SSH/PTY/Release性能验收，真实负载待环境。见 `docs/reports/p7-app-output-stress.md` |
 | AC-31 | 大文件和多文件传输 | 默认至少 2 GiB 单文件及 1,000 个小文件测试集，记录往返摘要、速度、峰值内存、取消/断线结果；资源不够时报告实际限制 | 进行中：正式Files本地Release2GiB/1000往返+25%取消、SHA/原名/资源/精确清理，主管独立完整模式通过；真实远端/网络断线和App尚未验，不标整体通过。见 `docs/reports/p7-local-file-stress.md` |
-| AC-32 | 关闭主窗口或退出后资源检查 | 无不应存在的所属 ssh/认证辅助进程、文件连接、PTY/FD 或终端对象 | 未执行 |
+| AC-32 | 关闭主窗口或退出后资源检查 | 无不应存在的所属 ssh/认证辅助进程、文件连接、PTY/FD 或终端对象 | 进行中：App关闭/退出Local任务及五view压力后closed/disposed5、weak0、warm/closedFD16；Transport超时泄漏已修且主管Release rights归零/子进程回收通过，见 `docs/reports/p7-transport-adversarial.md`。真实SSH/SFTP及macOS26整体资源仍未验 |
 | PERF-R | 空闲 <200 MB、5 普通会话 <500 MB 的努力目标 | Release、相同负载和计量方式，App＋所属子进程；记录均值/峰值/趋势与未达原因，属于报告项 | 未完成目标测量：HostProbe有限Local TimeProfiler/Leaks采样有局部证据，Allocations exit20无trace、Leaks空表不能推零泄漏，leaks-atExit短时0仅替代结果；非Release5真实会话。见 `docs/reports/p7-local-instruments.md` |
 
 2 GiB 与 1,000 文件是执行基准的初始定义，不扩大产品功能；环境不足时不能直接将较小样本记为完整通过。基准中记录机器内存、macOS/SDK、版本、历史行数、终端尺寸、服务器配置、采样间隔与测量方法。共享内存计量与子进程汇总口径保持一致，避免单一数字误导。
@@ -108,7 +110,7 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 
 | 验收 ID | 必须结果 | 当前状态 / 证据 |
 | --- | --- | --- |
-| AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 进行中：P6A时点真实未签名内部App/ZIP+manifest UUID996cff64已生成并verify通过，来源/许可/摘要齐；Gatekeeper false/非最终Release，B1上传下载等尚未集成，后续须新候选。见 `docs/reports/p8-packaging-preparation.md` |
+| AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 进行中：真实干净源9fed318/B1 Development内部App/ZIP+manifest UUID0608cf64-e5ba-4ad6-953b-a726167f4b0f已生成、strict/runtime/来源许可摘要verify通过；Gatekeeper拒绝/未运行min26/非最终Release，且不含本轮Transport修复，最终须新候选。见 `docs/reports/p8-packaging-preparation.md` |
 | AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 未执行 |
 | AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 未执行 |
 | AC-36 | 朋友的第二台 Apple Silicon/macOS 26 正常安装，SSH/MFA、终端、SFTP 与退出实际验收 | 待外部条件：尚未安排第二台 Mac 操作 |
@@ -121,4 +123,4 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 
 - 任何已知秘密泄漏、主机身份校验绕过、静默文件损坏、持续无界资源增长或无法安装运行的问题都阻止完成。
 - 一般界面细节记录并按影响处理，不无限扩张首版；必要功能或验证缺失不能包装成普通已知限制。
-- 整体结论：必要功能已有本地实现和分项审查，所发现核心/认证/生命周期缺陷已逐项修复复验；真实互通、目标系统、长期、正式发布与外部人工验收未完成，无整体通过声明。
+- 整体结论：必要功能已有本地实现和分项审查，本轮Transport voucher/超时ownership修复及对应App回归已主管复核。真实互通、目标系统、长期、正式发布与外部人工验收未完成，无整体通过声明。

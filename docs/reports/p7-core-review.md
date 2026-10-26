@@ -47,4 +47,6 @@
 
 ## 验收边界
 
-修复后须主管审查实际 diff、读取测试输出并独立复验。Files R2两项已完成主管审查和独立Release57复验并提交25f802d，详见 `p6-files-core.md`，AC-19恢复进行中（非真实SFTP通过）。Security ACL已完成主管7文件/11新测试审查与独立Release31复验并提交8fffea4，AC-05恢复进行中。Core/Trust/Transport ACL随后完成主管独立Release48/46/35与严格签名离线IPC复验，提交1e275b1，AC-12恢复进行中；App父目录与恢复日志ACL及提交后失败分类仍在整合复验。R3同service根自拷边界已主管Release16通过并提交ff00e7d。历史测试事实保留，真实 SSH/SFTP、macOS 26 runtime、长测及 Release 全体验收仍未通过。
+修复后须主管审查实际 diff、读取测试输出并独立复验。Files R2两项已完成主管审查和独立Release57复验并提交25f802d，详见 `p6-files-core.md`，AC-19恢复进行中（非真实SFTP通过）。Security ACL已完成主管7文件/11新测试审查与独立Release31复验并提交8fffea4，AC-05恢复进行中。Core/Trust/Transport ACL随后完成主管独立Release48/46/35与严格签名离线IPC复验，提交1e275b1，AC-12恢复进行中；App父目录/恢复日志ACL、提交后失败分类、Journal FD ownership与并发关闭R2已主管审查及68tests/GUI/signed复验，提交7ed142e，详见 `p5-native-session-ui.md`。R3同service根自拷边界已主管Release16通过并提交ff00e7d。历史测试事实保留，真实 SSH/SFTP、macOS 26 runtime、长测及 Release 全体验收仍未通过。
+
+本轮后续正式Transport对抗又发现voucher接收策略与发送超时ownership缺陷，当前状态不能由上述ACL验收外推。修复/回归进度见 `ENGINEERING_STATE.md`，闭环后在专项报告记录，不删历史失败。

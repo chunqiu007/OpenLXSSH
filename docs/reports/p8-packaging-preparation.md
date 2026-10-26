@@ -2,7 +2,7 @@
 
 ## 本轮结论
 
-候选打包脚本及其83项独立fixture测试已完成主管复验。尚未运行正式Release构建或打包；不能据此声称候选产物、安装、Gatekeeper、Developer ID、公证或双机验收通过。
+候选打包脚本及其101项独立fixture测试已完成主管复验；真实P6A未签名候选及后续B1干净源Development内部候选均已生成并核验。不是安装、Gatekeeper、Developer ID、公证或双机验收通过。本轮Transport安全修复未进入既有候选，最终仍需源码稳定后的新UUID产物。历史83项是R1时点，不是当前总测试数。
 
 文件：`Scripts/package-release-candidate.py`、`Tests/ReleasePackaging/`、`docs/release/README-candidate.md`。默认unsigned，只显式选择已有Development/Developer ID身份才签名；不创建证书、不修改Keychain访问设置。Developer ID时间戳请求有独立显式开关，本轮未执行。脚本没有公证上传入口。
 
@@ -35,6 +35,20 @@ R2保留Swift外部定义路径，native改nm-U-m真实__TEXT,__text函数与已
 此为**P6A时点未签名内部候选**，上传下载/任务UI尚未集成。spctl exit1/Gatekeeper false，strict封装签名与Runtime验证false，未安装/运行min26，不能正式分发或当最终Release。没有读取签名身份或执行codesign签名、没有时间戳/公证/上传；编译器既有adhoc不等发布签名。后续B1完整源码需新候选，不覆盖此产物。
 
 日志 `DerivedData/Verification/primary-p6a-unsigned-candidate.log`、`primary-p6a-unsigned-candidate-r2.log`、`primary-packaging101.log`；R2只读诊断/证明见 `P8-ACTUAL-CANDIDATE-EVIDENCE-R2-3ae64fdb-2025-4e35-9b55-e8d95d7a8c8d/`。
+
+## B1 干净源码 Development 内部候选（历史产物，未含本轮 Transport 修复）
+
+主管在源码/构建停写并提交9fed318后串行生成：
+
+`DerivedData/Distributions/0.1.0-1-9fed3180a60a/0608cf64-e5ba-4ad6-953b-a726167f4b0f/`
+
+- version0.1.0/build1，来源 `9fed3180a60ab1725d876223033b9a715d8bf13a`、dirty=false，包含B1/R1完整本地功能；arm64/min26。
+- 使用既有Apple Development身份，helper先/App后、Hardened Runtime、无entitlements、timestampnone，strict/deep封装验证通过。不是Developer ID；`spctl` exit3、Gatekeeper false。
+- 实际包含GRDB7.11.1、SwiftTerm1.99.1 preview、libssh2 1.11.1、OpenSSL3.5.9；ArgumentParser/SwiftPNG/H虽然resolved，但未链接，不假称包含。没有Homebrew运行库。
+- ZIP 7,417,890 bytes，SHA256 `dbab8a17f3945ccb7d9a2e72b5b3bc576762f1e7ba83604971247d4d7cb7f3bd`；App规范树摘要 `20301c50838c3616ef35b31b10dbe143e8852ee9093aa68e0e6eee8cfbf8edf9`；manifest SHA256 `0005ae8c6878c774fb466878dff1690489ea144839f9655ab8c5b587428bff63`。
+- 主管独立 `--verify-manifest` 通过，并复核真实HEAD/摘要。首次额外比对误猜40位commit导致组合命令exit1，验证器本身已成功；随后从git取得准确revision重核通过，未修改manifest掩盖错误。
+
+该产物未上传、公证、安装或在macOS26运行。后续对抗回归又发现voucher接收策略及发送超时ownership问题，旧候选不能用于证明新源码安全；最终需要新UUID候选，保留此历史产物不覆盖。
 
 ## 后续约束
 

@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-仅驱动准备范围通过，未执行真实200次连接或五会话连续24小时。`Tests/StabilityAcceptance/` 提供依赖为空的离线安全/计时/证据核心与CLI，另有target外真实DirectSSHSession AppKit consumer源码，未链接、构建、签名或运行真实driver。默认help/validate无连接，离线CLI即使带flag也拒绝真实run。
+仅驱动准备/离线构建范围通过，未执行真实200次连接或五会话连续24小时。`Tests/StabilityAcceptance/` 提供依赖为空的离线安全/计时/证据核心与CLI，target外真实DirectSSHSession AppKit consumer已在构建B真实链接与Development严格静态签名、未运行（见下节）。默认help/validate无连接，离线CLI即使带flag也拒绝真实run。本轮Transport voucher/ownership改动后的新UUID驱动已重建并主管独立静态核验，旧driver仅保留历史，不能混用其hash。
 
 正式驱动未来仅接受获用户授权的官方隔离keyonly服务127.0.0.1:22221、fixture账号、无口令一次性Ed25519。运行flag只是防误操作，不等用户授权。启动检查目标macOS26、严格产品App/helper固定身份、out-of-band已核指纹与fixture provenance、权限/无ACL/无链接材料及输出目录。不从keyscan自动接受、不读Keychain/ssh-agent、不支持猜测挑战。未知/加密密钥/MFA明确拒绝，产品四类认证仍另验。
 
@@ -34,6 +34,20 @@
 工程师成功产物：`Tests/StabilityAcceptance/.build/driver-8f5d1fcc-764d-4641-829c-7ff119888656/wrapper/OpenLXSSHStability.app`。driver SHA256 `e85de82f685f0455176916feb5f64d99def81ceea7b68d19cd7bd48ca2d2b07e`，helper `9173ad680234094d7d0a01b3db992d1c5453193e485920207722023fe232fb99`。来源commit b034db2/dirty=true，产物状态signed-static-only-not-run。
 
 主管阅读6文件关键编译/来源/链接/签名/拒绝实现与tests，独立 `build_driver.py verify --record <该UUID>/result.json` 退出0，真实严格signature、对象min26/sourcehash/linkmap闭包通过；再独立verify_offline退出0，34XCTest+6既有Python+12新增Python、API typecheck/Csyntax通过。日志 `.build/primary-driver-build-verify.log`、`primary-driver-build-offline.log`。未重复消耗一次完整重编，独立核验实际产物和关键边界。SwiftTerm6处上游CVDisplayLink弃用warning保留，未压制。
+
+## 最终 Transport 修复后的离线重建
+
+本轮 voucher/发送超时ownership修复定型后，使用原配方只执行一次新UUID `build_driver.py build --sign-development`，随后 `verify --record`，两者exit0；未改任何驱动源码/配方，未重复未变化的offline单测。新产物：
+
+`Tests/StabilityAcceptance/.build/driver-71e5e2da-b345-4c4b-ab54-53b8d128209d/wrapper/OpenLXSSHStability.app`
+
+- gitStart/gitEnd均 `ba4a2ecc6e702fcebde63b66f098aba7dd365d56`、dirty=true，如实记录本轮尚未提交的Transport与主管文档；编译快照C SHA256精确为最终 `34ee7ffbad3c2f75e60a08c308ae1e7021ae82293826b84bd327c3caa20fbb32`。
+- 163项input inventory SHA256 `33718d3aa1876b03fabdba6f3c29a10a7c4b9db272171f09328a8b42c28d4217`；manifest SHA256 `1ee07d08f5e315ce0a2b9a348bb58108518df16cc12fc064131ddf067c6a46ac`。
+- 11个runtime对象arm64/MH_OBJECT/min26，driver实际linkmap10对象+54SDKstubs、helper5对象+19SDKstubs，没有额外archive/host工具。两入口MH_EXECUTE/min26，仅系统运行库、空rpaths。
+- helper先/App后、正式identifier、同有效Team、Runtime、无entitlements、timestampnone严格签名通过。signed driver SHA256 `66843ddc286375de474e9823ea7353cd7d77265b5e1a8bf1cbf8a009cf7f625a`，helper `31d0ee0ee9d357d7edd0bfaf129a9ae4b38334fd8955184f6afc049d685a0590`。
+- 真正record、commands、快照、linkmaps及logs均在该UUID；配方固定taskID字段仍为BUILD-B，没有改字段假造新接口，本轮由实际UUID关联。
+
+主管独立执行同一新record的 `build_driver.py verify --record .../result.json`，exit0，核源码/快照/对象/linkmap闭包、wrapper和严格签名，日志 `DerivedData/Verification/p7-final-driver-primary-verify.log`。未再次全量重编，未执行driver/helper/网络/200次/24h。SwiftTerm原6处上游弃用warning保留。
 
 ## 待完成
 

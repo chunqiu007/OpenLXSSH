@@ -48,7 +48,7 @@ python3 Scripts/package-release-candidate.py --signing development --identity '<
 
 脚本不创建/导入证书，不读取私钥，不更改 Keychain ACL/search-list，不提供授权回答。签名按叶代码、内嵌 framework、主 App 顺序执行；不以 `codesign --deep` 签名，只用于严格验证。所有签名代码必须具有一致身份/团队、Hardened Runtime，无调试/运行时绕过权限。
 
-`--signing developer-id` 还必须明确提供 `--allow-timestamp-request` 才会允许向 Apple 请求时间戳。这是额外对外操作授权，不是公证/上传授权；本任务未执行任何真实签名或时间戳请求。无论签名方式，`notarized=false`、`uploaded=false`。
+`--signing developer-id` 还必须明确提供 `--allow-timestamp-request` 才会允许向 Apple 请求时间戳。这是额外对外操作授权，不是公证/上传授权。此前实际内部候选曾显式使用既有Development身份离线签名，Developer ID/时间戳/公证仍未执行；不能把早期脚本fixture测试的“未真实签名”状态当作当前所有产物状态。无论签名方式，本入口的`notarized=false`、`uploaded=false`。
 
 ## 独立验证
 

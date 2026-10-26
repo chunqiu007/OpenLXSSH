@@ -4,12 +4,12 @@
 
 ## 当前集成状态（优先于下方P0历史调查）
 
-- GRDB7.11.1 / `b83108d10f42680d78f23fe4d4d80fc88dab3212` 已进入正式Core和App，系统SQLite；真实DB29测试及App本地13测试/GUI通过，不代表连接功能完成。
-- SwiftTerm精确1.99.1预览 / `2f573f73af5e768d90847dce20c97fa9535d7164` 在P2探针选定，稳定1.20输出尾部失败已主管独立复现；不是正式稳定2.x。实际锁图和licenses见实验Package.resolved/ThirdParty及P2 ADR，后续Transport同版本。
-- SFTP当前原生组合libssh2 1.11.1 + OpenSSL3.5.9 LTS，固定tag object/peeled/archive SHA/官方checksum/SDK/flags见P3 `native-inputs.json`。OpenSSL3.5.9 archiveSHA `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`，长期维护证据至2030-04-08；真实服务互通未验，正式Files包迁移中。
+- GRDB7.11.1 / `b83108d10f42680d78f23fe4d4d80fc88dab3212` 已进入正式Core/App，系统SQLite；Core后续ACL完整48与App103本地验证通过，后续HostProbe压力105仅增加本地测试；不代表真实连接完成。
+- SwiftTerm精确1.99.1预览 / `2f573f73af5e768d90847dce20c97fa9535d7164` 已集成正式Transport/App；稳定1.20尾部丢失主管复现，明确不是稳定2.x，见P2 ADR。根App与Transport锁图一致，固定插件/manifest/generator内容门禁，未知更改拒绝。
+- SFTP正式Files已迁入App，libssh2 1.11.1 + OpenSSL3.5.9 LTS静态arm64，无Homebrew runtime。固定tag/peeled/archiveSHA/许可/工具链在正式Files native-inputs.json与build manifest，160输出/7noticehash验证。OpenSSL archiveSHA `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`，维护至2030-04-08；真实服务互通未验。
 - P0的OpenSSL3.6.5模糊hash `e5c234...` 与后续现场tag/peeled不一致，不能用作生产输入；不推断上游变化原因。3.6.5短维护候选已被LTS取代，历史记录保留但非当前选择。
-- 正式OpenLXSSHTrust/OpenLXSSHSecurity无外部包，系统CryptoKit/Security/OpenSSH；安全策略显式file-based Keychain见ADR，不通过依赖修改关闭系统保护。
-- 当前正式App只集成Core；后续各包尚需逐项链接/签名/许可证/实际App运行审查。测试成功不是完整产品验收。
+- 正式Trust/Security无外部包，系统CryptoKit/Security/OpenSSH；显式file-based Keychain见ADR，不通过依赖更改关闭系统保护。正式App运行库仍依赖目标系统提供OpenSSH/SQLite/Appleframeworks。
+- P6B1/R1本地实现已审，9fed318干净源码曾生成Development/runtime严格签名内部App/ZIP，实际included为GRDB/SwiftTerm/libssh2/OpenSSL且许可随bundle；ArgumentParser/SwiftPNG/H虽resolved但未链接，不假称包含。该产物未含后续Transport voucher/ownership修复，须最终新候选；Gatekeeper拒绝/未公证、无mac26/真实SSH-SFTP运行验收，不能把包/候选校验写为产品完成。
 
 ## P0-03历史调查（以下状态均指调查时）
 
