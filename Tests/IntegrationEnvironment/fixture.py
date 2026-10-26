@@ -2,11 +2,13 @@
 """Authorized local-only Docker fixture driver; defaults to no side effects."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -24,7 +26,7 @@ DIGEST_RE = re.compile(r'^docker\.io/library/ubuntu:24\.04@sha256:[0-9a-f]{64}$'
 PROJECT_RE = re.compile(r'^openlxssh-fixture-[0-9a-f]{12}$')
 SESSION_RE = re.compile(r'^[0-9a-f]{24}$')
 ACTIONS = ('build', 'up', 'stop', 'remove', 'collect', 'scenario', 'rotate-host',
-           'challenge', 'data', 'disconnect', 'start', 'inspect')
+           'challenge', 'data', 'disconnect', 'start', 'inspect', 'relay')
 LOCAL_CONTEXTS = ('default', 'desktop-linux')
 VERIFIED_CONTEXT = None
 VERIFIED_ENDPOINT = None
@@ -101,6 +103,8 @@ def docker_environment(context=None):
            if not key.startswith(('DOCKER_', 'BUILDX_', 'BUILDKIT_', 'COMPOSE_'))}
     env['BUILDX_CONFIG'] = str(Path.home() / '.docker' / 'buildx')
     env['COMPOSE_BAKE'] = 'false'
+    env['LC_ALL'] = 'C'
+    env['NO_COLOR'] = '1'
     if context is not None:
         env['DOCKER_CONTEXT'] = context
         env['BUILDX_BUILDER'] = context
@@ -157,14 +161,69 @@ def require_local_engine():
     return context
 
 
+def parse_builder_inspect(raw):
+    # Buildx v0.38.1 inspect has no --format. Its selected-builder output uses
+    # unindented metadata/Nodes fields; indented device Name fields are not
+    # nodes. Reject ambiguous/oversized output instead of guessing or using ls
+    # (which could probe unrelated user builders, including remote endpoints).
+    if not isinstance(raw, bytes) or not 0 < len(raw) <= 64 * 1024:
+        raise FixtureError('unexpected builder inspection size')
+    text = raw.decode('utf-8')
+    if any((ord(char) < 32 and char not in '\n\t') or ord(char) == 127 for char in text):
+        raise FixtureError('unexpected control characters in builder inspection')
+    lines = text.splitlines()
+    if len(lines) > 512 or any(len(line) > 4096 for line in lines):
+        raise FixtureError('builder inspection bounds exceeded')
+    metadata, node = {}, {}
+    in_nodes = False
+    last_activity_seen = False
+    section = None
+    for line in lines:
+        if not line:
+            continue
+        if re.fullmatch(r'Last Activity:[ \t]+[0-9]{4}-[0-9]{2}-[0-9]{2} '
+                        r'[0-9]{2}:[0-9]{2}:[0-9]{2} \+0000 UTC[ \t]*', line):
+            if in_nodes or last_activity_seen or set(metadata) != {'Name', 'Driver'}:
+                raise FixtureError('duplicate or misplaced builder activity')
+            last_activity_seen = True
+            continue
+        if line == 'Nodes:':
+            if in_nodes or set(metadata) != {'Name', 'Driver'}:
+                raise FixtureError('unexpected builder header or duplicate Nodes section')
+            in_nodes = True
+            continue
+        field = re.fullmatch(r'(Name|Driver|Endpoint):[ \t]+(\S+)[ \t]*', line)
+        if field is not None:
+            key, value = field.groups()
+            target = node if in_nodes else metadata
+            allowed = ('Name', 'Endpoint') if in_nodes else ('Name', 'Driver')
+            if key not in allowed or key in target:
+                raise FixtureError('duplicate or misplaced builder field/node')
+            target[key] = value
+            section = None
+        elif not in_nodes or set(node) != {'Name', 'Endpoint'}:
+            raise FixtureError('incomplete builder identity or node')
+        elif re.match(r'[ \t]*(?:Name|Driver|Endpoint|Nodes)\s*:', line):
+            # Native output has an indented device Name. Do not accidentally
+            # accept an indented second node or endpoint as unrelated detail.
+            if not (section == 'Devices' and re.fullmatch(r' +Name:[ \t]+\S+[ \t]*', line)):
+                raise FixtureError('malformed or extra builder identity field')
+        elif re.match(r'[ \t]*(?:Error|Errors|Err)\s*:', line):
+            raise FixtureError('builder inspection reported an error')
+        elif not line[0].isspace():
+            section = line.partition(':')[0]
+    if not in_nodes or set(node) != {'Name', 'Endpoint'}:
+        raise FixtureError('expected exactly one builder node')
+    return metadata['Name'], metadata['Driver'], node['Name'], node['Endpoint']
+
+
 def require_local_builder():
-    # No --bootstrap: only inspect the builtin builder, never start or adopt a
-    # docker-container/remote builder. Fail closed if it points elsewhere.
-    builder = json.loads(docker(['buildx', 'inspect', VERIFIED_CONTEXT, '--format', '{{json .}}'], capture=True))
-    nodes = builder.get('Nodes') or []
-    if builder.get('Driver') != 'docker' or len(nodes) != 1:
-        raise FixtureError('build requires the selected context\'s builtin docker-driver builder')
-    if nodes[0].get('Endpoint') not in (VERIFIED_CONTEXT, VERIFIED_ENDPOINT):
+    # No --bootstrap and no global ls: inspect only the pinned builtin builder.
+    raw = docker(['buildx', 'inspect', VERIFIED_CONTEXT, '--timeout', '10s'], capture=True)
+    name, driver, node_name, endpoint = parse_builder_inspect(raw)
+    if name != VERIFIED_CONTEXT or driver != 'docker' or node_name != VERIFIED_CONTEXT:
+        raise FixtureError('build requires the selected context\'s single builtin docker-driver node')
+    if endpoint not in (VERIFIED_CONTEXT, VERIFIED_ENDPOINT):
         raise FixtureError('builder endpoint differs from the verified local Docker context')
 
 
@@ -231,19 +290,134 @@ def exec_server(state, service, args):
     return identifier
 
 
-def copy_private_json(identifier, source, destination):
+EXPORT_LIMIT = 64 * 1024
+EXPORT_TIMEOUT = 15.0
+EXPORT_SOURCE_RE = re.compile(r'/run/openlxssh-fixture/export/(?:metadata\.json|challenge-[0-9a-f]{24}\.json)')
+EXPORT_KEY_NAMES = frozenset(name + suffix for name in
+    ('id_ed25519', 'id_ed25519_encrypted', 'id_rsa', 'id_rsa_encrypted') for suffix in ('', '.pub'))
+
+# Fixed non-shell program. It reads a single allowed tmpfs file through pinned
+# directory fds, validates everything before emitting any bytes, and never logs.
+PRIVATE_EXPORT_READER = r'''
+import os,re,stat,sys
+fds=[]
+try:
+    source=sys.argv[1]
+    if not re.fullmatch(r'/run/openlxssh-fixture/export/(metadata\.json|challenge-[0-9a-f]{24}\.json)',source):
+        raise ValueError()
+    directory=os.open('/run',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    fds.append(directory)
+    for name,mode in (('openlxssh-fixture',0o755),('export',0o700)):
+        directory=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
+        fds.append(directory)
+        info=os.fstat(directory)
+        if info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=mode: raise ValueError()
+    fd=os.open(source.rsplit('/',1)[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+    fds.append(fd)
+    before=os.fstat(fd)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid!=0 or before.st_nlink!=1
+            or stat.S_IMODE(before.st_mode)!=0o600 or not 0<before.st_size<=65536):
+        raise ValueError()
+    data=bytearray()
+    while len(data)<=65536:
+        block=os.read(fd,min(8192,65537-len(data)))
+        if not block: break
+        data.extend(block)
+    after=os.fstat(fd)
+    identity=lambda info:(info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_nlink,
+                          info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    if len(data)!=before.st_size or identity(before)!=identity(after): raise ValueError()
+    view=memoryview(data)
+    while view:
+        count=os.write(1,view)
+        if count<=0: raise OSError()
+        view=view[count:]
+except Exception:
+    os.write(2,b'private fixture export refused; contents suppressed\n')
+    raise SystemExit(1)
+finally:
+    for fd in reversed(fds): os.close(fd)
+'''
+
+
+def validate_private_json(raw, source):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise FixtureError('duplicate private metadata field')
+            result[key] = value
+        return result
+    try:
+        if (not isinstance(source, str) or not EXPORT_SOURCE_RE.fullmatch(source)
+                or not isinstance(raw, bytes) or not 0 < len(raw) <= EXPORT_LIMIT):
+            raise FixtureError('private metadata size/source refused')
+        data = json.loads(raw, object_pairs_hook=unique_object,
+                          parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+        if not isinstance(data, dict):
+            raise FixtureError('private metadata must be one JSON object')
+        if source.endswith('/metadata.json'):
+            expected = {'password.txt', 'key-passphrase.txt', 'keys', 'known_hosts', 'fingerprint', 'packages'}
+            if (set(data) != expected or not isinstance(data['keys'], dict)
+                    or set(data['keys']) != EXPORT_KEY_NAMES
+                    or any(not isinstance(data[key], str) or not data[key] or '\0' in data[key]
+                           for key in expected - {'keys'})
+                    or any(not isinstance(value, str) or not value or '\0' in value
+                           for value in data['keys'].values())):
+                raise FixtureError('private metadata schema refused')
+        else:
+            session = source.rsplit('/', 1)[1][len('challenge-'):-len('.json')]
+            if (set(data) != {'session', 'expires_at', 'scenario', 'responses'} or data['session'] != session
+                    or data['scenario'] != 'multi' or not isinstance(data['responses'], list)
+                    or len(data['responses']) != 3
+                    or any(not isinstance(value, str) or not re.fullmatch(r'[0-9]{8}', value)
+                           for value in data['responses'])
+                    or type(data['expires_at']) not in (int, float) or not math.isfinite(data['expires_at'])
+                    or data['expires_at'] <= time.time()):
+                raise FixtureError('private challenge schema/expiry refused')
+        return data
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError, FixtureError):
+        raise FixtureError('private export JSON was refused; contents suppressed') from None
+
+
+def copy_private_json(identifier, source, destination, *, state, service):
+    # No temporary secret file or archive extraction. The destination argument
+    # remains an existence/path guard; only validated fields are persisted later.
+    from relay import _bounded_stdout
+    import threading
+    if (not isinstance(source, str) or not EXPORT_SOURCE_RE.fullmatch(source)
+            or not re.fullmatch(r'[0-9a-f]{12,64}', identifier) or service not in SERVICES
+            or VERIFIED_CONTEXT not in LOCAL_CONTEXTS or VERIFIED_ENDPOINT is None):
+        raise FixtureError('private export target/source refused')
     if destination.exists() or destination.is_symlink():
         raise FixtureError('refusing existing export path')
-    # Docker cp writes a file, never terminal stdout; parent is private 0700.
+    local_endpoint(VERIFIED_ENDPOINT)
+    environment = docker_environment(VERIFIED_CONTEXT)
+    environment.pop('DOCKER_CONTEXT', None)
+    executable = shutil.which('docker', path=environment.get('PATH', os.defpath))
+    if executable is None:
+        raise FixtureError('local Docker CLI unavailable')
+    command = [str(Path(executable).resolve(strict=True)), '--host', VERIFIED_ENDPOINT]
+    deadline = time.monotonic() + EXPORT_TIMEOUT
+    cancelled = threading.Event()
     try:
-        docker(['cp', identifier + ':' + source, str(destination)], capture=True)
-        if destination.is_symlink() or not destination.is_file():
-            raise FixtureError('invalid copied metadata')
-        destination.chmod(0o600)
-        return json.loads(destination.read_text())
-    finally:
-        if destination.is_file() and not destination.is_symlink():
-            destination.unlink()
+        raw = _bounded_stdout(command + ['inspect', identifier], environment, deadline, cancelled)
+        objects = json.loads(raw)
+        if len(objects) != 1:
+            raise FixtureError('ambiguous private export container')
+        item = objects[0]
+        labels = item['Config'].get('Labels') or {}
+        exact = item['Id']
+        if (not re.fullmatch(r'[0-9a-f]{64}', exact) or not exact.startswith(identifier)
+                or labels.get(LABEL) != LABEL_VALUE or labels.get('com.docker.compose.project') != state['project']
+                or labels.get('com.docker.compose.service') != service or item['State']['Running'] is not True):
+            raise FixtureError('private export ownership refused')
+        raw = _bounded_stdout(command + ['exec', '--user', '0:0', exact, '/usr/bin/python3', '-c',
+                                        PRIVATE_EXPORT_READER, source], environment, deadline, cancelled,
+                              limit=EXPORT_LIMIT)
+        return validate_private_json(raw, source)
+    except Exception:
+        raise FixtureError('private export pipe failed or was refused; contents suppressed') from None
 
 
 def collect(state, service):
@@ -253,19 +427,16 @@ def collect(state, service):
     # Unique generations preserve prior trust for host-key mismatch tests.
     generation = destination / ('credentials-' + secrets.token_hex(6))
     private_dir(generation)
-    metadata = copy_private_json(identifier, '/run/openlxssh-fixture/export/metadata.json', generation / 'metadata.json')
+    metadata = copy_private_json(identifier, '/run/openlxssh-fixture/export/metadata.json', generation / 'metadata.json',
+                                 state=state, service=service)
+    inspected = json.loads(docker(['inspect', identifier], capture=True))[0]
     private_write(generation / 'password.txt', metadata['password.txt'] + '\n')
     private_write(generation / 'key-passphrase.txt', metadata['key-passphrase.txt'] + '\n')
     private_write(generation / 'known_hosts', metadata['known_hosts'])
     private_write(generation / 'fingerprint.txt', metadata['fingerprint'] + '\n')
     private_write(generation / 'packages.txt', metadata['packages'])
-    inspected = json.loads(docker(['inspect', identifier], capture=True))[0]
     private_write(generation / 'provenance.json', json.dumps({'base_image': state['image'],
                   'built_image_id': inspected['Image'], 'service': service, 'collected_at': time.time()}))
-    allowed = {name + suffix for name in ('id_ed25519', 'id_ed25519_encrypted', 'id_rsa', 'id_rsa_encrypted')
-               for suffix in ('', '.pub')}
-    if set(metadata['keys']) != allowed:
-        raise FixtureError('unexpected key export filenames')
     for name, value in metadata['keys'].items():
         private_write(generation / name, value)
     print('Private files written to ' + str(generation) + '; contents were not printed.')
@@ -278,7 +449,7 @@ def challenge(state, service, session):
     destination = RUNTIME / service
     private_dir(destination)
     data = copy_private_json(identifier, '/run/openlxssh-fixture/export/challenge-' + session + '.json',
-                             destination / ('.export-' + session + '.json'))
+                             destination / ('.export-' + session + '.json'), state=state, service=service)
     if data['expires_at'] <= time.time():
         raise FixtureError('challenge expired')
     target = destination / ('challenge-' + session + '.json')
@@ -305,6 +476,83 @@ def cleanup_local():
     shutil.rmtree(str(RUNTIME))
 
 
+def relay(state, max_duration, *, startup_deadline=None, cancelled=None):
+    # Relay-only bounded routing; the four shared context/build helpers remain
+    # unchanged. One resource enumeration, one exact batch, no service rescans.
+    from relay import FrozenDockerTarget, RelayError, serve
+    identifiers = resources(state, 'container')
+    resources(state, 'volume')
+    resources(state, 'network')
+    if len(identifiers) != len(SERVICES):
+        raise FixtureError('relay requires exactly the four existing services')
+    objects = json.loads(docker(['inspect'] + identifiers, capture=True))
+    if len(objects) != len(identifiers):
+        raise FixtureError('relay container batch was incomplete')
+    services = {}
+    full_ids = set()
+    for item in objects:
+        labels = item['Config'].get('Labels') or {}
+        identifier = item['Id']
+        service = labels.get('com.docker.compose.service')
+        # ps -q can return short IDs; each must unambiguously match exactly one
+        # full inspected ID, and no extra/missing/duplicate/foreign is adopted.
+        matches = [short for short in identifiers if re.fullmatch(r'[0-9a-f]{12,64}', short)
+                   and identifier.startswith(short)]
+        if (not re.fullmatch(r'[0-9a-f]{64}', identifier) or len(matches) != 1
+                or identifier in full_ids or service not in SERVICES or service in services
+                or labels.get(LABEL) != LABEL_VALUE
+                or labels.get('com.docker.compose.project') != state['project']):
+            raise FixtureError('relay container batch identity refused')
+        services[service] = item
+        full_ids.add(identifier)
+    if any(sum(identifier.startswith(short) for identifier in full_ids) != 1 for short in identifiers):
+        raise FixtureError('relay ambiguous or missing container ID')
+    for image in sorted({item['Image'] for item in objects}):
+        verify_image(state, image)
+    targets = []
+    for service, port in zip(SERVICES, range(22221, 22225)):
+        item = services[service]
+        networks = item['NetworkSettings']['Networks']
+        if len(networks) != 1:
+            raise FixtureError('relay requires exactly one internal test network')
+        targets.append(FrozenDockerTarget(VERIFIED_CONTEXT, VERIFIED_ENDPOINT, item['Id'], item['Image'],
+                                         state['project'], service, LABEL_VALUE,
+                                         next(iter(networks.values()))['NetworkID'], port))
+    if cancelled is not None and cancelled.is_set():
+        raise RelayError('relay preflight cancelled')
+    serve(targets, max_duration=max_duration, startup_deadline=startup_deadline)
+
+
+def run_relay(max_duration):
+    # Bound the ENTIRE authorized relay path, including initial context checks
+    # and discovery, without modifying the four shared helpers used by MINA.
+    from relay import PREFLIGHT_TIMEOUT, _bounded_stdout
+    import threading
+    deadline = time.monotonic() + PREFLIGHT_TIMEOUT
+    cancelled = threading.Event()
+    original_cli = globals()['docker_cli']
+    prior = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        prior[signum] = signal.signal(signum, lambda *_args: cancelled.set())
+    def bounded_cli(argv, input_data=None, capture=False, context=None):
+        if input_data is not None or context not in (None,) + LOCAL_CONTEXTS:
+            raise FixtureError('invalid relay metadata command')
+        command = ['docker'] + (['--context', context] if context is not None else []) + argv
+        try:
+            return _bounded_stdout(command, docker_environment(context), deadline, cancelled)
+        except Exception:
+            raise FixtureError('bounded relay preflight failed') from None
+    globals()['docker_cli'] = bounded_cli
+    try:
+        state = load_state()
+        require_local_engine()
+        relay(state, max_duration, startup_deadline=deadline, cancelled=cancelled)
+    finally:
+        globals()['docker_cli'] = original_cli
+        for signum, handler in prior.items():
+            signal.signal(signum, handler)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=ACTIONS)
@@ -314,6 +562,8 @@ def main():
     parser.add_argument('--scenario', choices=SCENARIOS)
     parser.add_argument('--delay', type=int, default=8)
     parser.add_argument('--session')
+    parser.add_argument('--max-duration', type=int, default=1800,
+                        help='relay foreground lifetime in seconds (1..90000; default 1800)')
     args = parser.parse_args()
     if not args.authorized_run:
         parser.error('refusing side effects: --authorized-run AND explicit user authorization required')
@@ -324,7 +574,17 @@ def main():
         parser.error('scenario requires a kbd service and --scenario')
     if not 1 <= args.delay <= 60:
         parser.error('delay must be 1..60 seconds')
+    if not 1 <= args.max_duration <= 90000:
+        parser.error('max-duration must be 1..90000 seconds')
+    if args.action == 'relay' and args.service is not None:
+        parser.error('root relay always uses exactly the four fixed services')
     os.umask(0o077)
+    if args.action == 'relay':
+        try:
+            run_relay(args.max_duration)
+        except Exception:
+            raise FixtureError('finite relay failed or was refused; no payload output') from None
+        return 0
     # Guard and argument checks deliberately run before any Docker call/write.
     if args.action == 'build':
         image_input()
@@ -344,7 +604,13 @@ def main():
         state = load_state()
         require_local_engine()
     if args.action == 'build':
-        compose(state, ['build', '--pull', 'keyonly'])
+        # Compose v5.6.1's buildx shell-out failed context validation on the
+        # reviewed local Desktop. Keep this inside the guarded wrapper and
+        # invoke the already verified builtin directly; no extra contexts,
+        # host networking, mounts or entitlements are passed.
+        docker(['buildx', 'build', '--builder', VERIFIED_CONTEXT, '--platform', 'linux/arm64',
+                '--pull', '--load', '--build-arg', 'UBUNTU_IMAGE=' + state['image'],
+                '--tag', IMAGE, '--file', str(ROOT / 'Dockerfile'), str(ROOT)])
         verify_image(state, IMAGE)
     elif args.action == 'up':
         validate_ownership(state)

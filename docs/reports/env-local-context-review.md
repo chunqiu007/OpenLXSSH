@@ -27,6 +27,16 @@ Task：ENV-AUTHORIZED-PREFLIGHT-A / FIXTURE-LOCAL-CONTEXT-R1。当前只完成�
 
 证据 `DerivedData/Verification/primary-env-static-9a6c0dbd-f454-4dec-a3e7-f4f8a01ccda4/`，记录命令/cwd/exit及日志。静态测试检查remote/context/TLS/异常URL拒绝在命令/构建state前、后续context冻结、远端builder拒绝；不因单测绿宣称实际运行通过。
 
+## Buildx v0.38.1 实装兼容 R2
+
+首次真实Engine-ready预检实际失败：`buildx inspect ... --format` 返回125/unknown flag。原20个mock测试只证明检查政策，未覆盖CLI是否支持该选项；错误日志保留，不写成初次全过。
+
+R2仅根同3文件：`buildx inspect <verified-context> --timeout 10s`，不带format/bootstrap，不用会探测其他builders的全局ls作runner路径。C locale/NO_COLOR，按实装native stdout有界解析（64KiB/512行/单行4096字符），精确header/Nodes/唯一builder与nodeName/driverdocker/endpoint匹配，拒重复/缺失/错误/控制序列/多node。实际Devices缩进Name不误当node。新2项回归保留原20安全语义，旧实现红测exit1，最终22tests/OK。
+
+主管读取R2diff，独立22tests，再真实调用当前Docker的`require_local_engine`/`require_local_builder`均通过；实际Compose展开四服务127.0.0.1/internal/namedvolume-only/read-only/cap白名单/0.5CPU384MiB128PIDs/lognone正确。外部解析脚本先因Compose省略false字段、将mem_limit序列化decimalstring而失败，修正解析为默认false/严格int比较384MiB后通过，没有改低产品配置；之前失败发生在build/state前。
+
+实物与最终readiness证据：`DerivedData/Environment/ready-final-307c9ef8-4dc6-456a-8a77-00a71cd4284b/`。外部GUI后的LicenseTermsVersion2、2CPU4096MiB/40GiB/autostartfalse与Engine2CPU/约4GiB一致；不是Agent代接受协议。此时0images/0containers、未建runtime，才明确放行镜像构建和无网络ABI短探针，不等真实SSH/SFTP通过。
+
 ## 真实运行前下一关
 
 用户本人处理Docker法律许可和必要系统权限，Resources设2CPU/4GiB/约40GiB后，主管独立核本机context/resource/builtin builder。使用已核官方Ubuntu24.04 ARM64 digest，先compose配置检查、build；对产物用无网络/端口/hostmount且capdropALL的短探针核包与PAM Python ABI，成功后再up并inspect实际限制，最后collect/真实四认证/SFTP。不能以python3已安装或sshd -t代替PAM模块ABI与认证运行；OpenSSH/PAM多轮也不能替代单wire多提示。
