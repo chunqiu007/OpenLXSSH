@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "ubuntu_image": "docker.io/library/ubuntu:24.04@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d",
+  "mina_version": "2.20.0",
+  "mina_commit": "2221febd396cd3daafdfbf2ff982c6d0eb69a203",
+  "slf4j_version": "1.7.36",
+  "artifacts": [
+    {
+      "file": "sshd-core-2.20.0.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/apache/sshd/sshd-core/2.20.0/sshd-core-2.20.0.jar",
+      "sha512": "ffcdf18528665b31774bcf9f7057ca0fba3aa6ecba1f61d70ae5910a3475bdf1837609349938ad0b756a3c0ed3c234b3d7a6c479f3a628af9cef5a01723c5aac",
+      "maven_sha1": "e7de1ae88f20ca16af1360b6a2f3398425d2d501",
+      "kind": "runtime",
+      "matches_apache_binary_archive": true
+    },
+    {
+      "file": "sshd-core-2.20.0.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/apache/sshd/sshd-core/2.20.0/sshd-core-2.20.0.pom",
+      "sha512": "8c42eece452b40b310e6bf6c4f16074735a7a21a966e8fc448ef77a7216cf53f3b25cecbd6d61e7391b789ad38dd4c330a1eeba75eecf254bd47bd6e5dd610d8",
+      "maven_sha1": "2c6d1f44de1060b11720f969ddb5511216e8b25b",
+      "kind": "pom"
+    },
+    {
+      "file": "sshd-common-2.20.0.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/apache/sshd/sshd-common/2.20.0/sshd-common-2.20.0.jar",
+      "sha512": "9c73ce1ff9a953c4d52ca4b264c38bbe5dd67b945a68ce06a22c9186c35b8563296f2f43fe1250c8200fba7e70a1ccc825f6f9aae05f81d476dc1dd151801eb0",
+      "maven_sha1": "8a7c2c39150ed4ba3a75671c5a2314b9406d08d2",
+      "kind": "runtime",
+      "matches_apache_binary_archive": true
+    },
+    {
+      "file": "sshd-common-2.20.0.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/apache/sshd/sshd-common/2.20.0/sshd-common-2.20.0.pom",
+      "sha512": "b24e68baf6b051ed33cf3c1fb254f8b16d537963ae60efc3724eb7833c5476c47c9a86753a2e8daafd517fdaab376e9e0563ccf53a5855756d8436e2b270216e",
+      "maven_sha1": "7285399573d9f7823a74f8a7c28676b8ceb1716d",
+      "kind": "pom"
+    },
+    {
+      "file": "slf4j-api-1.7.36.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar",
+      "sha512": "f9b033fc019a44f98b16048da7e2b59edd4a6a527ba60e358f65ab88e0afae03a9340f1b3e8a543d49fa542290f499c5594259affa1ff3e6e7bf3b428d4c610b",
+      "maven_sha1": "6c62681a2f655b49963a5983b8b0950a6120ae14",
+      "kind": "runtime",
+      "matches_apache_binary_archive": true
+    },
+    {
+      "file": "slf4j-api-1.7.36.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.pom",
+      "sha512": "22d22770b09854b13f601c39bdb4e8329c8a47f4399a567ab047c8ecf50e638949cda01913f01896cf6d76bb479fa4d7f8c6046274290ce8b1d014e580338768",
+      "maven_sha1": "749f6995b1d6591a417ca4fd19cdbddabae16fd1",
+      "kind": "pom"
+    },
+    {
+      "file": "jcl-over-slf4j-1.7.36.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/jcl-over-slf4j/1.7.36/jcl-over-slf4j-1.7.36.jar",
+      "sha512": "ac231ab44521bb5478742af13624db5c14aea809c3a2c13b989fba30186ba6db840f2d1b4aea54f9c1f779547b975fd042dd353f54025592774d40192bd71148",
+      "maven_sha1": "d877e195a05aca4a2f1ad2ff14bfec1393af4b5e",
+      "kind": "runtime",
+      "matches_apache_binary_archive": true
+    },
+    {
+      "file": "jcl-over-slf4j-1.7.36.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/jcl-over-slf4j/1.7.36/jcl-over-slf4j-1.7.36.pom",
+      "sha512": "d112d334e3a6f40131f523bf49b933bb4b7baf6d9b83d207a0cb923e0ac349bc78ff42b5050bc810ad4d3581834c16f6b546717807c01531975b28c155911837",
+      "maven_sha1": "edaeea6184d71fe7f3d67ced9013767f7ed1ffb3",
+      "kind": "pom"
+    },
+    {
+      "file": "slf4j-nop-1.7.36.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-nop/1.7.36/slf4j-nop-1.7.36.jar",
+      "sha512": "3ee0417e7a3b1bbd490b15ee8329681b397a4042a5bfec032719fab696c3f0ad401e9ed4ac16f550ccd1ee8c179ad8ec438142b7a7cf8522b793685bd218a9a2",
+      "maven_sha1": "a3c1eb685d59414527faa93623acae311c184032",
+      "kind": "runtime"
+    },
+    {
+      "file": "slf4j-nop-1.7.36.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-nop/1.7.36/slf4j-nop-1.7.36.pom",
+      "sha512": "915e0113bdad886223f2fbdd6c0608a04a8cc1d9aee66633a10704df8338d0918707d3a31722736ce00ad7d4e2b443e68df25414dfcf1474f3314814e1fc4474",
+      "maven_sha1": "efb69a1beb752da294f06403dc4e20c9ea5056c1",
+      "kind": "pom"
+    },
+    {
+      "file": "sshd-2.20.0.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/apache/sshd/sshd/2.20.0/sshd-2.20.0.pom",
+      "sha512": "6e2c94a53c40559ad62e33eedc2e7b5d6053d8b86cb95089e6cb328155a47bd41c85eead646db7c156e2b4991c433026295a7c053dbcb4f7da2a75de5ac82ca1",
+      "kind": "pom"
+    },
+    {
+      "file": "slf4j-parent-1.7.36.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-parent/1.7.36/slf4j-parent-1.7.36.pom",
+      "sha512": "b83c1978e4f1b1edccf05276455f9d5c3aadda1c07736113cba4e484e4f01bcc306b52431aa9bb814ad669440652b206a7235c86dfc21c35c43cb7434f0a0c8f",
+      "kind": "pom"
+    },
+    {
+      "file": "apache-sshd-2.20.0-src.tar.gz",
+      "url": "https://downloads.apache.org/mina/sshd/2.20.0/apache-sshd-2.20.0-src.tar.gz",
+      "sha512": "fa1c2f498e8681681229062d8c3fe2e730778046ff1c1aaccdff703a97f7aa35ea0d649a3124098666e35ad1fbf93a368ba827fdacbb64908d70472de622bd7c",
+      "kind": "source"
+    },
+    {
+      "file": "apache-sshd-2.20.0.tar.gz",
+      "url": "https://downloads.apache.org/mina/sshd/2.20.0/apache-sshd-2.20.0.tar.gz",
+      "sha512": "3d4812391535afe931c1b8ec449ad9a75fabd134e320c0a270f216ea02ef72d9643f71208d615b3dcbae9e6aa74be5e81904e9dae8a79ccadb831f38e8534fb3",
+      "kind": "verification-only"
+    },
+    {
+      "file": "slf4j-api-1.7.36-sources.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36-sources.jar",
+      "sha512": "abfb12160cd0c9e765e7ad291f3977b4ab24a30d3684bce072132031436ed3de1695008840bb57b7e2f37c170bdfbbe4c4aa7fabe12bb0aa74d14f08840548ab",
+      "kind": "source"
+    },
+    {
+      "file": "jcl-over-slf4j-1.7.36-sources.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/jcl-over-slf4j/1.7.36/jcl-over-slf4j-1.7.36-sources.jar",
+      "sha512": "e5bbeb2d471c49a1622340c21f27873eda2d6d92d6809d7ae880b5096744615a260fa8b76b3a811c2d7eaa982480d5d8e0646a399b897a14515653dcbc63ec79",
+      "kind": "source"
+    },
+    {
+      "file": "slf4j-nop-1.7.36-sources.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-nop/1.7.36/slf4j-nop-1.7.36-sources.jar",
+      "sha512": "2104f2510947ebdbfbfb3ba577b7c27333c4cab83179a63885a8b1c823eed6533a9e05ee58c81e1d1d337c9d02c8e822a0ded923c450e6bf507780fa428e54ee",
+      "kind": "source"
+    }
+  ]
+}
