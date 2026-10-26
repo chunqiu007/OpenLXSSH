@@ -45,6 +45,14 @@ R2改为 openat(rootFD, ".", ...) 创建独立目录枚举描述；RemoteFileSer
 
 新增3项回归后工程师双配置48相关/89全套退出0，主管读两文件实际diff并独立Release16完整性测试退出0，日志 `.build/verification/p7-files-root-self-r3/primary-release16.log`。拒绝发生在新目录/句柄创建前，真实64句柄槽仍可全开关闭，原文件不变，sibling复制正常。不重复未变native与sanitizer。当前同一service对象识别边界不扩大为不同服务对象底层目录别名检测，UI整合仍须保持受控服务/根的归属。
 
+## 服务操作生命周期接口
+
+为避免panel目录浏览/安全操作未计入Manager.users被idle关闭，新增 `withServiceOperation(serviceID:hostID:scheduling:_:)`：raw list/mkdir默认serialized复用engine同host gate；已有SafeFileOperations/probe显式callerScheduled只拿lifetime保护，其自身使用同scheduler。操作最多128，metadata snapshot不含service/closure/result/secret，hasActiveWork包含真实cleanup中的operation。
+
+caller取消只通知该token、不service.cancel或取消共享worker；闭包必须await所有I/O/cleanup，迟到成功取消不返回，但不宣称回滚已提交文件。shutdown单flight封闭admission、取消jobs/operationtokens，等待worker/drain和实际service.close后才返回。禁止operation内等待本manager.shutdown（自等待），同manager嵌套operation主动typed拒绝；外层应用生命周期负责shutdown。
+
+工程师仅Manager+新8tests，旧89保留，Debug/Release各97、ASan/TSan新8均退出0。主管读两文件完整差异/测试、独立Release完整97退出0，日志 `.build/verification/p6-files-service-operations-a/primary-release97.log`。真实Local覆盖2msidle+显式idleclose不打断、caller取消等cleanup、并发shutdown等真实close、容量/host/unknown/stale/error、同hostgate/异host并行、安全操作/probe无双锁、多个job/op共享最后user释放。没有真实网络或native重建，App接入另验。
+
 ## 未完成与整合约束
 
 真实SFTP/认证/MFA、rename/fsync扩展、删除与能力probe远端运行未验证，本地FD fixture不是服务器。上游静态库未ASan/TSan插桩。macOS26只编译未实跑。

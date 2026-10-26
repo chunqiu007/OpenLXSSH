@@ -65,10 +65,31 @@ public struct TransferJobSnapshot: Sendable, Equatable {
     public let items: [TransferItemResult]
     public var retainedTemporaryPaths: [RemotePath] { items.compactMap(\.retainedTemporary) }
 }
+public enum TransferServiceOperationScheduling: Sendable {
+    /// Raw list/mkdir-style operations share the engine's per-host scheduler.
+    case serialized
+    /// Lifetime protection only. Use for SafeFileOperations/ServerCommitProbe, which acquire
+    /// their own host gate. They must use the same scheduler as the manager's transfer engine.
+    case callerScheduled
+}
+public struct TransferServiceOperationSnapshot: Sendable, Equatable {
+    public let id: UUID
+    public let serviceID: TransferServiceID
+    public let hostID: String
+    public let cancellationRequested: Bool
+}
 public struct TransferManagerSnapshot: Sendable, Equatable {
     public let jobs: [TransferJobSnapshot]
     public let isClosed: Bool
-    public var hasActiveWork: Bool { jobs.contains { $0.state.isActive } }
+    public let serviceOperations: [TransferServiceOperationSnapshot]
+    public init(jobs: [TransferJobSnapshot], isClosed: Bool, serviceOperations: [TransferServiceOperationSnapshot] = []) {
+        self.jobs = jobs; self.isClosed = isClosed; self.serviceOperations = serviceOperations
+    }
+    public var hasActiveWork: Bool { !serviceOperations.isEmpty || jobs.contains { $0.state.isActive } }
+}
+
+private enum ServiceOperationContext {
+    @TaskLocal static var managers: Set<ObjectIdentifier> = []
 }
 
 /// Application-owned transfer lifetime. Hold this actor in the application coordinator, NOT a
@@ -103,12 +124,24 @@ public actor TransferManager {
                 error: error, items: items)
         }
     }
+    private struct ServiceOperationRecord {
+        let id: UUID
+        let serviceID: TransferServiceID
+        let hostID: String
+        let token: CancellationToken
+        /// Resolves only after the closure and its cleanup have actually returned.
+        let drain: Task<Void, Never>
+        var snapshot: TransferServiceOperationSnapshot {
+            TransferServiceOperationSnapshot(id: id, serviceID: serviceID, hostID: hostID, cancellationRequested: token.isCancelled)
+        }
+    }
     private struct BatchKey: Hashable { let hostID: String; let batchID: TransferBatchID }
     private let engine: SafeTransferEngine
     private let maxConcurrentJobs: Int
     private let maxQueuedJobs: Int
     private let maxStoredJobs: Int
     private let idleTimeout: Duration?
+    private let maxServiceOperations: Int
     private var services: [TransferServiceID: ServiceRecord] = [:]
     private var serviceIDs: [ObjectIdentifier: TransferServiceID] = [:]
     private var jobs: [TransferJobID: JobRecord] = [:]
@@ -116,15 +149,19 @@ public actor TransferManager {
     private var workers: [TransferJobID: Task<Void, Never>] = [:]
     private var batchDecisions: [BatchKey: ConflictDecision] = [:]
     private var observers: [UUID: AsyncStream<TransferManagerSnapshot>.Continuation] = [:]
+    private var serviceOperations: [UUID: ServiceOperationRecord] = [:]
+    private var serviceOperationOrder: [UUID] = []
+    private var shutdownTask: Task<Void, Never>?
     private var closed = false
 
     public init(engine: SafeTransferEngine = .init(), maxConcurrentJobs: Int = 2, maxQueuedJobs: Int = 128,
-                maxStoredJobs: Int = 512, idleTimeout: Duration? = .seconds(60)) {
+                maxStoredJobs: Int = 512, idleTimeout: Duration? = .seconds(60), maxServiceOperations: Int = 128) {
         precondition((1...8).contains(maxConcurrentJobs) && (1...1024).contains(maxQueuedJobs))
         precondition(maxStoredJobs >= maxConcurrentJobs + maxQueuedJobs && maxStoredJobs <= 10_000)
         precondition(idleTimeout == nil || idleTimeout! > .zero)
+        precondition((1...128).contains(maxServiceOperations))
         self.engine = engine; self.maxConcurrentJobs = maxConcurrentJobs; self.maxQueuedJobs = maxQueuedJobs
-        self.maxStoredJobs = maxStoredJobs; self.idleTimeout = idleTimeout
+        self.maxStoredJobs = maxStoredJobs; self.idleTimeout = idleTimeout; self.maxServiceOperations = maxServiceOperations
     }
 
     /// Transfers service lifetime ownership to the manager. Remote services must be bound to their
@@ -150,9 +187,10 @@ public actor TransferManager {
         scheduleIdle(id)
         return id
     }
-    public var hasActiveWork: Bool { jobs.values.contains { $0.state.isActive } }
+    public var hasActiveWork: Bool { !serviceOperations.isEmpty || jobs.values.contains { $0.state.isActive } }
     public func snapshot() -> TransferManagerSnapshot {
-        TransferManagerSnapshot(jobs: order.compactMap { jobs[$0]?.snapshot }, isClosed: closed)
+        TransferManagerSnapshot(jobs: order.compactMap { jobs[$0]?.snapshot }, isClosed: closed,
+            serviceOperations: serviceOperationOrder.compactMap { serviceOperations[$0]?.snapshot })
     }
     /// At most 16 subscriptions; each buffers only the newest complete metadata snapshot.
     public func updates() throws -> AsyncStream<TransferManagerSnapshot> {
@@ -167,6 +205,81 @@ public actor TransferManager {
     }
     private func removeObserver(_ id: UUID) { observers[id] = nil }
     private func publish() { let value = snapshot(); for observer in observers.values { observer.yield(value) } }
+
+    /// Owns the service through the closure's actual completion, including asynchronous cleanup.
+    /// Use `.serialized` for raw list/mkdir operations. Use `.callerScheduled` for
+    /// SafeFileOperations/ServerCommitProbe (same scheduler as this manager's engine): wrapping
+    /// their own host gate with another serialized gate would deadlock.
+    ///
+    /// The closure must pass this token through all I/O and await all cleanup before returning;
+    /// do not escape the service/token into unawaited background I/O or call service.cancel/close.
+    /// Caller cancellation signals only this token, never Task.cancel() or service.cancel(). A
+    /// late return after cancellation is rejected, but cannot roll back an already committed action.
+    /// Same-manager nested operations are rejected. Do NOT call and await this manager's
+    /// cancelAllAndWait() from the closure: shutdown must await this very operation's cleanup.
+    /// Invoke shutdown from the outer application lifecycle coordinator instead.
+    public func withServiceOperation<T: Sendable>(serviceID: TransferServiceID, hostID: String,
+        scheduling: TransferServiceOperationScheduling = .serialized,
+        _ operation: @escaping @Sendable (any RemoteFileService, CancellationToken) async throws -> T) async throws -> T {
+        guard !closed else { throw FileServiceError(.closed, operation: "transfer-manager") }
+        let managerID = ObjectIdentifier(self)
+        guard !ServiceOperationContext.managers.contains(managerID) else {
+            throw FileServiceError(.conflict, operation: "nested-service-operation")
+        }
+        try validateHost(hostID)
+        let token = CancellationToken(); try token.check()
+        guard let record = services[serviceID], record.closing == nil else {
+            throw FileServiceError(.closed, operation: "service-operation-unavailable")
+        }
+        guard record.hostID == nil || record.hostID == hostID else {
+            throw FileServiceError(.conflict, operation: "service-operation-host-mismatch")
+        }
+        guard serviceOperations.count < maxServiceOperations else {
+            throw FileServiceError(.resourceLimit, operation: "service-operation-limit")
+        }
+        retainService(serviceID)
+        let id = UUID(), service = record.service, scheduler = engine.scheduler
+        let context = ServiceOperationContext.managers.union([managerID])
+        let worker = Task<T, Error> {
+            try await ServiceOperationContext.$managers.withValue(context) {
+                try token.check()
+                switch scheduling {
+                case .serialized:
+                    return try await scheduler.onHost(hostID, token: token) {
+                        let value = try await operation(service, token)
+                        try token.check(); return value
+                    }
+                case .callerScheduled:
+                    let value = try await operation(service, token)
+                    try token.check(); return value
+                }
+            }
+        }
+        let drain = Task {
+            _ = await worker.result
+            self.finishServiceOperation(id, token: token)
+        }
+        serviceOperations[id] = ServiceOperationRecord(id: id, serviceID: serviceID, hostID: hostID, token: token, drain: drain)
+        serviceOperationOrder.append(id); publish()
+        return try await withTaskCancellationHandler {
+            let result = await worker.result
+            await drain.value
+            try token.check()
+            return try result.get()
+        } onCancel: {
+            token.cancel()
+            Task { await self.serviceOperationCancellationRequested(id, token: token) }
+        }
+    }
+    private func serviceOperationCancellationRequested(_ id: UUID, token: CancellationToken) {
+        guard serviceOperations[id]?.token === token else { return }
+        publish()
+    }
+    private func finishServiceOperation(_ id: UUID, token: CancellationToken) {
+        guard let record = serviceOperations[id], record.token === token else { return }
+        serviceOperations[id] = nil; serviceOperationOrder.removeAll { $0 == id }
+        releaseService(record.serviceID); publish()
+    }
 
     @discardableResult public func enqueue(_ request: TransferRequest,
                                           serverConfirmation: ServerCommitConfirmation? = nil) throws -> TransferJobID {
@@ -243,10 +356,7 @@ public actor TransferManager {
         let id = UUID()
         jobs[id] = JobRecord(id: id, retryOf: retryOf, request: request, serverConfirmation: confirmation)
         order.append(id)
-        for serviceID in Set([request.source.serviceID, request.destination.serviceID]) {
-            services[serviceID]!.idleTask?.cancel(); services[serviceID]!.idleTask = nil
-            services[serviceID]!.idleGeneration = UUID(); services[serviceID]!.users += 1
-        }
+        for serviceID in Set([request.source.serviceID, request.destination.serviceID]) { retainService(serviceID) }
         return id
     }
     private func pump() {
@@ -373,10 +483,17 @@ public actor TransferManager {
         } else { job.state = .running; jobs[id] = job }
         publish(); pump(); return true
     }
+    private func retainService(_ id: TransferServiceID) {
+        precondition(services[id] != nil && services[id]!.closing == nil)
+        services[id]!.idleTask?.cancel(); services[id]!.idleTask = nil
+        services[id]!.idleGeneration = UUID(); services[id]!.users += 1
+    }
+    private func releaseService(_ id: TransferServiceID) {
+        precondition(services[id] != nil && services[id]!.users > 0)
+        services[id]!.users -= 1; scheduleIdle(id)
+    }
     private func releaseServices(_ request: TransferRequest) {
-        for id in Set([request.source.serviceID, request.destination.serviceID]) {
-            services[id]!.users -= 1; scheduleIdle(id)
-        }
+        for id in Set([request.source.serviceID, request.destination.serviceID]) { releaseService(id) }
     }
     private func clearBatchIfFinished(_ request: TransferRequest) {
         if !jobs.values.contains(where: { $0.state.isActive && $0.request.hostID == request.hostID && $0.request.batchID == request.batchID }) {
@@ -404,7 +521,7 @@ public actor TransferManager {
         guard let record = services[id], record.users == 0, record.idleGeneration == generation else { return }
         await closeServices([id])
     }
-    /// Explicit idle release (e.g. window close with no work). Active/queued job leases win.
+    /// Explicit idle release (e.g. window close with no work). Job AND service-operation users win.
     /// Hiding a panel or ending an observation is NOT a service-close operation.
     public func closeIdleServices() async { await closeServices(services.filter { $0.value.users == 0 }.map(\.key)) }
     private func closeServices(_ ids: [TransferServiceID]) async {
@@ -422,15 +539,27 @@ public actor TransferManager {
         }
     }
     /// Terminal, idempotent shutdown. Stops admission first, resolves every pending decision,
-    /// cancels tokens, awaits real engine cleanup, then awaits closing ALL owned services.
-    /// It does not return early just because snapshots have become terminal.
+    /// cancels job/operation tokens, awaits real closures and cleanup, then ALL service closes.
+    /// Concurrent callers share this same completion point, even if their own task is cancelled.
+    /// Do NOT await this method from a withServiceOperation closure owned by this manager:
+    /// shutdown must wait for that closure itself. Call from the outer lifecycle coordinator.
     public func cancelAllAndWait() async {
+        if let shutdownTask { await shutdownTask.value; return }
         closed = true
         let activeIDs = order.filter { jobs[$0]?.state.isActive == true }
         for id in activeIDs { cancel(id) }
+        for operation in serviceOperations.values { operation.token.cancel() }
         let running = Array(workers.values)
-        for worker in running { await worker.value }
-        await closeServices(Array(services.keys))
-        publish(); for observer in observers.values { observer.finish() }; observers.removeAll()
+        let operations = serviceOperations.values.map(\.drain)
+        let task = Task {
+            for worker in running { await worker.value }
+            for operation in operations { await operation.value }
+            await self.closeServices(Array(self.services.keys))
+            self.publish()
+            for observer in self.observers.values { observer.finish() }
+            self.observers.removeAll()
+        }
+        shutdownTask = task; publish()
+        await task.value
     }
 }
