@@ -408,7 +408,20 @@ class StaticTests(unittest.TestCase):
             text = (ROOT / name).read_text()
             self.assertIn('.runtime', text)
             self.assertIn('.cache', text)
-        self.assertFalse((ROOT / '.runtime').exists())
+            self.assertIn('.logs', text)
+            entries = text.splitlines()
+            self.assertIn('.runtime', [line.rstrip('/') for line in entries])
+            self.assertFalse(any(line.startswith('!') for line in entries), 'private paths must not be re-included')
+        # An authorized build now retains immutable non-secret metadata. It must remain
+        # excluded from Docker context and fully validated, not deleted to pass this test.
+        runtime = ROOT / '.runtime'
+        self.assertFalse(runtime.is_symlink())
+        if runtime.exists():
+            managed = load('managed')
+            state = managed.load_state()
+            self.assertEqual(state['source'], managed.source_hash())
+            if (runtime / 'build.json').exists():
+                managed.validate_record(managed.read_json(runtime / 'build.json'), state)
         self.assertTrue((ROOT / 'licenses/MINA-LICENSE.txt').is_file())
         self.assertTrue((ROOT / 'licenses/MINA-NOTICE.txt').is_file())
         self.assertTrue((ROOT / 'licenses/slf4j-api-1.7.36-source-notices.txt').is_file())
