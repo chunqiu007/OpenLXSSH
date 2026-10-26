@@ -51,4 +51,4 @@
 
 ## 待完成
 
-真实driver构建/来源/Development静态签名现已准备完成，**尚未执行**。获授权环境、目标macOS26、实际网络200/连续24h及完整App/UI/文件连接/对象释放/输出切标签/Instruments均未执行。AC28/29/30/32、PERF-R不据此改通过。外部前提另见 `docs/release/acceptance-prerequisites.md`。
+真实driver构建/来源/Development静态签名现已准备完成，**尚未执行**。获授权环境、目标macOS26、实际网络200/连续24h及完整真实App/UI/文件连接/对象释放/输出负载均未执行；本地HostProbe压力与有限Instruments已另有分项证据，不混同真实性能验收。AC28/29/30/32、PERF-R不据driver静态产物改通过。外部前提另见 `docs/release/acceptance-prerequisites.md`。

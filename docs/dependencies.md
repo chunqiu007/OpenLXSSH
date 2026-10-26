@@ -9,7 +9,7 @@
 - SFTP正式Files已迁入App，libssh2 1.11.1 + OpenSSL3.5.9 LTS静态arm64，无Homebrew runtime。固定tag/peeled/archiveSHA/许可/工具链在正式Files native-inputs.json与build manifest，160输出/7noticehash验证。OpenSSL archiveSHA `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`，维护至2030-04-08；真实服务互通未验。
 - P0的OpenSSL3.6.5模糊hash `e5c234...` 与后续现场tag/peeled不一致，不能用作生产输入；不推断上游变化原因。3.6.5短维护候选已被LTS取代，历史记录保留但非当前选择。
 - 正式Trust/Security无外部包，系统CryptoKit/Security/OpenSSH；显式file-based Keychain见ADR，不通过依赖更改关闭系统保护。正式App运行库仍依赖目标系统提供OpenSSH/SQLite/Appleframeworks。
-- P6B1/R1本地实现已审，9fed318干净源码曾生成Development/runtime严格签名内部App/ZIP，实际included为GRDB/SwiftTerm/libssh2/OpenSSL且许可随bundle；ArgumentParser/SwiftPNG/H虽resolved但未链接，不假称包含。该产物未含后续Transport voucher/ownership修复，须最终新候选；Gatekeeper拒绝/未公证、无mac26/真实SSH-SFTP运行验收，不能把包/候选校验写为产品完成。
+- P6B1/R1及最终Transport修复已审，8b63961干净源码已生成Development/runtime严格签名内部App/ZIP（UUIDfdb05b4d），实际included为GRDB/SwiftTerm/libssh2/OpenSSL且许可随bundle；ArgumentParser/SwiftPNG/H虽resolved但未链接，不假称包含。旧9fed318候选仅历史。Gatekeeper拒绝/未公证、无mac26/真实SSH-SFTP运行验收，不能把包/候选校验写为产品完成。
 
 ## P0-03历史调查（以下状态均指调查时）
 

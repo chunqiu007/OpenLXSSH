@@ -2,7 +2,7 @@
 
 ## 本轮结论
 
-候选打包脚本及其101项独立fixture测试已完成主管复验；真实P6A未签名候选及后续B1干净源Development内部候选均已生成并核验。不是安装、Gatekeeper、Developer ID、公证或双机验收通过。本轮Transport安全修复未进入既有候选，最终仍需源码稳定后的新UUID产物。历史83项是R1时点，不是当前总测试数。
+候选打包脚本及其101项独立fixture测试已完成主管复验；真实P6A未签名候选、B1干净源Development内部候选以及包含最终Transport修复的新候选fdb05b4d均已生成并独立核验。不是安装、Gatekeeper、Developer ID、公证或双机验收通过。历史83项是R1时点，不是当前总测试数；各旧产物只覆盖自己的源码commit。
 
 文件：`Scripts/package-release-candidate.py`、`Tests/ReleasePackaging/`、`docs/release/README-candidate.md`。默认unsigned，只显式选择已有Development/Developer ID身份才签名；不创建证书、不修改Keychain访问设置。Developer ID时间戳请求有独立显式开关，本轮未执行。脚本没有公证上传入口。
 
@@ -49,6 +49,38 @@ R2保留Swift外部定义路径，native改nm-U-m真实__TEXT,__text函数与已
 - 主管独立 `--verify-manifest` 通过，并复核真实HEAD/摘要。首次额外比对误猜40位commit导致组合命令exit1，验证器本身已成功；随后从git取得准确revision重核通过，未修改manifest掩盖错误。
 
 该产物未上传、公证、安装或在macOS26运行。后续对抗回归又发现voucher接收策略及发送超时ownership问题，旧候选不能用于证明新源码安全；最终需要新UUID候选，保留此历史产物不覆盖。
+
+## 最终 Transport 修复后的新干净源码内部候选
+
+主管在所有工程师停写/停build、相关修复已提交d331188、文档检查点8b63961后，实际运行一次：
+
+```sh
+python3 -B Scripts/package-release-candidate.py --signing development
+```
+
+exit0，未加allow-dirty、未请求时间戳/公证/上传；新的独占产物：
+
+`DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`
+
+- version0.1.0/build1，源`8b6396199db273493a438679df0020fa6ef7c3a4`、dirty=false。主管用git show该commit确认含最终已审C SHA256 `34ee7ffbad3c2f75e60a08c308ae1e7021ae82293826b84bd327c3caa20fbb32`。
+- App/helper arm64/min26，真实依赖为GRDB/SwiftTerm/libssh2/OpenSSL，许可随bundle；没有Homebrew runtime，host-only压力/adversary专用symbol匹配0。
+- 使用既有Development身份，helper先/App后、Hardened Runtime、无entitlements、timestampnone，strict/deep验证通过。`spctl` exit3/Gatekeeper false，明确不是可正式分发安装的Developer ID产物。
+- ZIP 7,418,092 bytes，SHA256 **`fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e`**。
+- App规范树SHA256 `499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066`。
+- manifest SHA256 `4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f`。
+- signed主程序SHA256 `ee6627762ee3021b5950f29338ea7cccd8546441a2f490dfbe64b51717f348e9`，helper `f5137e7a15c4eca4b11ac56e59f636de10fba28e4e288130475dbf1918403ffd`。
+
+主管另独立执行 `--verify-manifest <该manifest>`、严格App/helper签名、source/dirty/platform/真实依赖闭包与全部归档/许可摘要检查，exit0。没有再次运行App/min26或将HostProbe当安装。固定打包器101项边界测试本轮再独立exit0。
+
+证据：
+
+- `DerivedData/Verification/primary-final-clean-candidate-8b64f36d-ff6c-47bf-945c-237945cea2e3/`：精确命令/exit/起止与打包日志。
+- `DerivedData/Verification/ReleasePackaging/fdb05b4d-a035-4040-8ded-5d549ffadb57/`：实际build、签名/系统评估、完整marker记录。
+- `DerivedData/Verification/primary-final-manifest-aa06ac38-ed1f-4f2e-baf6-681caa2ad1a0/`：独立verify与摘要。
+- `DerivedData/Verification/primary-final-host-only-exclusion-31440bfe-710a-4020-a457-b76d72846a83/`：两代码路径测试专用符号排除。
+- `DerivedData/Verification/p7-final-packaging-fixtures-76eb24cf-b81f-439b-bbfa-9b3c5e7aa9e6/`：101tests/OK。
+
+后续文档更新不改变该产物所记录的源码commit；没有为更新文档重打相同代码候选。旧候选/失败目录保留不覆盖。当前仍未公证/上传、未安装/运行macOS26、未完成真实功能或双机验收，整体NOT COMPLETE。
 
 ## 后续约束
 
