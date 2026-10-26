@@ -70,13 +70,13 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-03 | HOST-03～04 | 双击定位已有活动标签，显式新建产生独立会话，切换不重连 | 进行中：App真实SessionController/NativeTerminalView集成，主管68tests+原生双击/复用/独立/退出检查通过；GUI连接逻辑替身，真实SSH/mac26仍未验。见 `docs/reports/p5-native-session-ui.md` |
 | AC-04 | HOST-05～06、SEC-03 | 不改系统 SSH 配置，异常主机字段不能注入选项、配置或 Shell 指令；删除不误删共享凭据 | 未执行 |
 | AC-05 | KEY-01～03 | 导入有/无口令 Ed25519/RSA，生成 Ed25519、复制公钥，权限正确，不改源文件 | 进行中：继承ACL权限缺陷已修，主管独立Release31项含11新ACL回归通过；不清用户ACL、查询失败拒绝。正式签名App/目标系统及整体认证回归仍待，不能标通过。见 `docs/reports/p4-security-core.md`、`docs/reports/p7-core-review.md` |
-| AC-06 | AUTH-01 | 直接私钥认证成功，解锁错误/取消可恢复且不泄漏 | 进行中：host15生产DirectSSHSession真实keyonly的有/无口令Ed25519/RSA四种正向均outer-auth1并close/ownedPID释放，口令两案先零回答observe再独立格式/hash核验；错误口令/恢复、目标系统与正式App仍待。见 `docs/reports/real-openssh-four-auth.md` |
+| AC-06 | AUTH-01 | 直接私钥认证成功，解锁错误/取消可恢复且不泄漏 | 进行中：真实DirectSSHSession有/无口令Ed25519/RSA正向和SFTP相同密钥矩阵均成功；另已知有效encryptedEdkey正确phrase正控后，wrong一次得到typed.authentication且未返回SFTP/无文件操作、close/socket0，不冒称server拒本地解密。OpenSSH错误恢复UI/mac26仍待。见 `docs/reports/real-auth-failures.md`、`docs/reports/real-openssh-four-auth.md` |
 | AC-07 | AUTH-02、06～07 | 直接密码登录、选择保存、不保存、Keychain 不可用均符合授权与人工回退规则 | 进行中：host15生产DirectSSHSession真实passwordonly正向connected1、手动预算回答1、取消关闭释放通过；保存授权/Keychain人工回退与目标mac26自动使用gate仍待。见 `docs/reports/real-openssh-four-auth.md` |
 | AC-08 | AUTH-03 | 直接私钥＋OTP 成功，错误/过期 OTP 可处理，OTP 不保存 | 进行中：真实key-kbd Ed25519无口令+同session A/B/C三轮OTP成功，管理私有PIPE读取3、server session文件移除；错误/过期/其他组合、App/mac26仍待。见 `docs/reports/real-openssh-four-auth.md` |
 | AC-09 | AUTH-04 | 直接密码＋OTP 成功；长期密码不会被误投给验证码挑战 | 进行中：真实password-kbd正向primary1/OTP3/connected1，前置提示独立hash验证，三轮同ID/once-budget，未知拒绝且无saved-passwordAPI；主管同精确构建亲跑关键MFA抽验通过，server文件移除/ownedPID释放及relay4/4/0/0已核。错误边界/GUI/mac26仍待。见 `docs/reports/real-openssh-four-auth.md` |
 | AC-10 | AUTH-05 | 多轮/多提示 Keyboard-Interactive、等待手机审批、拒绝和取消不挂死 UI | 进行中：host15生产libssh2真实MINA单回调双prompt/echo、zero接受/拒绝及固定8s审批接受/拒绝/等待取消通过；主管独立双prompt与pending取消且跨原decisiondue归零抽验通过。auth-only/非GUI/非SFTP，企业审批及OpenSSH多轮/产品交互仍待。见 `docs/reports/real-mina-kbi.md` |
 | AC-11 | AUTH-08～09 | 未知挑战人工输入；并发认证不串用凭据；关闭后旧回答失效；重试有界 | 进行中：正式控制面/签名IPC与App未知人工挑战、代次/取消回归通过；R2修复await中取消后读凭据及并发关闭边界，主管68项和GUI/signed复验通过。真实MFA仍待，见 `docs/reports/p5-native-session-ui.md` |
-| AC-12 | SEC-01 | SSH 与 SFTP 直接连接首次信任、再次匹配、变化拒绝、非默认端口均正确 | 进行中：Trust/Transport本地安全门已验；host15真实App native sheet完整比对127:22221/算法/带外SHA后明确接受，SSH严格信任成功、同App按需SFTP共享trust握手匹配、awaitclose通过（testscan15，default5失败留证）。真实known-key mismatch/显式替换、mac26仍待。见 `docs/reports/app-real-ssh-sftp.md` |
+| AC-12 | SEC-01 | SSH 与 SFTP 直接连接首次信任、再次匹配、变化拒绝、非默认端口均正确 | 进行中：真实App明确比对/接受127:22221与按需SFTP共享trust匹配通过(testscan15)；Files独立同endpoint旧key mismatch实际handshake.changed/untrusted、旧knownhash不变，另显式replacement新SFTP恢复通过，不自动替换/不声称真实serverrotate。DirectSSH预扫变化/产品管理UI/mac26仍待。见 `docs/reports/real-auth-failures.md`、`docs/reports/app-real-ssh-sftp.md` |
 | AC-13 | NEST-01～04 | 最外层连接后在远端手动执行 ssh，内层认证、控制键、缩放、退出返回上一层正常，App 不投递内层凭据 | 未执行 |
 | AC-14 | TERM-02～04 | 有限历史、搜索、中文输入法、Unicode/Emoji、复制/多行及 Bracketed Paste、主题字号可用 | 未执行 |
 | AC-15 | TERM-05 | Vim/Neovim、tmux、htop/btop、Docker 日志以及指定 Claude Code/OpenCode 版本的终端显示与输入可用 | 未执行 |
