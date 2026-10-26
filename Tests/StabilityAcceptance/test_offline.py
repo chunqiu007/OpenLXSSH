@@ -14,12 +14,22 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stdout
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent.parent
 BUILD = HERE / '.build'
-OFFLINE = BUILD / 'offline' / 'arm64-apple-macosx' / 'debug'
+# verify_offline.py supplies a fresh UUID tree; direct legacy invocation still
+# consumes the previous dependency-free cache, never resolves product packages.
+OFFLINE_SCRATCH = Path(os.environ.get('OPENLXSSH_STABILITY_OFFLINE_SCRATCH', str(BUILD / 'offline')))
+if (not OFFLINE_SCRATCH.is_absolute() or OFFLINE_SCRATCH.resolve() != OFFLINE_SCRATCH
+        or not OFFLINE_SCRATCH.is_relative_to(BUILD)):
+    raise RuntimeError('Unsafe offline scratch path')
+OFFLINE = OFFLINE_SCRATCH / 'arm64-apple-macosx' / 'debug'
+MODULE_CACHE = Path(os.environ.get('OPENLXSSH_STABILITY_TYPECHECK_CACHE', str(BUILD / ('typecheck-' + str(uuid.uuid4())))))
+if not MODULE_CACHE.is_absolute() or MODULE_CACHE.resolve() != MODULE_CACHE or not MODULE_CACHE.is_relative_to(BUILD):
+    raise RuntimeError('Unsafe offline typecheck cache path')
 BINARY = OFFLINE / 'stability-preflight'
 
 
@@ -30,7 +40,7 @@ def tree_snapshot():
 
 class OfflineChecks(unittest.TestCase):
     def test_offline_build_plan_has_no_implicit_codesign_step(self):
-        plan = (BUILD / 'offline' / 'debug.yaml').read_text()
+        plan = (OFFLINE_SCRATCH / 'debug.yaml').read_text()
         self.assertNotIn('codesign', plan)
         self.assertNotIn('Applying debug entitlements', plan)
         entry = (HERE / 'verify_offline.py').read_text()
@@ -137,7 +147,7 @@ def typecheck_existing_modules():
     if not all(path.exists() for path in required):
         raise RuntimeError('Existing modules unavailable; not building or fetching them. Typecheck NOT performed.')
     command = ['xcrun', 'swiftc', '-typecheck', '-parse-as-library', '-swift-version', '6', '-warnings-as-errors',
-               '-target', 'arm64-apple-macosx26.0', '-module-cache-path', str(BUILD / 'module-cache'),
+               '-target', 'arm64-apple-macosx26.0', '-module-cache-path', str(MODULE_CACHE),
                '-I', str(OFFLINE / 'Modules'), '-I', str(OFFLINE / 'StabilityPOSIX.build'),
                '-I', str(transport / 'Modules'), '-I', str(transport / 'COpenLXSSHAskpass.build'),
                str(HERE / 'SignedDriver' / 'Main.swift')]

@@ -1,5 +1,47 @@
 # OpenLXSSH 有限稳定性验收驱动准备
 
+## P7-STABILITY-DRIVER-BUILD-B：离线真实链接与 Development 签名
+
+状态仍为 **PARTIAL：真实 driver 产物准备，不是稳定性验收通过**。本任务允许使用已有 Apple Development 身份做本地离线签名；不创建证书/profile、不改 Keychain ACL/search list、不代答系统授权、不请求 Apple 时间戳、不上传公证。宿主仍是 macOS 15.8.1，**不运行 min26 driver 或 helper**，不 connect，不读官方 fixture `.runtime`、私钥/密码/Keychain 凭据，不启动服务、VM、长测或输出压力测试。
+
+### 配方与最小使用方式
+
+- `build_driver.py`：默认/help 只打印帮助；`validate` 只读检查现成 cache、固定 pins/plugin 门禁及源文件元数据；`build` 才创建独占 `Tests/StabilityAcceptance/.build/driver-<UUID>/`。没有新增依赖 manifest，不调用 SwiftPM resolve/build、根 `build-app.sh` 或 Xcode 项目，不写产品包/checkouts/DerivedData。缺缓存、pin/plugin/源码变化、符号链接或无效路径明确失败，不下载补齐。
+- 每次都从完整源码重编 runtime：正式 `OpenLXSSHTrust`、固定 SwiftTerm、正式 Askpass/Transport、`StabilityCore`/`StabilityPOSIX`、真正 `SignedDriver/Main.swift`、官方 `OpenLXSSHAskpassHelper/main.swift`。所有 **11 个 runtime 链接对象均为 arm64 / MH_OBJECT / minos26**；不混入离线 SwiftPM min15 对象或缓存低部署版本对象。依赖库支持低部署版本并不意味着正式 App 部署有错；这里是本任务额外的严格输入约束。
+- 只读调用 `Scripts/verify-build-plugin.py --helper` 的原有固定图门禁，并独立固定该门禁脚本 SHA。SwiftTerm 官方 generator 三份源码、plugin、manifest、terminfo 均先校验、记录哈希。generator 单独作为 **host-only 构建工具**编译并运行，生成官方 `SwiftTermBuildInfo.swift` / `SwiftTermTerminfo.swift`，不手造常量、不链接入 driver/helper，不是 Transport HostProbe，不降低任何 runtime 部署版本。
+- 编译输入在 UUID 下快照并哈希；构建前后复核原源码和快照、源集/pins/plugin；记录真实 Git commit/dirty/status、编译器/SDK/Xcode、全量源文件/生成输入/输出哈希、对象哈希和 load commands、完整 compile/link 命令、link map、符号与系统 runtime 依赖。不接受调用者传 revision 充当二进制来源。SwiftTerm 上游警告保留原输出，不修改/压制源码或警告来过关。
+- 直接链接带 `-Xlinker -no_adhoc_codesign`，先验证无隐式签名且 unsigned strict 校验必须拒绝；链接产物为 arm64 / **MH_EXECUTE / minos26**。实际 link map 必须恰好包含所记录的 min26 对象与所选系统 SDK `.tbd`，拒绝额外对象/兼容性 archive；允许 Apple 的同 SDK 版本别名规范化。只允许 `/usr/lib` 与系统 framework 的直接 dylib 依赖，无工具链或用户 dylib/rpath。此为静态闭包检查，不冒充目标 macOS 26 dyld/runtime 测试。
+- `prepare_wrapper.py prepare` 不再接受任意 driver/helper/revision 包装：只接受该 UUID 内完整的 `linked-build.json`，复核来源、对象、链接命令/产物哈希后创建唯一 `wrapper/OpenLXSSHStability.app`，绝不覆盖旧 wrapper。旧 `validate --driver/--helper/--revision` 为兼容原离线测试仍保留，**仅表示输入元数据有效，不验证可执行代码或来源，也不能包装**。
+- `--sign-development` 在完整链接之后才查询一次现有身份，结果仅内存解析，不打印/记录证书名或 identity hash，不导出私钥；无身份退出 3，保留编译产物但不签名。先签并严格校验 helper，后签并 `--verify --deep --strict` 校验 App；要求 `anchor apple generic`、正式 identifiers、有效且相同 Team、Hardened Runtime、无任何 entitlements、`--timestamp=none`。签名诊断不落日志，仅保存脱敏结果。保留正式 `org.openlxssh.OpenLXSSH` / `org.openlxssh.askpass` 身份要求，未修改产品校验策略。
+- 签名后只有 `vtool` / `otool` / `nm` / `codesign` 等静态检查，不执行 driver/helper。不要安装这个验收 wrapper 或与正式 App 同时启动。
+
+```sh
+# 默认只读 help；不编译/签名/查询身份/联网
+PYTHONDONTWRITEBYTECODE=1 python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/StabilityAcceptance/build_driver.py
+# 只读：缺固定 cache 明确失败
+PYTHONDONTWRITEBYTECODE=1 python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/StabilityAcceptance/build_driver.py validate
+# 真正 min26 离线编译、链接和独占包装；不查询签名身份
+PYTHONDONTWRITEBYTECODE=1 python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/StabilityAcceptance/build_driver.py build
+# 本任务明确允许的现有 Development 签名；不运行 min26 产物
+PYTHONDONTWRITEBYTECODE=1 python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/StabilityAcceptance/build_driver.py build --sign-development
+# 已签名 UUID 的只读复核，不签名、不运行
+PYTHONDONTWRITEBYTECODE=1 python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/StabilityAcceptance/build_driver.py verify --record /absolute/path/to/Tests/StabilityAcceptance/.build/driver-<UUID>/result.json
+```
+
+配方 `result.json` 是可复核的本地来源记录，不是来自敌对同 UID 进程的密码学证明；原源码变化后只读复核必须失败，应按新输入重新构建，不能改写 revision/hash 来沿用旧产物。失败 UUID 及其日志保留，不自动清理；本轮早期失败分别为 Swift WMO 输出参数不兼容、`codesign -R` 文本前缀遗漏、link map 的 Apple SDK 版本别名尚未规范化，均已定位修复，不能记作通过。
+
+### 离线回归入口
+
+原 **34 XCTest + 6 Python** 检查和原 API typecheck 保留；新增 `test_build_driver.py` 检查 help 不启动工具、cache/path/symlink/pins/plugin/source/snapshot 变化、禁止记录指向任意秘密路径、min15/min11/x86/非 MH_OBJECT、非系统 runtime/rpath、unsigned/无身份/错误签名/entitlements，以及旧 revision 不能包装。身份失败单测只注入本地进程输出，不查询真实 Keychain，也不将合成输入冒充真实 driver。
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/StabilityAcceptance/verify_offline.py
+```
+
+新版总入口把 scratch/cache/log/typecheck 输出集中在新的 `.build/offline-<UUID>/`，不覆盖历史 `.build/offline`。先保留 `--disable-get-task-allow-entitlement` 的 SwiftPM 构建图并检查无 codesign/debug entitlements，再执行原 34+6、新配方测试、严格 C syntax；没有真实 driver 的执行入口。下面 prep/R1 阶段的命令、停止点与签名偏差是历史记录，不是本任务对新配方权限/已执行事项的描述。
+
+## 历史记录：PREP-A / PREP-R1（原文保留）
+
 Task `P7-STABILITY-DRIVER-PREP-A` / `P7-STABILITY-DRIVER-PREP-R1`，状态 **PARTIAL：驱动准备，不是稳定性验收通过**。
 
 本目录只新增验收工具，不改变 App、Transport、Trust、安全策略或产品依赖。当前宿主为 macOS 15.8.1；没有获授权的隔离 runtime/server。**本轮没有真实 SSH 连接、镜像下载、安装/启动 VM、真实签名身份查询、正式 App/helper 签名、驱动链接/运行、200 次真实循环、24 小时运行、睡眠设置修改、服务/调度或上传。**

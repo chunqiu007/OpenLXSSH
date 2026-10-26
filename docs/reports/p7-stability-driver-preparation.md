@@ -23,6 +23,18 @@
 
 作者早期普通swift test被SwiftPM隐式执行本目录离线CLI的ad-hoc debug签名，无身份查询、没有正式App/helper或真实driver签名。已报告，不能写为本轮绝无签名。最终总入口显式 `--disable-get-task-allow-entitlement`，先仅生成job graph核没有codesign/debug entitlement步骤再执行tests；主管最终复验同样无该步骤。不通过全局安全设置绕过。
 
+## 真实驱动构建 B
+
+后续P7-STABILITY-DRIVER-BUILD-B仅在Tests/StabilityAcceptance新增离线配方和12个拒绝测试，使用固定已缓存源及官方SwiftTerm generator，从源在本目录独立UUID编译真实driver/helper。现有低部署版本依赖对象可合法用于min26正式App，但本驱动任务采用更严格全部runtime input min26，所以不直接混用min15/min11旧对象。
+
+实际完成11个arm64/MH_OBJECT/min26对象、真实公开DirectSSHSession的MH_EXECUTE driver及官方helper。link map严格只允许记录对象和所选SDK .tbd，没有额外archive/host工具。官方generator只host-only执行，不链接runtime。163项源码/manifest/pins/生成输出快照与编译链接命令、对象/二进制hash可复核。wrapper不再接受随意revision替代来源，必须消费真实linked-build记录，UUID独占不覆盖。
+
+本任务明确使用已有Apple Development身份，helper先/App后，正式不同identifier、同Team、Hardened Runtime、无entitlements、timestampnone及Apple anchor严格验证通过。没有证书/profile/ACL修改、系统授权代答或Apple上传；没有执行driver/helper（宿主macOS15）。早期WMO参数、requirement文本缺=前缀和SDK别名检查失败分别保留UUID/log，修后新UUID通过。
+
+工程师成功产物：`Tests/StabilityAcceptance/.build/driver-8f5d1fcc-764d-4641-829c-7ff119888656/wrapper/OpenLXSSHStability.app`。driver SHA256 `e85de82f685f0455176916feb5f64d99def81ceea7b68d19cd7bd48ca2d2b07e`，helper `9173ad680234094d7d0a01b3db992d1c5453193e485920207722023fe232fb99`。来源commit b034db2/dirty=true，产物状态signed-static-only-not-run。
+
+主管阅读6文件关键编译/来源/链接/签名/拒绝实现与tests，独立 `build_driver.py verify --record <该UUID>/result.json` 退出0，真实严格signature、对象min26/sourcehash/linkmap闭包通过；再独立verify_offline退出0，34XCTest+6既有Python+12新增Python、API typecheck/Csyntax通过。日志 `.build/primary-driver-build-verify.log`、`primary-driver-build-offline.log`。未重复消耗一次完整重编，独立核验实际产物和关键边界。SwiftTerm6处上游CVDisplayLink弃用warning保留，未压制。
+
 ## 待完成
 
-真实driver构建配方、产物来源/摘要与严格签名验证尚无交付；wrapper prepare未运行。获授权环境、目标macOS26、实际网络200/连续24h及完整App/UI/文件连接/对象释放/输出切标签/Instruments均未执行。AC28/29/30/32、PERF-R不据此改通过。外部前提另见 `docs/release/acceptance-prerequisites.md`。
+真实driver构建/来源/Development静态签名现已准备完成，**尚未执行**。获授权环境、目标macOS26、实际网络200/连续24h及完整App/UI/文件连接/对象释放/输出切标签/Instruments均未执行。AC28/29/30/32、PERF-R不据此改通过。外部前提另见 `docs/release/acceptance-prerequisites.md`。
