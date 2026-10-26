@@ -60,6 +60,13 @@ temp/
 *.mobileprovision
 *.provisionprofile
 *.pkcs12
+*.keychain
+*.keychain-db
+*.cer
+*.crt
+*.der
+id_dsa
+id_dsa.*
 id_rsa
 id_rsa.*
 id_ed25519
@@ -70,3 +77,6 @@ id_ecdsa.*
 /credentials/
 /secrets/
 /local-secrets/
+/.runtime/
+/runtime/
+/signmaterial/
