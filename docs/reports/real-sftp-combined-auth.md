@@ -55,8 +55,25 @@ MFA测试预算当前严格空name/instruction、原始单prompt A→B→C、ech
 
 `DerivedData/Verification/primary-sftp-partial-results-4712aadd-a461-470f-acba-9d1eb5e4ad86/`
 
-## 下一诊断边界与未完成
+## 第四回调：独立形状诊断与固定源码
 
-只新增脱敏、有界的未知callback形状（长度/SHA/count/echo/ordinal）并保持原claim失败/不回答/不追加秘密读取；源和离线审后再单次诊断。另只读研究固定libssh2/OpenSSH源码，不在观测前放宽budget/改服务器来凑通过。
+仅metadata诊断App经主管源审/独立32Swift13Python/17CLI、344input/36cmd及strict通过；原三轮预算本体逐字未改。精确App `Tests/RealIntegration/.build/host-eb1bfbaa-c0b5-4926-a348-569b42b1745f/OpenLXSSHRealIntegration.app`，主程序SHA256 `728f9dcea9b027d0b37879beb4bdd15aceb5203d5c38da6cf3b9ab9ac459a6e4`。
 
-尚缺组合MFA完整成功、错误/过期/并发边界、目标macOS26/正式App按需整合与其他必要验收。整体Goal NOT COMPLETE。
+固定key-kbd Edplain仅一次新generation诊断：实际/预期exit1，21.748645s，callback4/reply3/secretread3/SFTP0、unknownChallenge不变。真实ordinal4的name/instruction均0bytes且SHA256为空值 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`，promptCount0/prompts[]、invalid/truncated=false。没有额外答案或秘密管理读取。自有180s relay10407 TERM/waitexit0、1/1/0/0，精确token/PID/监听与server session文件清理；并行App验证脚本变化触发的收尾exit1另行记录，不误称资源失败。
+
+诊断证据：`Tests/RealIntegration/.build/sftp-shape-live-1b0d74a9-a0b5-43b4-8b8f-23b7543a2f83/`。独立静态审查：`DerivedData/Verification/primary-sftp-shape-static-c5e9c254-c807-4d3c-bf01-a44733a433da/`。
+
+只读固定源码研究同时确证：OpenSSH V_9_6_P1 `auth-pam.c` 的 `sshpam_query` 在PAM_SUCCESS时name/info为空、num0、pam_done1（857～858、924～937）；`auth2-chall.c` 261～278没有nreq>0过滤，照发INFO_REQUEST；收到count0回复后 `sshpam_respond` 990～993才设置authenticated，并由AuthenticationMethods/account检查和最终USERAUTH_SUCCESS决定认证结果。失败信息分支亦可能发送非空instruction的零提示，不能只凭count0认成功。
+
+固定源码来源与研究摘要：
+- [OpenSSH V_9_6_P1 auth-pam.c](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/auth-pam.c)，取回SHA256 `c7cadf29cbd4ef55442d6737c8b4629009c11afe814c4fa5b2389f9dbfbf2033`。
+- [OpenSSH V_9_6_P1 auth2-chall.c](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/auth2-chall.c)，取回SHA256 `61f108b148905f5e9e7e712183d46599134a98e67f1f1f1598d10b8f09252724`。
+- 固定libssh2 1.11.1本地 `userauth.c` 2236～2249对每INFO_REQUEST都callback，2288～2295按count发response；`userauth_kbd_packet.c` 116～117允许零prompt。归档hash与lock一致且两源码与归档逐字节相同，主管另读关键行复核。只有收到USERAUTH_SUCCESS才置认证状态。
+- OpenSSH9.9p2控制客户端count0时不调用read_passphrase，直接回空列表，所以外层Askpass只见三问题不排除协议有尾空轮。不是本次wire抓包结论。
+- [RFC4256](https://www.rfc-editor.org/rfc/rfc4256)允许零prompt并要求零responses；这是count0、无字符串，不是count1的空密码。
+
+研究只证明上游路径，未逐补丁核Ubuntu9.6p1-3ubuntu13.20源码完全一致；本次typedcallback形状由独立实际诊断补证。现选择只为固定fixture测试补精确预算：A/B/C三次同session之后，恰一次ordinal4全空header/count0回复[]、不读秘密；earlyzero、重复/第五、非空header、额外prompt仍拒绝。生产已有typed zero处理，无产品修改。此R1尚待源审/真实SFTP成功，不预判通过。
+
+## 未完成
+
+尚缺修正尾空协议预算后的组合MFA完整成功、错误/过期/并发边界、目标macOS26/正式App按需整合与其他必要验收。整体Goal NOT COMPLETE。
