@@ -70,10 +70,10 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-03 | HOST-03～04 | 双击定位已有活动标签，显式新建产生独立会话，切换不重连 | 进行中：App真实SessionController/NativeTerminalView集成，主管68tests+原生双击/复用/独立/退出检查通过；GUI连接逻辑替身，真实SSH/mac26仍未验。见 `docs/reports/p5-native-session-ui.md` |
 | AC-04 | HOST-05～06、SEC-03 | 不改系统 SSH 配置，异常主机字段不能注入选项、配置或 Shell 指令；删除不误删共享凭据 | 未执行 |
 | AC-05 | KEY-01～03 | 导入有/无口令 Ed25519/RSA，生成 Ed25519、复制公钥，权限正确，不改源文件 | 进行中：继承ACL权限缺陷已修，主管独立Release31项含11新ACL回归通过；不清用户ACL、查询失败拒绝。正式签名App/目标系统及整体认证回归仍待，不能标通过。见 `docs/reports/p4-security-core.md`、`docs/reports/p7-core-review.md` |
-| AC-06 | AUTH-01 | 直接私钥认证成功，解锁错误/取消可恢复且不泄漏 | 进行中：host15生产DirectSSHSession在真实keyonly隔离服务私钥登录成功、可信outer-auth1/close/ownedPID释放通过；加密密钥/RSA/错误口令/目标系统与正式App仍待完整矩阵。见 `docs/reports/real-ssh-sftp-smoke.md` |
-| AC-07 | AUTH-02、06～07 | 直接密码登录、选择保存、不保存、Keychain 不可用均符合授权与人工回退规则 | 未执行 |
-| AC-08 | AUTH-03 | 直接私钥＋OTP 成功，错误/过期 OTP 可处理，OTP 不保存 | 未执行 |
-| AC-09 | AUTH-04 | 直接密码＋OTP 成功；长期密码不会被误投给验证码挑战 | 未执行 |
+| AC-06 | AUTH-01 | 直接私钥认证成功，解锁错误/取消可恢复且不泄漏 | 进行中：host15生产DirectSSHSession真实keyonly的有/无口令Ed25519/RSA四种正向均outer-auth1并close/ownedPID释放，口令两案先零回答observe再独立格式/hash核验；错误口令/恢复、目标系统与正式App仍待。见 `docs/reports/real-openssh-four-auth.md` |
+| AC-07 | AUTH-02、06～07 | 直接密码登录、选择保存、不保存、Keychain 不可用均符合授权与人工回退规则 | 进行中：host15生产DirectSSHSession真实passwordonly正向connected1、手动预算回答1、取消关闭释放通过；保存授权/Keychain人工回退与目标mac26自动使用gate仍待。见 `docs/reports/real-openssh-four-auth.md` |
+| AC-08 | AUTH-03 | 直接私钥＋OTP 成功，错误/过期 OTP 可处理，OTP 不保存 | 进行中：真实key-kbd Ed25519无口令+同session A/B/C三轮OTP成功，管理私有PIPE读取3、server session文件移除；错误/过期/其他组合、App/mac26仍待。见 `docs/reports/real-openssh-four-auth.md` |
+| AC-09 | AUTH-04 | 直接密码＋OTP 成功；长期密码不会被误投给验证码挑战 | 进行中：真实password-kbd正向primary1/OTP3/connected1，前置提示独立hash验证，三轮同ID/once-budget，未知拒绝且无saved-passwordAPI；主管同精确构建亲跑关键MFA抽验通过，server文件移除/ownedPID释放及relay4/4/0/0已核。错误边界/GUI/mac26仍待。见 `docs/reports/real-openssh-four-auth.md` |
 | AC-10 | AUTH-05 | 多轮/多提示 Keyboard-Interactive、等待手机审批、拒绝和取消不挂死 UI | 进行中：host15生产libssh2真实MINA单回调双prompt/echo、zero接受/拒绝及固定8s审批接受/拒绝/等待取消通过；主管独立双prompt与pending取消且跨原decisiondue归零抽验通过。auth-only/非GUI/非SFTP，企业审批及OpenSSH多轮/产品交互仍待。见 `docs/reports/real-mina-kbi.md` |
 | AC-11 | AUTH-08～09 | 未知挑战人工输入；并发认证不串用凭据；关闭后旧回答失效；重试有界 | 进行中：正式控制面/签名IPC与App未知人工挑战、代次/取消回归通过；R2修复await中取消后读凭据及并发关闭边界，主管68项和GUI/signed复验通过。真实MFA仍待，见 `docs/reports/p5-native-session-ui.md` |
 | AC-12 | SEC-01 | SSH 与 SFTP 直接连接首次信任、再次匹配、变化拒绝、非默认端口均正确 | 进行中：known_hosts危险ACL边界已修，主管Trust Release46及Transport35+严格离线签名IPC通过；真实SSH/SFTP握手与App集成仍待，不算整体通过。见 `docs/reports/p7-core-review.md` |
@@ -85,7 +85,7 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-18 | FILE-03～04 | 浏览、创建目录、重命名、文件/目录删除、Finder 拖入；目标和错误信息正确 | 进行中：App本地原生浏览/安全操作与B1上传下载/fileURL注册回调主管103tests/GUI通过，人工Finder/NSOpenPanel、真实远端仍待。见 `docs/reports/p6a-native-files-ui.md`、`docs/reports/p6b1-native-transfers.md` |
 | AC-19 | FILE-03、07 | 单文件、多文件、整目录往返内容一致；中文/空格/特殊字符和符号链接按明确策略处理，无越界或循环 | 进行中：本地与AppB1分项已验，真实隔离SFTP完整2GiB/1000及Unicode共1002 payload四manifest实际原名/大小/SHA一致，3链接逐项拒绝/树失败、未越界。主管独立核全部manifest，正式App/mac26/Finder仍待。见 `docs/reports/real-sftp-file-acceptance.md`、`docs/reports/p6b1-native-transfers.md` |
 | AC-20 | FILE-05～06 | 覆盖/跳过/重命名及本次批量策略生效，唯一临时文件和提交不会误覆盖竞争目标 | 进行中：AppB1本地批策略及竞争目标保护已验；真实SFTP未确认noReplace拒绝0bytes、当前service真实probe/碰撞保原件、POSIX rename支持已实测。远端非原子路径检查/最终非CAS剩余风险明确，正式App/mac26及不支持扩展服务仍待。见 `docs/reports/real-sftp-file-acceptance.md`、`docs/reports/p6b1-native-transfers.md` |
-| AC-21 | FILE-05～07 | 大文件取消、断线、权限不足、磁盘空间不足及不支持的安全覆盖有明确失败结果，不破坏既有文件 | 进行中：真实远端2GiB上传/下载25%取消保原target metadata/SHA且同session仍可用、permissionDenied/open/code3与无target已实测；独立真实断连16MiB case源码/离线主管审查通过，未live。网络断连/磁盘满与另一不支持扩展服务待验。见 `docs/reports/real-sftp-file-acceptance.md` |
+| AC-21 | FILE-05～07 | 大文件取消、断线、权限不足、磁盘空间不足及不支持的安全覆盖有明确失败结果，不破坏既有文件 | 进行中：远端2GiB双向25%取消与权限失败已验；唯一16MiB真实断连25%后transport/write/-43，明确retainedtemp、资源关闭；主管固定CID独立核原metadata/SHA不变并精确清理。协调器receipt缺失/原新service verify未执行，断连整案PARTIAL；磁盘满与另一不支持扩展服务待验。见 `docs/reports/real-sftp-disconnect.md`、`docs/reports/real-sftp-file-acceptance.md` |
 | AC-22 | FILE-08～09 | 关闭 SSH 标签、切标签、隐藏 SFTP 面板后任务继续且可见；空闲连接可释放 | 进行中：AppB1真实Local任务跨hide/切主机/切关SSH标签继续，任务入口及定向idle/leased保护主管复验通过；真实远端/mac26仍待。见 `docs/reports/p6b1-native-transfers.md` |
 | AC-23 | LIFE | 无传输时标签关闭、主窗口关闭和退出正确；隐藏/最小化保持连接；重开不恢复或触发认证 | 进行中：无传输App原生关闭/重开/带活动逻辑tab退出/重叠window+Quit及永久admission回归主管通过；真实SSH进程、SFTP整合与mac26仍待。见 `docs/reports/p5-native-session-ui.md` |
 | AC-24 | LIFE、FILE-08 | 有传输时窗口关闭/退出均拦截；继续保留窗口，取消并关闭正确终止，文件不被静默破坏 | 进行中：AppB1主管103tests/原生window+Quit共享决定/继续/取消真退出、晚风险及历史集合R1复验通过；真实SSH/SFTP清理/mac26仍待。见 `docs/reports/p6b1-native-transfers.md` |
