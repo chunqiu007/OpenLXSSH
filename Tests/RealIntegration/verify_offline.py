@@ -41,7 +41,11 @@ def main():
             (['--openssh-auth', '--help'], 0),
             (['--openssh-auth', 'validate', '--contract', '/not/a/file/openssh-auth.json'], 0),
             (['--openssh-auth', '--live', '--contract', '/not/a/file/openssh-auth.json'], 2),
-            (['--openssh-auth', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/openssh-auth.json'], 2)]:
+            (['--openssh-auth', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/openssh-auth.json'], 2),
+            (['--sftp-auth', '--help'], 0),
+            (['--sftp-auth', 'validate', '--contract', '/not/a/file/sftp-auth.json'], 0),
+            (['--sftp-auth', '--live', '--contract', '/not/a/file/sftp-auth.json'], 2),
+            (['--sftp-auth', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/sftp-auth.json'], 2)]:
             output = subprocess.run([str(preflight), *arguments], cwd=HERE, env=env, capture_output=True, timeout=10)
             checks.append({'command': [str(preflight), *arguments], 'cwd': str(HERE), 'exitCode': output.returncode, 'expectedExitCode': expected})
             if output.returncode != expected:

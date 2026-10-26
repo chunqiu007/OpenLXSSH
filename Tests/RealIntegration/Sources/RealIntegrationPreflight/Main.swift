@@ -5,6 +5,13 @@ import RealIntegrationCore
     static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--sftp-auth" {
+                let options = try SFTPAuthOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(SFTPAuthOptions.help) }
+                else if options.action == .validate { print("SFTP auth syntax valid; files NOT opened; no Docker or connection.") }
+                else { throw SmokeError.signedAppRequired }
+                return
+            }
             if arguments.first == "--openssh-auth" {
                 let options = try OpenSSHOptions.parse(Array(arguments.dropFirst()))
                 if options.action == .help { print(OpenSSHOptions.help) }

@@ -1,5 +1,100 @@
 OpenLXSSH real integration consumer — test-only host15 preparation
 
+SFTP COMBINED-AUTH ADDENDUM — source/offline buildpoint ONLY, NOT live acceptance
+
+Unexpected-callback diagnostic addendum (SFTP-KBI-UNEXPECTED-SHAPE-A): the first
+refused typed challenge can record ONLY ordinal, field byte counts/SHA256,
+prompt count and up to32 prompt byte counts/SHA256/echo. Fields above native65536
+bytes or count/echo mismatch are invalid; oversized fields omit digest and mark
+truncated, no raw name/instruction/prompt/response bytes retained. This metadata
+is captured once under the callback lock in the ORIGINAL claim-error branch,
+then that same error cancels the token/reader. It never resolves or reads an extra
+secret. The original5pass/1fail/4unattempted matrix (App62) and expected-failure
+shape run(App-eb1) are retained unchanged. The shape run actually observed exact
+callback4 with empty name/instruction SHA256(empty), zero prompts and empty echo;
+fixed OpenSSH9.6 PAM_SUCCESS code sends that tail before authentication success.
+
+SFTP-TERMINAL-ZERO-R1 corrects only this TEST fixture contract omission: after
+all three sameID A/B/C secrets have been successfully resolved exactly once,
+allow exactly callback4 with name/instruction empty,prompts=[],echo=[], reply[]
+exactly once and NO management secret read. Typed phases distinguish secret
+from terminalZero, never a magic response index. Total callback/reply4;
+secretResponseCount3;terminalZeroReplyCount1;managementResponseReads3;late0.
+Non-MFA remains0 callbacks. Early zero, repeated/fifth, nonempty headers, any
+fourth prompt/echo, cross-session, unresolved/replayed, deadline/closed states
+all fail closed and preserve first-refusal diagnostic metadata. This is not a
+product security-gate relaxation or accepting arbitrary zero challenges. The
+empty tail does NOT prove authentication/SFTP success: actual connect+79IO+
+hash/list/lstat/owncleanup/awaitclose are still mandatory. New tail acceptance
+has source/offline evidence only, no live acceptance yet.
+
+Separate --sftp-auth entry/strict sftp-auth.json; no old schema/semantics changed.
+This is real authenticated SFTP plus tiny IO, NOT MINA/auth-only/systemSSH proof.
+Future explicit primary release only, exact NEW App path and exact contract:
+  <App>/Contents/MacOS/OpenLXSSHRealIntegration --sftp-auth --live --authorized-local-fixture --engine-ready --contract <exactContract>
+Default/help/validate are syntax only, no file reads/Docker/signature/network.
+
+One own 0700/noACL sftp-auth-case-<12hex>/sftp-auth.json file0600/currentUID/
+single-link/no symlink under RealIntegration/.build. Exact required JSON keys:
+  schema:1; taskID:REAL-SFTP-COMBINED-AUTH-A
+  service:keyonly|passwordonly|key-kbd|password-kbd; host:127.0.0.1
+  port:fixed22221|22222|22223|22224; user:fixture
+  key:none|edplain|edencrypted|rsaplain|rsaencrypted
+  credentialDirectory:exact fresh root .runtime/<service>/credentials-<12hex>
+  expectedFingerprint:independently reviewed out-of-band hostkey SHA256
+  baseImage,imageID,containerID,project,networkID,context,endpoint:exact frozen
+    local root fixture management identity/provenance, no discovery/latest/TCP
+No primary field, system prompt hash, responsePlan, alternate endpoint or retries.
+Keyservices require one of four fixed keys; passwordservices require key:none.
+
+Public LibSSH2FileService.connect receives ONLY explicit ordered auth arrays:
+  keyonly:[publicKey]; passwordonly:[password]
+  key-kbd:[publicKey,keyboardInteractive]
+  password-kbd:[password,keyboardInteractive]
+Public/private key and encrypted-key passphrase or password are read only from
+that exact generation through existing currentUID0600/noACL/no-follow gates,
+then supplied as Data. No key/password/OTP argv/env/Keychain or host OTP files.
+No automatic method negotiation/fallback or prompt-based secret classification.
+The mature backend's documented partial-success handling proceeds only to the
+explicit next distinct method. No system OpenSSH response or report is reused.
+
+Root PAM typed KBI requires name and instruction EMPTY, exactly ONE raw prompt
+per callback with echo=false, exact ordered A->B->C and same24hex ID:
+  One-time response A [id]: <space>
+  Unclassified verification B [sameid]: <space>
+  Next-round response C [sameid]: <space>
+This raw typed envelope is based on reviewed OpenSSH9.6 PAM query source; it is
+not system OpenSSH's wrapped '(fixture@alias)' Askpass prompt. Exactly three
+private current-index reads/secret replies precede the one precisely described
+terminal empty reply; report promptCounts=[1,1,1,0],echo=[[false],[false],[false],[]].
+All other zero/multiple prompts, headers, echo/order/ID changes, extra/concurrent/
+late/replayed callbacks fail closed. Single-method services allow zero callbacks.
+CurrentTTL/ID/schema still validated by the reviewed fixed UID0 reader
+before any bytes leave its container-private PIPE; no full response array is
+returned. Server file has no round counter, so local exact callback order binds
+index, not a claimed server-side round proof. Existing OpenSSHManagement is reused
+ONLY for frozen target/policy/reader methods via an identity projection, never
+for system authentication/prompt matching/reporting. Existing source unchanged.
+
+Success requires public connect actually return after authenticated SFTP init,
+all typed callback budgets complete, and an own UUID tiny roundtrip: exactly79
+bytes written/read, list/lstat, SHA256 equality. Parent paths must lstat as dirs;
+mkdir must succeed fresh; file is exclusiveWrite; only the own known regular
+payload and now-empty UUID directory are removed. Unknown entries/symlinks abort,
+no recursive cleanup/overwrite/pre-existing deletion. Every returned service is
+cancelled and close() awaited; pending handlers/management tool ownership drain.
+MFA also checks exact session JSON removal. Any timeout/failure (including
+sftp-init/-21) is FAILED, never an auth-only success. Interrupted native disposal
+may prevent remote cleanup: report cleanupIncomplete and inspect exact own UUID.
+
+Test-only limits TCP20/operation20/active45/drain12/full85 with external90s owner;
+not product PERF bounds. Native/libssh2 operation timeout includes all3 KBI rounds,
+so actual relay+management latency is a live-validation risk, not preemptively
+relaxed here. Keys/Data/native copies cannot guarantee full memory zeroization;
+SFTPv3 lstat cannot eliminate same-user path replacement races. Language is not
+exposed by typed API. All new SFTP combined-auth/key-matrix cases UNVERIFIED.
+Do not collect/relay/connect before separate source review and runtime release.
+
 OPENSSH FOUR-FLOW ADDENDUM — source/static only, no new live acceptance
 
 Separate --openssh-auth entry and openssh-auth.json do not widen the old SSH/SFTP
