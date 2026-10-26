@@ -356,15 +356,15 @@ import OpenLXSSHSecurity
         let journal = try SecurityJournal(parent: directory)
         let entry = SecurityIntent(id: UUID(), kind: .password, state: .prepared)
         try journal.set(entry)
-        let first = try XCTUnwrap(journal.revision(for: entry.id))
+        let first = try XCTUnwrap(try journal.revision(for: entry.id))
         var changed = entry; changed.state = .created
         try journal.set(changed)
         XCTAssertThrowsError(try journal.discardPrepared(entry, revision: first))
         try journal.set(entry) // same content restored, but a different generation
         XCTAssertThrowsError(try journal.discardPrepared(entry, revision: first))
-        let current = try XCTUnwrap(journal.revision(for: entry.id))
+        let current = try XCTUnwrap(try journal.revision(for: entry.id))
         try journal.discardPrepared(entry, revision: current)
-        checkTrue(journal.all().isEmpty)
+        checkTrue(try journal.all().isEmpty)
     }
 
     func testKeyCommittedWithJournalFailureIsSuccessfulAndRecoversWithoutCompensation() async throws {

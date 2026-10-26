@@ -78,7 +78,11 @@ actor SecurityCoordinator {
         self.journalWriteCheck = journalWriteCheck
     }
     private func storage() throws -> (KeyStore, SecurityJournal) {
-        if let keys, let journal { return (keys, journal) }
+        if let keys, let journal {
+            _ = try location.databaseDirectory()
+            try journal.validateAccess()
+            return (keys, journal)
+        }
         let parent = try AppDataLocation.canonical(location.databaseDirectory().deletingLastPathComponent())
         let journal = try SecurityJournal(parent: parent, beforePersist: journalWriteCheck)
         let keys = try KeyStore(directory: parent.appendingPathComponent("Keys", isDirectory: true))
@@ -92,15 +96,16 @@ actor SecurityCoordinator {
     func overview() async throws -> SecurityOverview {
         let (_, journal) = try storage()
         let metadata = try await repository.securityMetadata()
-        let pending = Set(metadata.tickets.map(\.resourceID)).union(journal.all().map(\.id))
-        let reviews = journal.all().compactMap { intent -> RecoveryReview? in
-            guard let revision = journal.revision(for: intent.id) else { return nil }
+        let intents = try journal.all()
+        let pending = Set(metadata.tickets.map(\.resourceID)).union(intents.map(\.id))
+        let reviews = try intents.compactMap { intent -> RecoveryReview? in
+            guard let revision = try journal.revision(for: intent.id) else { return nil }
             return RecoveryReview(intent: intent, revision: revision,
                                   metadataRegistered: Self.hasMetadata(intent.id, in: metadata),
                                   hasCoreTicket: (metadata.tickets + metadata.completedTickets).contains { $0.resourceID == intent.id })
         }
         return SecurityOverview(metadata: metadata, pendingCount: pending.count,
-                                uncertainCount: journal.all().filter { $0.state == .prepared }.count,
+                                uncertainCount: intents.filter { $0.state == .prepared }.count,
                                 recoveryReviews: reviews)
     }
     private static func hasMetadata(_ id: UUID, in metadata: SecurityMetadata) -> Bool {
@@ -117,6 +122,17 @@ actor SecurityCoordinator {
         // No KeyStore/Keychain read, enumeration or deletion here. An unconfirmed intent
         // does not establish ownership or even existence of an external resource.
         try journal.discardPrepared(review.intent, revision: review.revision)
+    }
+    func validatedPrivateKeyPath(_ id: UUID) async throws -> String {
+        let metadata = try await repository.securityMetadata()
+        guard let reference = metadata.keys.first(where: { $0.id == id }) else { throw RepositoryError.notFound }
+        let keys = try storage().0
+        // KeyStore validates the exact owned UUID, directory identity, regular-file
+        // type, owner, mode and OpenSSH envelope. Never accept a user-supplied path.
+        let key = try await keys.key(id: id)
+        guard (reference.algorithm == .ed25519 && key.publicKey.algorithm == .ed25519)
+                || (reference.algorithm == .rsa && key.publicKey.algorithm == .rsa) else { throw KeyFailure.invalidOpenSSH }
+        return keys.rootURL.appendingPathComponent(id.uuidString + ".openssh").path
     }
     func publicKey(_ id: UUID) async throws -> PublicKey {
         guard try await repository.securityMetadata().keys.contains(where: { $0.id == id }) else { throw RepositoryError.notFound }
@@ -157,6 +173,7 @@ actor SecurityCoordinator {
         if let created { changes.append(.registerCredential(.init(id: created.id, purpose: .password, isSavingAuthorized: true))) }
         changes.append(isNew ? .insertHost(host) : .updateHost(host))
         do { try await repository.apply(changes) }
+        catch is AppStorageFailure { return .savedWithCleanupPending }
         catch { if let created { try await compensate(created) }; throw error }
         do {
             if let created { try journal.remove(created.id) }
@@ -218,6 +235,8 @@ actor SecurityCoordinator {
                                               passphraseCredentialRef: passphraseIntent?.id)))
             try Task.checkCancellation()
             try await repository.apply(changes)
+        } catch is AppStorageFailure {
+            return KeyCreationOutcome(id: keyID, cleanupPending: true)
         } catch {
             if let passphraseIntent {
                 do { try await compensate(passphraseIntent) }
@@ -241,7 +260,8 @@ actor SecurityCoordinator {
         let metadata = try await repository.securityMetadata()
         guard let key = metadata.keys.first(where: { $0.id == keyID }) else { throw RepositoryError.notFound }
         guard let old = key.passphraseCredentialRef else { return .saved }
-        try await repository.apply([.updateKeyPassphrase(keyID: keyID, credentialRef: nil)])
+        do { try await repository.apply([.updateKeyPassphrase(keyID: keyID, credentialRef: nil)]) }
+        catch is AppStorageFailure { return .savedWithCleanupPending }
         do {
             try await deleteIfUnusedCredential(old)
             return try await repository.securityMetadata().tickets.isEmpty ? .saved : .savedWithCleanupPending
@@ -285,6 +305,7 @@ actor SecurityCoordinator {
         let (_, journal) = try storage()
         try journal.set(intent)
         do { try await repository.apply([change]) }
+        catch is AppStorageFailure { throw AppStorageFailure.committedStorageUnsafe }
         catch { try journal.remove(intent.id); throw error }
     }
 
@@ -316,7 +337,7 @@ actor SecurityCoordinator {
     private func cleanupInternal() async throws {
         let (keys, journal) = try storage()
         var metadata = try await repository.securityMetadata()
-        for intent in journal.all() {
+        for intent in try journal.all() {
             let registered = intent.kind == .privateKey ? metadata.keys.contains { $0.id == intent.id } : metadata.credentials.contains { $0.id == intent.id }
             if registered { try journal.remove(intent.id); continue }
             guard intent.state != .prepared else { continue } // uncertain creation: never guess ownership
@@ -326,7 +347,7 @@ actor SecurityCoordinator {
         }
         metadata = try await repository.securityMetadata()
         for ticket in metadata.tickets {
-            let intent = journal.all().first { $0.id == ticket.resourceID }
+            let intent = try journal.all().first { $0.id == ticket.resourceID }
             do {
                 switch ticket.resourceKind {
                 case .privateKey:

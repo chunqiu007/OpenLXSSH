@@ -20,6 +20,8 @@ import SwiftUI
     let model: AppModel
     private(set) var mainWindow: NSWindow?
     private var terminating = false
+    private var windowClosing = false
+    private var windowCloseApproved = false
     #if HOST_PROBE
     private let smoke: NativeSmoke.Options?
     #endif
@@ -30,8 +32,9 @@ import SwiftUI
         smoke = options
         let location = options.map { AppDataLocation.isolated($0.directory) } ?? .applicationSupport
         let repository = AppRepository(location: location)
+        let builder = options.map { _ in ProbeSessionBuilder(repository: repository) }
         model = AppModel(repository: repository, security: SecurityCoordinator(repository: repository, location: location,
-                         credentials: SystemCredentials(testNamespace: options?.namespace)))
+                         credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder)
         #else
         guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw CocoaError(.validationMissingMandatoryProperty) }
         model = AppModel(repository: AppRepository())
@@ -50,6 +53,7 @@ import SwiftUI
     }
 
     @objc func showMainWindow() {
+        guard !terminating, !model.lifecycle.terminating else { return }
         if let mainWindow { mainWindow.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "OpenLXSSH"
@@ -65,25 +69,54 @@ import SwiftUI
         Task { await model.reload() }
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === mainWindow else { return true }
+        if windowCloseApproved { return true }
+        guard !windowClosing else { return false }
+        // Files UI will supply the visible transfer decision before this seam returns true.
+        guard !model.lifecycle.requiresTransferDecision else { return false }
+        windowClosing = true
+        Task {
+            if await model.lifecycle.closeConnections() {
+                windowCloseApproved = true
+                sender.performClose(nil)
+            }
+            windowClosing = false
+        }
+        return false
+    }
     func windowWillClose(_ notification: Notification) {
         guard notification.object as? NSWindow === mainWindow else { return }
         model.windowClosed()
         mainWindow?.contentView = nil
         mainWindow = nil
+        windowCloseApproved = false
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !terminating, !model.lifecycle.terminating else { return false }
         if !flag { showMainWindow() }
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !terminating else { return .terminateNow }
+        guard !terminating else { return .terminateLater }
+        guard !model.lifecycle.requiresTransferDecision else { return .terminateCancel }
         terminating = true
+        model.lifecycle.beginTermination()
         model.windowClosed()
         let repository = model.repository
         let security = model.security
-        Task.detached {
+        Task {
+            _ = await model.lifecycle.closeConnections()
+            #if HOST_PROBE
+            if let smoke, smoke.phase == "sessions-exit" {
+                let result = ["cleanupCompleted": model.sessions.tabs.isEmpty, "selectedTabCleared": model.sessions.selectedTabID == nil]
+                if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) {
+                    try? data.write(to: smoke.directory.appendingPathComponent("termination-cleanup.json"))
+                }
+            }
+            #endif
             do { try await security.close(); try await repository.close() }
             catch { /* Exit still releases owned resources; never print database descriptions. */ }
             // AppKit may be inside its terminateLater nested event loop. Use the run loop,

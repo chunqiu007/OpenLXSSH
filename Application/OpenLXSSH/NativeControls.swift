@@ -110,15 +110,24 @@ private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRe
 
 /// Small native controls expose identifiers for the in-process smoke harness. The harness
 /// uses the actual target/action and text-editing paths; it does not require Accessibility.
-struct NativeButton: NSViewRepresentable {
+struct NativeButton: View {
     let title: String
     let id: String
     var enabled = true
     var action: () -> Void
+    var body: some View {
+        NativeButtonControl(title: title, id: id, enabled: enabled, action: action).disabled(!enabled)
+    }
+}
+private struct NativeButtonControl: NSViewRepresentable {
+    let title: String
+    let id: String
+    let enabled: Bool
+    let action: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(action) }
     func makeNSView(context: Context) -> NSButton {
         let view = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.clicked))
-        view.bezelStyle = .rounded; view.identifier = NSUserInterfaceItemIdentifier(id)
+        view.bezelStyle = .rounded; view.identifier = NSUserInterfaceItemIdentifier(id); view.isEnabled = enabled
         view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         return view
     }

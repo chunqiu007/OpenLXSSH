@@ -2,6 +2,8 @@ import Darwin
 import Foundation
 import OpenLXSSHCore
 
+enum AppStorageFailure: Error, Sendable { case committedStorageUnsafe }
+
 struct AppSnapshot: Sendable {
     var hosts: [HostConfiguration]
     var folders: [HostFolder]
@@ -63,10 +65,7 @@ enum AppDataLocation: Sendable {
             let fd = open(supplied.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
             guard fd >= 0 else { throw RepositoryError.unsafeDatabaseLocation }
             defer { Darwin.close(fd) }
-            var info = stat()
-            guard fstat(fd, &info) == 0, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else {
-                throw RepositoryError.unsafeDatabaseLocation
-            }
+            try AppFileSecurity.directory(fd)
             return supplied.appendingPathComponent("Data", isDirectory: true)
         }
     }
@@ -77,16 +76,17 @@ enum AppDataLocation: Sendable {
         return URL(fileURLWithPath: String(cString: path), isDirectory: true)
     }
 
-    private static func ensureAppParent(in parent: Int32) throws {
-        var owner = stat()
-        guard fstat(parent, &owner) == 0, owner.st_uid == geteuid() else { throw RepositoryError.unsafeDatabaseLocation }
+    static func ensureAppParent(in parent: Int32) throws {
+        try AppFileSecurity.directory(parent, mode: nil)
         if mkdirat(parent, "OpenLXSSH", 0o700) != 0 && errno != EEXIST { throw RepositoryError.unsafeDatabaseLocation }
         let fd = openat(parent, "OpenLXSSH", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw RepositoryError.unsafeDatabaseLocation }
         defer { Darwin.close(fd) }
-        var info = stat()
-        guard fstat(fd, &info) == 0, info.st_uid == geteuid(), info.st_mode & S_IFMT == S_IFDIR,
-              fchmod(fd, 0o700) == 0 else { throw RepositoryError.unsafeDatabaseLocation }
+        // Check ACL before chmod: never silently repair access policy supplied by a user.
+        try AppFileSecurity.directory(fd, mode: nil)
+        guard fchmod(fd, 0o700) == 0 else { throw RepositoryError.unsafeDatabaseLocation }
+        try AppFileSecurity.directory(fd)
+        try AppFileSecurity.directory(parent, mode: nil)
     }
 }
 
@@ -95,26 +95,41 @@ enum AppDataLocation: Sendable {
 actor AppRepository: AppRepositoryProtocol {
     private let location: AppDataLocation
     private var database: OpenLXSSHDatabase?
-    init(location: AppDataLocation = .applicationSupport) { self.location = location }
+    private let afterCommit: @Sendable () throws -> Void
+    init(location: AppDataLocation = .applicationSupport, afterCommit: @escaping @Sendable () throws -> Void = {}) {
+        self.location = location; self.afterCommit = afterCommit
+    }
 
     private func opened() throws -> OpenLXSSHDatabase {
+        let directory = try location.databaseDirectory()
         if let database { return database }
-        let value = try OpenLXSSHDatabase(directory: location.databaseDirectory())
+        let value = try OpenLXSSHDatabase(directory: directory)
         database = value
         return value
     }
 
     func snapshot(query: HostQuery) throws -> AppSnapshot {
         let db = try opened()
-        return AppSnapshot(hosts: try db.hosts(query), folders: try db.folders(), keys: try db.keys(), settings: try db.settings())
+        let snapshot = AppSnapshot(hosts: try db.hosts(query), folders: try db.folders(), keys: try db.keys(), settings: try db.settings())
+        _ = try location.databaseDirectory()
+        return snapshot
     }
 
-    func apply(_ changes: [RepositoryChange]) throws { try opened().apply(changes) }
+    private func validateCommittedStorage() throws {
+        do { try afterCommit(); _ = try location.databaseDirectory() }
+        catch { throw AppStorageFailure.committedStorageUnsafe }
+    }
+    func apply(_ changes: [RepositoryChange]) throws {
+        try opened().apply(changes)
+        try validateCommittedStorage()
+    }
 
     func copyHost(id: UUID) throws -> HostConfiguration {
         let db = try opened()
         guard let original = try db.host(id: id) else { throw RepositoryError.notFound }
-        return try db.copyHost(id: id, name: Self.copyName(original.name))
+        let copy = try db.copyHost(id: id, name: Self.copyName(original.name))
+        try validateCommittedStorage()
+        return copy
     }
 
     /// Copy configuration in one transaction. Shared key/credential references stay shared;
@@ -129,6 +144,7 @@ actor AppRepository: AppRepositoryProtocol {
             changes.append(.insertHost(host))
         }
         try db.apply(changes)
+        try validateCommittedStorage()
         return copy
     }
 
@@ -142,11 +158,13 @@ actor AppRepository: AppRepositoryProtocol {
     func securityMetadata() async throws -> SecurityMetadata {
         let db = try opened()
         let tickets = try db.cleanupTickets(includeCompleted: true)
-        return SecurityMetadata(hosts: try db.hosts(), keys: try db.keys(), credentials: try db.credentials(),
-                                tickets: tickets.filter { $0.state == .pending }, completedTickets: tickets.filter { $0.state == .completed })
+        let metadata = SecurityMetadata(hosts: try db.hosts(), keys: try db.keys(), credentials: try db.credentials(),
+                                        tickets: tickets.filter { $0.state == .pending }, completedTickets: tickets.filter { $0.state == .completed })
+        _ = try location.databaseDirectory()
+        return metadata
     }
-    func completeCleanup(_ id: UUID) async throws { try opened().completeCleanup(ticketID: id) }
-    func recordCleanupFailure(_ id: UUID, failure: CleanupFailure) async throws { try opened().recordCleanupFailure(ticketID: id, failure: failure) }
+    func completeCleanup(_ id: UUID) async throws { try opened().completeCleanup(ticketID: id); try validateCommittedStorage() }
+    func recordCleanupFailure(_ id: UUID, failure: CleanupFailure) async throws { try opened().recordCleanupFailure(ticketID: id, failure: failure); try validateCommittedStorage() }
 
     func close() throws {
         try database?.close()

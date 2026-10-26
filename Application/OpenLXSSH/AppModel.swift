@@ -1,6 +1,8 @@
+import AppKit
 import Combine
 import Foundation
 import OpenLXSSHCore
+import OpenLXSSHTransport
 
 enum SessionOpenMode: String, Sendable { case reuse, newSession }
 struct SessionRequest: Equatable, Sendable {
@@ -8,19 +10,14 @@ struct SessionRequest: Equatable, Sendable {
     let mode: SessionOpenMode
 }
 enum SessionRouteResult: Equatable, Sendable {
+    case opened(SessionRequest, UUID)
+    /// A recording-only boundary for unit tests; not used by the production App.
     case transportUnavailable(SessionRequest)
 }
 
 @MainActor protocol SessionRouting: AnyObject {
     func open(_ request: SessionRequest) -> SessionRouteResult
     func closeAll()
-}
-
-/// Replacement seam for the later real SSH SessionController. This does not create a session,
-/// spawn a process, authenticate, or record a successful connection.
-@MainActor final class UnavailableSessionRouter: SessionRouting {
-    func open(_ request: SessionRequest) -> SessionRouteResult { .transportUnavailable(request) }
-    func closeAll() {}
 }
 
 enum SidebarSelection: Hashable {
@@ -40,6 +37,9 @@ struct AppIssue: Identifiable, Equatable {
     let code: String
     let message: String
     static func sanitized(_ error: Error) -> AppIssue {
+        if error is AppStorageFailure {
+            return AppIssue(code: "storage.committedUnsafe", message: "配置已提交，但提交后的专属目录权限／ACL 核验失败。请勿重复新建；先自行核实权限，App 不会删除 ACL 或回滚已提交资源。")
+        }
         guard let error = error as? RepositoryError else {
             // GRDB/Cocoa descriptions may contain SQL arguments, user paths or external data.
             return AppIssue(code: "storage.failed", message: "无法读取或保存本地数据。请检查 App 专属目录的可用空间与访问权限后重试；不会自动清空数据库。")
@@ -49,7 +49,7 @@ struct AppIssue: Identifiable, Equatable {
             let labels = ["name": "名称", "address": "地址", "username": "用户名", "port": "端口（1–65535）", "folderName": "文件夹名称", "keepalive": "保活（间隔 0–3600 秒，次数 1–10）", "fontName": "字体", "fontSize": "字号（6–72）", "historyLines": "历史行数（0–50000）", "color": "颜色（#RRGGBB）", "authenticationReferences": "认证关联"]
             return AppIssue(code: "validation.invalid", message: "请检查" + (labels[field] ?? "输入字段") + "。")
         case .unsafeDatabaseLocation:
-            return AppIssue(code: "storage.unsafeLocation", message: "App 数据目录不安全或不可访问。请检查 Application Support/OpenLXSSH 的所有权与目录类型；不会写入其他位置。")
+            return AppIssue(code: "storage.unsafeLocation", message: "App 专属数据目录或文件的所有权、权限或扩展 ACL 不安全／无法核验。已拒绝操作；请在 Finder 信息或系统权限工具中核实，App 不会静默删除 ACL、清空数据或写入其他位置。")
         case .databaseBusy: return AppIssue(code: "storage.busy", message: "本地数据正在被使用，请稍后重试。")
         case .unsupportedSchema: return AppIssue(code: "storage.newerSchema", message: "数据库来自较新版本。请使用匹配的 App 版本；不会降级或删除数据。")
         case .notFound: return AppIssue(code: "storage.notFound", message: "该记录已不存在，请刷新列表后重试。")
@@ -62,7 +62,10 @@ struct AppIssue: Identifiable, Equatable {
 @MainActor final class AppModel: ObservableObject {
     let repository: any AppRepositoryProtocol
     let security: SecurityCoordinator
-    private let sessionRouter: any SessionRouting
+    let sessions: SessionController
+    let lifecycle: AppLifecycleCoordinator
+    let sessionEnvironment: SessionEnvironment
+    private let sessionRouter: (any SessionRouting)?
     @Published private(set) var hosts: [HostConfiguration] = []
     @Published private(set) var folders: [HostFolder] = []
     @Published private(set) var keys: [ManagedKeyReference] = []
@@ -77,9 +80,17 @@ struct AppIssue: Identifiable, Equatable {
     @Published private(set) var connectionNotice: SessionRouteResult?
     private var generation = 0
 
-    init(repository: any AppRepositoryProtocol, sessionRouter: any SessionRouting = UnavailableSessionRouter(), security: SecurityCoordinator? = nil) {
+    init(repository: any AppRepositoryProtocol, sessionRouter: (any SessionRouting)? = nil, security: SecurityCoordinator? = nil,
+         location: AppDataLocation = .applicationSupport, sessionBuilder: (any SessionBuilding)? = nil) {
         self.repository = repository; self.sessionRouter = sessionRouter
-        self.security = security ?? SecurityCoordinator(repository: repository)
+        let security = security ?? SecurityCoordinator(repository: repository, location: location)
+        self.security = security
+        let environment = SessionEnvironment(location: location); sessionEnvironment = environment
+        let builder = sessionBuilder ?? DirectSessionBuilder(repository: repository, security: security, environment: environment,
+                                                              scanner: DefaultSystemScanner())
+        sessions = SessionController(repository: repository, credentials: security.credentials, builder: builder)
+        lifecycle = AppLifecycleCoordinator(sessions: sessions)
+        sessions.onAuthenticatedMetadata = { [weak self] in Task { await self?.reload() } }
     }
 
     var selectedHost: HostConfiguration? { hosts.first { $0.id == selectedHostID } }
@@ -93,6 +104,7 @@ struct AppIssue: Identifiable, Equatable {
             let snapshot = try await repository.snapshot(query: selection.query(search: search))
             guard token == generation else { return false }
             hosts = snapshot.hosts; folders = snapshot.folders; keys = snapshot.keys; settings = snapshot.settings
+            sessions.updateSettings(settings)
             if let selectedHostID, !hosts.contains(where: { $0.id == selectedHostID }) { self.selectedHostID = nil }
             didLoad = true
             issue = nil
@@ -110,7 +122,11 @@ struct AppIssue: Identifiable, Equatable {
         defer { isWriting = false }
         do {
             try await operation()
-            return await reload()
+            _ = await reload()
+            return true // The mutation committed even if the later read cannot refresh UI.
+        } catch is AppStorageFailure {
+            issue = .sanitized(AppStorageFailure.committedStorageUnsafe)
+            return true
         } catch {
             issue = .sanitized(error)
             return false
@@ -125,9 +141,9 @@ struct AppIssue: Identifiable, Equatable {
         isWriting = true; defer { isWriting = false }
         do {
             let outcome = try await security.saveHost(host, isNew: isNew, password: password)
-            let success = await reload()
+            _ = await reload()
             if case .savedWithCleanupPending = outcome { issue = .security(SecurityUIFailure.pendingCleanup) }
-            return success
+            return true // SecurityCoordinator only returns after the host transaction committed.
         } catch { issue = .security(error); return false }
     }
     @discardableResult func deleteHost(_ id: UUID) async -> Bool {
@@ -154,17 +170,25 @@ struct AppIssue: Identifiable, Equatable {
         guard (0...50_000).contains(value.historyLines) else {
             issue = .sanitized(RepositoryError.invalidField("historyLines")); return false
         }
+        guard value.fontSize.isFinite, (6...72).contains(value.fontSize) else {
+            issue = .sanitized(RepositoryError.invalidField("fontSize")); return false
+        }
+        guard value.fontName == "SFMono-Regular" || NSFont(name: value.fontName, size: value.fontSize) != nil else {
+            issue = .sanitized(RepositoryError.invalidField("fontName")); return false
+        }
         return await write { try await repository.apply([.saveSettings(value)]) }
     }
 
     func requestSession(hostID: UUID, mode: SessionOpenMode) {
-        guard hosts.contains(where: { $0.id == hostID }) else { issue = .sanitized(RepositoryError.notFound); return }
-        connectionNotice = sessionRouter.open(SessionRequest(hostID: hostID, mode: mode))
+        guard let host = hosts.first(where: { $0.id == hostID }) else { issue = .sanitized(RepositoryError.notFound); return }
+        let request = SessionRequest(hostID: hostID, mode: mode)
+        if let sessionRouter { connectionNotice = sessionRouter.open(request) }
+        else if let id = sessions.open(host, mode: mode) { connectionNotice = .opened(request, id) }
     }
 
     func windowClosed() {
         generation += 1
-        sessionRouter.closeAll()
+        sessionRouter?.closeAll()
         connectionNotice = nil; selectedHostID = nil; search = ""; selection = .all
         isLoading = false
     }
@@ -230,7 +254,7 @@ extension AuthenticationKind {
 }
 
 enum ColorPreset: String, CaseIterable {
-    case nord = "Nord", solarized = "Solarized", classic = "Classic", custom = "自定义"
+    case nord = "跟随外观（默认）", solarized = "Solarized", classic = "Classic", custom = "自定义"
     var colors: (String, String, String) {
         switch self {
         case .nord: ("#D8DEE9", "#20242C", "#D8DEE9")

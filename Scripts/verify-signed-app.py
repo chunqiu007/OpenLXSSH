@@ -48,6 +48,14 @@ def main():
     destination.parent.mkdir(parents=True, exist_ok=False)
     shutil.copytree(source, destination)
     (LOGS / 'signed-app-bundle-path.txt').write_text(str(destination) + '\n')
+    helper = destination / 'Contents/Helpers/openlxssh-askpass'
+    if not helper.is_file():
+        print('INCOMPLETE: embedded askpass helper missing.')
+        return 1
+    helper_sign = command(['/usr/bin/codesign', '--force', '--sign', identity, '--identifier', 'org.openlxssh.askpass', '--options', 'runtime', '--timestamp=none', str(helper)])
+    if helper_sign.returncode or command(['/usr/bin/codesign', '--verify', '--strict', str(helper)]).returncode:
+        print('INCOMPLETE: existing-identity helper signing failed; no authorization was supplied.')
+        return 1
     signed = command(['/usr/bin/codesign', '--force', '--sign', identity, '--options', 'runtime', '--timestamp=none', str(destination)])
     if signed.returncode:
         print('INCOMPLETE: existing-identity App signing failed; no authorization was supplied.')
@@ -61,7 +69,7 @@ def main():
     binary = destination / 'Contents/MacOS/OpenLXSSH'
     result = 0
     try:
-        for phase in ('security', 'security-read'):
+        for phase in ('transport-config', 'security', 'security-read'):
             run = command([str(binary), '--self-test-data-dir', str(work), '--self-test-phase', phase], timeout=120)
             # Only native harness JSON and sanitized static diagnostics; no identity output.
             (LOGS / f'signed-app-{phase}.log').write_bytes(run.stdout)

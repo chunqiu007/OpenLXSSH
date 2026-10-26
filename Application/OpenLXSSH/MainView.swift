@@ -3,7 +3,7 @@ import SwiftUI
 import OpenLXSSHCore
 
 private struct EditorPresentation: Identifiable {
-    enum Content { case host(HostConfiguration?), folder(HostFolder?), settings, security, deletion(DeletionTarget) }
+    enum Content { case host(HostConfiguration?), folder(HostFolder?), settings, security, trust, deletion(DeletionTarget) }
     let id = UUID()
     let content: Content
 }
@@ -11,7 +11,9 @@ private enum DeletionTarget { case host(HostConfiguration), folder(HostFolder) }
 
 struct MainView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var sessions: SessionController
     @State private var editor: EditorPresentation?
+    init(model: AppModel) { self.model = model; sessions = model.sessions }
     private var title: String {
         switch model.selection {
         case .all: "所有主机"
@@ -38,6 +40,7 @@ struct MainView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     NativeField(placeholder: "搜索名称、地址或用户名", id: "hosts.search", text: $model.search).frame(height: 25)
                 }.padding(.horizontal).padding(.bottom, 12)
+                VStack(spacing: 0) {
                 HSplitView {
                     VStack(spacing: 0) {
                         if model.hosts.isEmpty {
@@ -50,10 +53,15 @@ struct MainView: View {
                             HostTable(hosts: model.hosts, selectedID: $model.selectedHostID) { model.requestSession(hostID: $0, mode: .reuse) }
                         }
                         Divider()
-                        Text("\(model.hosts.count) 台主机 · " + (model.isLoading || model.isWriting ? "正在处理本地数据" : "未建立任何连接"))
+                        Text("\(model.hosts.count) 台主机 · \(sessions.tabs.count) 个内存会话标签" + (model.isLoading || model.isWriting ? " · 正在处理本地数据" : ""))
                             .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(10)
                     }.frame(minWidth: 340)
-                    detail.frame(minWidth: 290, idealWidth: 330, maxWidth: 430)
+                    ScrollView { detail }.frame(minWidth: 290, idealWidth: 330, maxWidth: 430)
+                }.frame(minHeight: sessions.tabs.isEmpty ? 350 : 180, maxHeight: sessions.tabs.isEmpty ? .infinity : 260)
+                if !sessions.tabs.isEmpty {
+                    Divider()
+                    SessionWorkspaceView(controller: sessions).frame(minHeight: 320)
+                }
                 }
             }.frame(minWidth: 690)
         }
@@ -69,6 +77,7 @@ struct MainView: View {
             case .folder(let folder): FolderEditor(model: model, folder: folder) { editor = nil }
             case .settings: SettingsEditor(model: model) { editor = nil }
             case .security: SecurityManagerView(app: model) { editor = nil }
+            case .trust: TrustManagementView(environment: model.sessionEnvironment) { editor = nil }
             case .deletion(let target): HostDeletionView(model: model, target: target) { editor = nil }
             }
         }
@@ -104,8 +113,9 @@ struct MainView: View {
             Spacer(minLength: 8)
             Divider()
             NativeButton(title: "密钥与凭据…", id: "security.open", enabled: model.didLoad) { editor = EditorPresentation(content: .security) }.fixedSize()
+            NativeButton(title: "可信主机…", id: "trust.manage", enabled: model.didLoad) { editor = EditorPresentation(content: .trust) }.fixedSize()
             NativeButton(title: "设置…", id: "settings.open", enabled: model.didLoad) { editor = EditorPresentation(content: .settings) }.fixedSize()
-            Text("本地配置 · SSH 尚未集成").font(.caption2).foregroundStyle(.secondary)
+            Text("系统 OpenSSH · 仅直接连接").font(.caption2).foregroundStyle(.secondary)
         }.padding(16).background(Color(nsColor: .windowBackgroundColor))
     }
     private func sidebarButton(_ label: String, id: String, selection: SidebarSelection) -> some View {
@@ -138,12 +148,10 @@ struct MainView: View {
             }
             if let notice = model.connectionNotice {
                 switch notice {
-                case .transportUnavailable(let request):
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("SSH transport 未集成，未建立连接", systemImage: "info.circle").font(.headline)
-                        Text(request.mode == .reuse ? "已收到打开/复用请求。没有启动 SSH、认证或终端。" : "已收到独立会话请求。没有创建会话或写入最近连接时间。")
-                        Text("状态：transport.unavailable").font(.caption.monospaced())
-                    }.padding(12).background(.quaternary).clipShape(RoundedRectangle(cornerRadius: 8))
+                case .opened:
+                    Text("标签独立保留会话。外层认证状态请以终端标签为准，进程启动不代表连接成功。").font(.caption).foregroundStyle(.secondary)
+                case .transportUnavailable:
+                    Text("逻辑测试路由：未建立 SSH 连接").font(.caption)
                 }
             }
             Spacer()

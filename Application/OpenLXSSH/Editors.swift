@@ -141,11 +141,12 @@ struct SettingsEditor: View {
             }
             Text("历史默认 10000 行，当前终端上限为 50000；超过上限会报错，不会静默截断。默认保活只用于新主机，已有主机保持各自设置。")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("默认三色组表示跟随外观；固定预设或改动任一颜色后保留自定义色，不随系统外观覆盖。字号与历史上限保存后立即应用全部标签。").font(.caption).foregroundStyle(.secondary)
             Text("Aa 中文 0123456789 — 字体与配色预览")
                 .font(Font(NSFont(name: draft.value.fontName, size: previewSize) ?? NSFont.monospacedSystemFont(ofSize: previewSize, weight: .regular)))
-                .foregroundStyle(Color(hex: draft.value.foregroundColor)).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(hex: draft.value.backgroundColor)).clipShape(RoundedRectangle(cornerRadius: 6))
-            Text("这是设置预览，不是终端；SSH/终端尚未集成。").font(.caption).foregroundStyle(.secondary)
+                .foregroundStyle(previewForeground).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(previewBackground).clipShape(RoundedRectangle(cornerRadius: 6))
+            Text("预览与当前终端共享设置；保存后立即应用到全部现有标签，不重建连接。").font(.caption).foregroundStyle(.secondary)
             IssueView(issue: model.issue) { model.issue = nil }
             HStack {
                 Spacer()
@@ -162,6 +163,8 @@ struct SettingsEditor: View {
     private func field(_ label: String, _ id: String, _ binding: Binding<String>) -> some View {
         GridRow { Text(label); NativeField(placeholder: label, id: id, text: binding).frame(height: 25) }
     }
+    private var previewForeground: Color { ColorPreset.matching(draft.value) == .nord ? Color(nsColor: .textColor) : Color(hex: draft.value.foregroundColor) }
+    private var previewBackground: Color { ColorPreset.matching(draft.value) == .nord ? Color(nsColor: .textBackgroundColor) : Color(hex: draft.value.backgroundColor) }
     private var previewSize: Double {
         guard let size = Double(draft.size), size.isFinite, (6...72).contains(size) else { return 13 }
         return size

@@ -6,6 +6,8 @@ import OpenLXSSHSecurity
 
 extension AppIssue {
     static func security(_ error: Error) -> AppIssue {
+        if error is JournalWriteFailure { return security(SecurityUIFailure.journal) }
+        if error is AppStorageFailure { return .sanitized(error) }
         if let repository = error as? RepositoryError { return .sanitized(repository) }
         if let failure = error as? KeyOperationFailure { return security(SecurityUIFailure.key(failure.primary)) }
         if let failure = error as? KeyFailure { return security(SecurityUIFailure.key(failure)) }
@@ -28,13 +30,13 @@ extension AppIssue {
             case .passphraseRequired: message = "该私钥已加密，请输入正确口令后重试，或取消。"
             case .keygenRejected, .invalidPassphraseInput: message = "私钥或口令未通过系统 ssh-keygen 校验。请检查口令后重试，或取消；源文件未改动。"
             case .duplicateKey: message = "该密钥 UUID 已存在，未覆盖已有文件。"
-            case .unsafePermissions, .symbolicLinkOrEscape: message = "私钥文件或目录权限/类型不安全，操作已拒绝。请使用自己拥有的普通私钥文件。"
+            case .unsafePermissions, .symbolicLinkOrEscape: message = "私钥文件或目录权限、扩展 ACL／类型不安全或无法核验，操作已拒绝。请自行核实源文件及 App 专属副本；仅 chmod 不能移除 ACL，App 不会静默修改 ACL。"
             case .cancelled: message = "密钥操作已取消。未提交配置的文件按精确 UUID 清理，失败项可重试。"
             default: message = "密钥操作失败。仅支持标准 OpenSSH 格式 RSA/Ed25519 私钥；源文件不会被修改。"
             }
             return AppIssue(code: "key.operationFailed", message: message)
         case .busy: return AppIssue(code: "security.busy", message: "安全资源正在处理，请稍后重试。")
-        case .journal: return AppIssue(code: "security.recoveryUnavailable", message: "安全恢复记录不可访问或不安全。已停止创建/删除，不会扫描或删除用户文件。")
+        case .journal: return AppIssue(code: "security.recoveryUnavailable", message: "安全恢复目录／记录的权限、扩展 ACL 或类型不安全／无法核验。已停止创建与清理；请核实专属目录权限，App 不会静默删除 ACL、扫描用户文件或绕过恢复校验。")
         case .notAuthorized: return AppIssue(code: "credential.notAuthorized", message: "保存秘密需要明确授权和非空输入。OTP 不可保存。")
         case .pendingCleanup: return AppIssue(code: "security.cleanupPending", message: "配置已更新，但精确资源清理尚未完成。请在密钥与凭据管理中重试清理。")
         case .preparedIntent: return AppIssue(code: "security.uncertainIntent", message: "上次操作在确认创建前中断；记录不证明资源存在或归属，不能自动删除外部资源。可核对并仅丢弃非秘密恢复记录。")

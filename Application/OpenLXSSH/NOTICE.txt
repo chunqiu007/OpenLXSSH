@@ -5,3 +5,8 @@ SQLite is supplied by macOS, not by a developer-machine runtime library.
 OpenLXSSHSecurity is a local first-party package using system Security.framework and /usr/bin/ssh-keygen.
 The App explicitly uses local file-based Keychain with system creator ACL, no cloud synchronization.
 Screen lock does not imply Keychain lock. No private key export or backup is provided.
+OpenLXSSHTransport uses system OpenSSH and SwiftTerm 1.99.1 (2f573f73af5e768d90847dce20c97fa9535d7164 preview).
+SwiftTerm source: https://github.com/migueldeicaza/SwiftTerm.git; MIT, see SwiftTerm-LICENSE.
+Transitive pinned build dependencies: swift-argument-parser 1.8.2 (Apache-2.0), swift-png 4.5.2 and h 1.0.1.
+See bundled ArgumentParser-LICENSE, SwiftPNG-LICENSE/NOTICE and H-LICENSE/NOTICE for their terms.
+OpenLXSSHTrust is the sole App-owned known_hosts store shared by direct transports.

@@ -42,13 +42,22 @@ for line in (logs / f'{config}-libraries.log').read_text().splitlines()[1:]:
     library = line.strip().split(' (')[0]
     assert library.startswith(('/System/Library/', '/usr/lib/')), f'External runtime library: {library}'
 lock = json.loads((root / 'OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved').read_text())
-assert len(lock['pins']) == 1
-assert lock['pins'][0]['state'] == {'revision':'b83108d10f42680d78f23fe4d4d80fc88dab3212', 'version':'7.11.1'}
+assert len(lock['pins']) == 5
+pins = {p['identity']: p['state'] for p in lock['pins']}
+assert pins['grdb.swift'] == {'revision':'b83108d10f42680d78f23fe4d4d80fc88dab3212', 'version':'7.11.1'}
+assert pins['swiftterm'] == {'revision':'2f573f73af5e768d90847dce20c97fa9535d7164', 'version':'1.99.1'}
+for p in json.loads((root / 'Packages/OpenLXSSHTransport/Package.resolved').read_text())['pins']:
+    assert pins[p['identity']] == p['state']
+helper = app / 'Contents/Helpers/openlxssh-askpass'
+assert helper.is_file() and subprocess.check_output(['lipo','-archs',str(helper)], text=True).strip() == 'arm64'
+assert re.search(r'minos\s+26.0', subprocess.check_output(['xcrun','vtool','-show-build',str(helper)], text=True))
+for notice in ('SwiftTerm-LICENSE', 'ArgumentParser-LICENSE', 'SwiftPNG-LICENSE', 'H-LICENSE'):
+    assert (app / 'Contents/Resources' / notice).is_file()
 project = (root / 'OpenLXSSH.xcodeproj/project.pbxproj').read_text()
 assert 'relativePath = Packages/OpenLXSSHSecurity' in project
 assert 'productName = OpenLXSSHSecurity' in project
-assert 'OpenLXSSHTransport' not in project
-print(f'{config}: arm64 / min26 / module / runtime libraries / GRDB pin checked')
+assert 'productName = OpenLXSSHTransport' in project
+print(f'{config}: arm64 / min26 / embedded helper / module / runtime libraries / pinned GRDB+SwiftTerm graph checked')
 PY
     done
     "$ROOT/Scripts/build-app.sh" HostProbe test > "$LOGS/HostProbe-tests.log" 2>&1
@@ -64,13 +73,13 @@ os.chmod(data, 0o700)
 (data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
 (logs / 'gui-data-path.txt').write_text(str(data) + '\n')
 binary = root / 'DerivedData/HostProbe/Build/Products/HostProbe/OpenLXSSH.app/Contents/MacOS/OpenLXSSH'
-for phase in ('exercise', 'reopen', 'security-sheets'):
+for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exit'):
     phase_data = data
-    if phase == 'security-sheets':
+    if phase in ('security-sheets', 'sessions', 'sessions-exit'):
         phase_data = pathlib.Path(tempfile.mkdtemp(prefix='OpenLXSSH-AppSmoke-'))
         os.chmod(phase_data, 0o700)
         (phase_data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
-        (logs / 'gui-security-sheets-data-path.txt').write_text(str(phase_data) + '\n')
+        (logs / f'gui-{phase}-data-path.txt').write_text(str(phase_data) + '\n')
     with (logs / f'gui-{phase}.log').open('w') as log:
         try:
             result = subprocess.run([str(binary), '--self-test-data-dir', str(phase_data), '--self-test-phase', phase], stdout=log, stderr=subprocess.STDOUT, timeout=120)
@@ -81,6 +90,14 @@ for phase in ('exercise', 'reopen', 'security-sheets'):
     report = json.loads((phase_data / f'smoke-{phase}.json').read_text())
     assert report['passed'] and not report['productRuntimeVerified']
     assert report['checks'] and all(check['passed'] for check in report['checks'])
+    if phase == 'sessions-exit':
+        repeat = json.loads((phase_data / 'termination-repeat.json').read_text())
+        cleanup = json.loads((phase_data / 'termination-cleanup.json').read_text())
+        admission = json.loads((phase_data / 'termination-admission.json').read_text())
+        assert repeat == {'activeCleanupStillPending': True, 'secondQuitWaits': True}
+        assert cleanup == {'cleanupCompleted': True, 'selectedTabCleared': True}
+        assert admission == {'windowCloseOverlappedQuit': True, 'terminationPermanent': True, 'reopenRefused': True, 'newSessionRefused': True}
+        print('HostProbe real process quit: overlapping window cleanup awaited; repeated quit/reopen/new session cannot bypass termination; exit=0')
     print(f'HostProbe native GUI {phase}: {len(report["checks"])} checks passed')
 print('Isolated GUI data and window captures:', data)
 print('HostProbe does not validate macOS 26 runtime, IME, SSH, SFTP, signing or notarization.')

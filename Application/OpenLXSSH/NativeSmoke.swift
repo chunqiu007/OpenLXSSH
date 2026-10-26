@@ -3,6 +3,8 @@ import AppKit
 import Foundation
 import OpenLXSSHCore
 import OpenLXSSHSecurity
+import OpenLXSSHTransport
+import OpenLXSSHTrust
 
 /// HostProbe-only in-process GUI exercise. All mutations go through rendered native controls
 /// and their target/action paths, and all files are confined to a marked temporary test root.
@@ -17,7 +19,7 @@ import OpenLXSSHSecurity
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["exercise", "reopen", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["exercise", "reopen", "sessions", "sessions-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
@@ -55,6 +57,8 @@ import OpenLXSSHSecurity
             if options.phase == "exercise" { try await exercise() }
             else if options.phase == "reopen" { try await verifyRelaunch() }
             else if options.phase == "security-sheets" { try await securitySheets() }
+            else if options.phase == "sessions" || options.phase == "sessions-exit" { try await sessionExercise() }
+            else if options.phase == "transport-config" { try await transportConfiguration() }
             else { try await securityExercise() }
             try finish(success: true, failure: nil)
             // Leave this Swift MainActor job before AppKit enters its termination loop.
@@ -120,13 +124,14 @@ import OpenLXSSHSecurity
         try await selectFirstHost()
         try await doubleClickFirstHost()
         try await wait("double-click-route") { self.model.connectionNotice != nil }
-        if case .transportUnavailable(let request) = model.connectionNotice { try check("reuse-route", request.mode == .reuse && request.hostID == model.hosts[0].id) }
+        if case .opened(let request, _) = model.connectionNotice { try check("reuse-route", request.mode == .reuse && request.hostID == model.hosts[0].id) }
         else { throw Failure.check("reuse-route") }
         try await click("session.new")
-        if case .transportUnavailable(let request) = model.connectionNotice { try check("new-route", request.mode == .newSession) }
+        if case .opened(let request, _) = model.connectionNotice { try check("new-route", request.mode == .newSession) }
         else { throw Failure.check("new-route") }
         try check("route-never-marks-connected", model.hosts.allSatisfy { $0.lastConnectedAt == nil })
-        try capture("unavailable-route.png")
+        try capture("logic-session-route.png")
+        await model.sessions.closeAll()
         try await click("host.delete")
         try await click("delete.confirm")
         try await wait("host-deleted") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
@@ -189,6 +194,142 @@ import OpenLXSSHSecurity
         try await wait("custom-color") { self.model.settings.foregroundColor == "#AABBCC" && self.delegate.mainWindow?.attachedSheet == nil }
         try check("custom-color-persisted", model.settings.backgroundColor == "#000000" && model.settings.cursorColor == "#00FF00")
         try capture("reopen-window.png")
+    }
+
+    private func sessionExercise() async throws {
+        try await click("host.add")
+        try await type("host.name", "Session logic fixture")
+        try await type("host.address", "never-scanned.invalid")
+        try await type("host.username", "fixture")
+        try await click("host.save")
+        try await wait("session-fixture-host") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        try await selectFirstHost()
+        try await doubleClickFirstHost()
+        try await wait("session-tab-ready") { self.model.sessions.tabs.first?.driver != nil }
+        delegate.mainWindow?.setContentSize(NSSize(width: 1120, height: 1000))
+        try await pause()
+        let first = model.sessions.tabs[0]
+        guard let driver = first.driver as? ProbeSessionDriver else { throw Failure.check("logic-substitute-required") }
+        let view = driver.terminal
+        try await doubleClickFirstHost()
+        try check("double-click-reuses-valid-tab", model.sessions.tabs.count == 1 && model.sessions.selectedTabID == first.id)
+        try await click("session.new")
+        try await wait("independent-session-tab") { self.model.sessions.tabs.count == 2 && self.model.sessions.tabs[1].driver != nil }
+        try await click("tab.select." + first.id.uuidString)
+        try check("terminal-instance-retained", first.driver?.terminal === view && !view.isHidden)
+        try await type("terminal.search", "logic substitute")
+        try await click("terminal.search.next")
+        try check("native-terminal-history-search", view.search("logic substitute"))
+        driver.showTrust()
+        try await click("terminal.trust")
+        try await wait("trust-accept-visible") { self.find("trust.accept", as: NSButton.self) != nil }
+        try check("trust-requires-explicit-verification", find("trust.accept", as: NSButton.self)?.isEnabled == false)
+        try await click("trust.verified")
+        try await click("trust.accept")
+        try await wait("trust-modal-closed") { self.delegate.mainWindow?.attachedSheet == nil }
+        try check("synthetic-trust-not-connected", first.state == .connectionPending)
+        driver.showAuthentication()
+        try await click("terminal.authenticate")
+        try await wait("unknown-auth-field-visible") { self.find("authentication.answer", as: NSSecureTextField.self) != nil }
+        try check("unknown-auth-secure-field", find("authentication.answer", as: NSSecureTextField.self) != nil)
+        try await type("authentication.answer", UUID().uuidString)
+        try await click("authentication.submit")
+        try await wait("authentication-modal-closed") { self.delegate.mainWindow?.attachedSheet == nil }
+        try check("manual-auth-only", driver.responseCount == 1 && first.state == .connectionPending)
+        driver.showAuthentication(kind: .notification)
+        try await click("terminal.authenticate")
+        try check("notification-not-secret-input", find("authentication.answer", as: NSSecureTextField.self) == nil)
+        try await click("authentication.acknowledge")
+        try await wait("notification-modal-closed") { self.delegate.mainWindow?.attachedSheet == nil }
+        driver.showAuthentication(kind: .confirmation)
+        try await click("terminal.authenticate")
+        try await click("authentication.decline")
+        try await wait("confirmation-modal-closed") { self.delegate.mainWindow?.attachedSheet == nil }
+        let generation = driver.token?.generation
+        try await click("terminal.disconnect")
+        try await click("terminal.reconnect")
+        try await wait("manual-new-generation") { driver.token?.generation == (generation ?? 0) + 1 }
+        try check("reconnect-retains-terminal", driver.terminal === view)
+        try check("no-auth-event-no-history", try await model.repository.securityMetadata().hosts.allSatisfy { $0.lastConnectedAt == nil })
+        driver.showAuthentication()
+        try await click("terminal.authenticate")
+        try await click("authentication.cancel")
+        try await wait("cancel-invalidates-request") { self.delegate.mainWindow?.attachedSheet == nil && first.state == .disconnected(nil) }
+        try await click("tab.close." + first.id.uuidString)
+        try await wait("tab-closed") { !self.model.sessions.tabs.contains { $0.id == first.id } }
+        try check("tab-close-releases-driver", driver.state == .closed)
+        if options.phase == "sessions-exit" {
+            let active = model.sessions.tabs.filter(\.isReusable).count
+            try check("exit-with-active-tab", active > 0)
+            guard let remaining = model.sessions.tabs.first?.driver as? ProbeSessionDriver,
+                  let window = delegate.mainWindow else { throw Failure.check("exit-logic-driver") }
+            remaining.holdClose = true
+            await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
+                remaining.closeDidStart = { started.resume() }
+                // Exercise the actual window-close path before NSApp.terminate,
+                // keeping its cleanup suspended until quit joins the same batch.
+                window.performClose(nil)
+            }
+            remaining.closeDidStart = nil
+            try check("window-close-cleanup-pending-before-quit", model.sessions.closingAll && !model.sessions.tabs.isEmpty)
+            let repeatTimer = Timer(timeInterval: 0.12, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    let reply = self.delegate.applicationShouldTerminate(NSApp)
+                    let reopenRefused = !self.delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+                    let noAdmission = self.model.hosts.first.map { self.model.sessions.open($0, mode: .newSession) == nil } ?? false
+                    let report = ["secondQuitWaits": reply == .terminateLater, "activeCleanupStillPending": !self.model.sessions.tabs.isEmpty]
+                    let admission = ["windowCloseOverlappedQuit": self.model.sessions.closingAll, "terminationPermanent": self.model.sessions.terminating,
+                                     "reopenRefused": reopenRefused, "newSessionRefused": noAdmission]
+                    if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
+                        try? data.write(to: self.options.directory.appendingPathComponent("termination-repeat.json"))
+                    }
+                    if let data = try? JSONSerialization.data(withJSONObject: admission, options: [.sortedKeys]) {
+                        try? data.write(to: self.options.directory.appendingPathComponent("termination-admission.json"))
+                    }
+                    remaining.releaseClose()
+                }
+            }
+            RunLoop.main.add(repeatTimer, forMode: .common)
+            return // run() invokes real NSApp.terminate with this tab still active.
+        }
+        delegate.mainWindow?.performClose(nil)
+        try await wait("sessions-window-closed") { self.delegate.mainWindow == nil }
+        try check("window-awaits-all-tab-close", model.sessions.tabs.isEmpty)
+        _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+        try await wait("sessions-reopen-list-only") { self.delegate.mainWindow?.isVisible == true && !self.model.isLoading }
+        try check("no-session-restore", model.sessions.tabs.isEmpty && model.connectionNotice == nil)
+    }
+
+    private func transportConfiguration() async throws {
+        let resources = try await model.sessionEnvironment.opened()
+        try check("strict-bundled-helper-discovered", resources.helper.url.path == Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/openlxssh-askpass").path)
+        let configuration = try SessionEnvironment.configuration(host: HostConfiguration(name: "offline config", address: "offline-config.invalid", username: "fixture"), keyPath: nil)
+        // Validate public material through the mature parser without any network access.
+        let key = try await Task.detached { try OpenLXSSHTrust.HostPublicKey(openSSHPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFhJwF6sPz9bZWdnLdkV1FY9JSt0XgTDbZd7ABl6KQSr") }.value
+        let controlled = try DirectSSHConfiguration(configuration: configuration, trustStore: resources.trust, trustedKeys: [key], helper: resources.helper)
+        let preview = options.directory.appendingPathComponent("controlled-preview.conf")
+        try Data(controlled.text.utf8).write(to: preview)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: preview.path)
+        let result = try await Task.detached {
+            let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-G", "-F", preview.path, "--", DirectSSHConfiguration.destination]
+            process.environment = ["PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": preview.deletingLastPathComponent().path]
+            let pipe = Pipe(); process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
+            try process.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        }.value
+        try check("system-ssh-G-offline", result.0 == 0 && result.1.contains("stricthostkeychecking true") && result.1.contains("proxyjump none") == false)
+        try check("controlled-config-helper-command", controlled.text.contains("--authenticated-event v1") && controlled.text.contains("StrictHostKeyChecking yes") && controlled.text.contains("ProxyJump none"))
+        try FileManager.default.removeItem(at: preview)
+        try check("offline-preview-no-session", model.sessions.tabs.isEmpty)
+        let direct = DirectSSHSession(trustStore: resources.trust, sessionDirectory: resources.directory,
+                                      helper: resources.helper, scanner: OfflineCandidateScanner())
+        _ = try direct.connect(configuration)
+        try await wait("real-direct-session-awaiting-trust") { direct.state == .awaitingTrust }
+        try check("real-direct-session-no-process-before-trust", direct.ownedProcessID == nil && direct.trustChallenges.count == 1)
+        direct.closeTab()
+        try await wait("real-direct-session-cancelled") { direct.state == .closed }
+        try check("real-direct-session-cancelled-without-network", direct.state == .closed && direct.ownedProcessID == nil)
     }
 
     private func securitySheets() async throws {
@@ -410,7 +551,10 @@ import OpenLXSSHSecurity
         try await wait("hosts.table") { self.find("hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
         guard let candidate = find("hosts.table", as: NSTableView.self), let content = candidate.window?.contentView else { throw Failure.missing("hosts.table") }
         let row = candidate.rowView(atRow: 0, makeIfNecessary: true)
-        let point = candidate.convert(NSPoint(x: 60, y: row?.frame.midY ?? candidate.rect(ofRow: 0).midY), to: content)
+        // NSView.hitTest receives coordinates in its superview, not its own
+        // flipped coordinates. A terminal below the table made the old check hit
+        // the opposite half of the window after layout changed.
+        let point = candidate.convert(NSPoint(x: 60, y: row?.frame.midY ?? candidate.rect(ofRow: 0).midY), to: content.superview)
         var hit = content.hitTest(point)
         while let view = hit {
             if let table = view as? NSTableView { return table }
