@@ -50,7 +50,7 @@ enum SignatureGuard {
         self.input = input; self.response = response
         budget = ResponseBudget(plan: input.contract.responsePlan); report = SmokeReport(contract: input.contract)
         session = DirectSSHSession(trustStore: trust, sessionDirectory: try AbsolutePath(sessions), helper: helper,
-                                   scanner: try SystemHostKeyScanner(timeoutSeconds: 3))
+                                   scanner: try SystemHostKeyScanner(timeoutSeconds: Contract.hostKeyScanSeconds))
         session.terminal.setHistoryLimit(100)
         session.onStateChange = { [weak self] token, state in
             guard let self, token == self.session.token else { return }
@@ -137,7 +137,7 @@ enum SignatureGuard {
         do {
             service = try await LibSSH2FileService.connect(configuration: connection, authentication: authentication,
                 trustStore: trust, trustHandler: { _, reply in reply.resolve(.reject) },
-                connectionTimeout: Contract.connectionSeconds, operationTimeout: Contract.operationSeconds, token: token)
+                connectionTimeout: TimeInterval(Contract.connectionSeconds), operationTimeout: Contract.operationSeconds, token: token)
             guard let service else { throw SmokeError.connectionFailed }
             if input.contract.testCase != .positive { throw SmokeError.unexpectedConnection }
             report.connectedEvents = 1 // For SFTP: actual connect returned only after authenticated SFTP init.

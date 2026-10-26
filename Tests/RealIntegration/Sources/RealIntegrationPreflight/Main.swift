@@ -4,7 +4,22 @@ import RealIntegrationCore
 @main enum Main {
     static func main() {
         do {
-            let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--openssh-auth" {
+                let options = try OpenSSHOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(OpenSSHOptions.help) }
+                else if options.action == .validate { print("OpenSSH auth syntax valid; files NOT opened; no Docker or connection.") }
+                else { throw SmokeError.signedAppRequired }
+                return
+            }
+            if arguments.first == "--auth-only" {
+                let options = try MinaOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(MinaOptions.help) }
+                else if options.action == .validate { print("AUTH-ONLY syntax valid; files NOT opened; no Docker or connection.") }
+                else { throw SmokeError.signedAppRequired }
+                return
+            }
+            let options = try Options.parse(arguments)
             if options.action == .help { print(Options.help) }
             else if options.action == .validate { print("Syntax valid; contract/credentials NOT opened; no connection or acceptance.") }
             else { throw SmokeError.signedAppRequired }

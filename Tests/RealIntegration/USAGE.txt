@@ -1,5 +1,198 @@
 OpenLXSSH real integration consumer — test-only host15 preparation
 
+OPENSSH FOUR-FLOW ADDENDUM — source/static only, no new live acceptance
+
+Separate --openssh-auth entry and openssh-auth.json do not widen the old SSH/SFTP
+or MINA schemas. All connections use public production DirectSSHSession.connect,
+signed outer-owned Askpass callbacks and .connected authentication event. No probe,
+terminal text parsing, sendInput, saved-password provider or nested SSH automation.
+
+Small positive plan (run only after primary review/release):
+  keyonly22221: selected key edplain/edencrypted/rsaplain/rsaencrypted, no MFA
+  passwordonly22222: one explicitly bound manual password request, no MFA
+  key-kbd22223: selected key, then exact A/B/C same-session response rounds
+  password-kbd22224: one explicit password request, then exact A/B/C rounds
+Use one freshly collected, exact service credential generation per case and its
+independently reviewed host fingerprint/provenance. Encrypted keys require one
+separate explicit passphrase request before OTP; plain keys get no such budget.
+No password/key/MFA method fallback or alternate answer is attempted.
+
+Each own <RealIntegration/.build>/openssh-case-<12hex>/openssh-auth.json is0600
+in0700/noACL/currentUID/single-link/no symlink path. Exact keys (all required,
+primaryPromptSHA256 is JSON null when absent):
+  schema:1; taskID:OPENSSH-FOUR-AUTH-A
+  testCase: positive | observe-challenge
+  service: keyonly | passwordonly | key-kbd | password-kbd
+  host:127.0.0.1; port:<fixed service port>; user:fixture
+  key: none | edplain | edencrypted | rsaplain | rsaencrypted
+  primary: none | password | key-passphrase (must match service/key)
+  primaryPromptSHA256: null | <independently reviewed exact UTF8 request SHA256>
+  credentialDirectory:<exact root .runtime/service/credentials-12hex>
+  expectedFingerprint:<independently reviewed out-of-band SHA256>
+  baseImage/imageID/containerID/project/networkID/context/endpoint:
+    exact frozen root fixture metadata, not discovery/latest/remote routing
+Only four fixed key filenames are selectable. Selected key is first privately
+read/metadata checked; system ssh subsequently opens that exact stable generation
+path. This permits observe->positive passphrase-hash reuse without secret copy or
+path changes, but retains production's same-UID pathname replacement limitation.
+Nothing chmods or edits the generation or user's ~/.ssh/Keychain.
+
+Future invocation with exact NEW signed App, never a glob/latest:
+  <App>/Contents/MacOS/OpenLXSSHRealIntegration --openssh-auth --live --authorized-local-fixture --engine-ready --contract <exactContract>
+Help/validate are inert syntax checks; no signature/files/Docker/network. A full
+case has an85s test process budget (reserve management/drain), active auth<=60s,
+scan15/connect20/tool10/drain12; external coordinator must still enforce90s.
+These are test-infrastructure bounds, not product PERF budget changes.
+
+Before any answer: callback token/request session+generation must match this
+owned outer session. Primary kind must be unknownMasked, hint absent, exact
+prompt SHA256 must equal the coordinator's independent review. This is configured
+phase equality, never a substring Password:/passphrase/echo secret classifier.
+Unknown fields/hint/kind, replay, concurrent request, extra phase and late reply
+cancel the session. Both long-lived secrets and OTPs are manual decisions; no
+saved-secret API or Keychain read is supplied.
+
+First password/passphrase hash is NOT yet live-known. observe-challenge connects
+only until the first outer callback, records SHA256/bytecount/kind/hasHint and
+whether it equals the exact OTP envelope, sends NO answer, then cancel/closeTab
+and awaits closed+nilPID. It returns observed-request-cancelled-not-auth-pass,
+never connected acceptance. Primary must independently review the public prompt
+shape and bind hash to the exact service/generation/key path/system build before
+creating the positive contract. Unknown positive requests also retain only this
+safe metadata and fail. No raw prompt/answer is logged.
+
+Root PAM fixture A/B/C (source checked, live envelope still to verify):
+  (fixture@[127.0.0.1]:PORT) One-time response A [24hex]: <space>
+  (fixture@[127.0.0.1]:PORT) Unclassified verification B [same24hex]: <space>
+  (fixture@[127.0.0.1]:PORT) Next-round response C [same24hex]: <space>
+OpenSSH9.9p2 public input_userauth_info_req wraps prompt with server_user and
+HostKeyAlias. Full exact equality only, no bare-prefix/substrings/fallback. This
+control-plane loses original SSH KBI echo/group/language; do not claim MINA-like
+single-message2prompt/echo evidence from this system OpenSSH consumer.
+
+Only current index of sessions/<same24hex>.json in exact CID may enter memory:
+fixed root UID/GID0 exec, fixed /run/openlxssh-fixture(0755)/sessions(0700),
+0600/single-link/O_NOFOLLOW/unchanged fstat, complete schema/multi/TTL75s and three
+8-digit values validated BEFORE output; PIPE returns one requested index only.
+Local strictA->B->C budget3 binds sameID, current request and generation; server
+file has no current-round field, so no server-side round counter is claimed.
+Nothing creates a host OTP file or logs a secret argv/env/stdout/error. Tools use
+production sole-waiter/PID-safe bounded owner and are cancelled/reaped on close.
+Fixed config.json management reader proves mode/multi only, not successful prior
+password/publickey. PAM currently depends on SSH_AUTH_INFO_0; no such prior-state
+export exists. If real OpenSSH does not supply it, record the actual auth failure
+or unknown request; never push OTP into another password prompt or modify PAM.
+
+Positive requires .connected exactly1 plus all declared answer budgets consumed,
+then cancel/closeTab and await .closed,nilPID and handler/tool drain. MFA success
+also checks this exact server session file was removed. Source/build success is
+not proof of any new four-flow/auth/key-matrix acceptance. All new cases UNVERIFIED.
+
+MINA AUTH-ONLY ADDENDUM — async source/static buildpoint, NOT async live acceptance
+
+Separate --auth-only syntax leaves the original SSH/SFTP contract unchanged.
+Fixed cases two-correct / zero-accept / zero-reject / approval / reject /
+cancel-wait at fixture@127.0.0.1:22225 only; no timeout75s or generic provider.
+The original three cases have real-wire evidence in mina-three-live-115c4f82-
+ac96-47e3-b84e-8d38b9541851; async cases still need a separate primary release.
+Do not run live until the primary reviews this buildpoint and releases each case.
+Outer coordinator alone selects the fixed managed.sh scenario and finite relay;
+this consumer never starts/stops/reconfigures a server or retries authentication.
+
+Contract path must be <RealIntegration/.build>/mina-case-<exact12hex>/auth-only.json
+inside an owned 0700/noACL directory, file0600/noACL/single-link/no symlinks.
+Create each immutable contract outside the child .runtime (its strict schema
+forbids arbitrary extra files). Exact JSON keys, with no extra properties:
+  schema: 1
+  taskID: AUTH-MINA-PRODUCTION-KBI-A
+  testCase: two-correct | zero-accept | zero-reject | approval | reject | cancel-wait
+  service: multiprompt
+  fixtureLabel: auth-mina-fixture-a
+  host: 127.0.0.1
+  port: 22225
+  user: fixture
+  context: desktop-linux | default (must match immutable child state)
+  endpoint: exact state local Unix socket (no TCP/custom endpoint)
+  containerID / imageID / project / networkID / sourceSHA256 / baseImage:
+    exact independently verified child management metadata, never guessed/latest
+  trustDirectory: exact <multiprompt>/.runtime/trust-<12hex> management export
+  expectedFingerprint: exact independently reviewed public SHA256 fingerprint
+No response values appear in the contract. The currently released exact target
+is provided by the primary, not adopted from another generation or discovery.
+
+Future invocation, using the exact NEW signed App build path:
+  <exactApp>/Contents/MacOS/OpenLXSSHRealIntegration --auth-only --live --authorized-local-fixture --engine-ready --contract <exactContract>
+Help / --auth-only validate --contract are syntax-only, never open a file or query
+Docker/signers. No changes to product min26 or the old host15 invocation.
+
+The production public LibSSH2FileService.connect uses shared HostTrustStore plus
+only explicit keyboardInteractive. Unknown trust is rejected. The mature system
+public-key parser validates the out-of-band RSA key; there is no scan auto-trust.
+Typed callback name must be exactly OpenLXSSH fixture <24 lowercase hex>; the ID
+is test-only correlation, NOT prompt interpretation. Instruction/prompt bytes and
+ordered echo flags must match the reviewed fixture exactly. Unknown/extra/late
+callbacks fail closed without resolving dummy/partial answers. two-correct needs
+exactly ONE callback with TWO prompts/echo [false,true] and one ordered reply;
+both values are disposable secrets even when echo=true. Zero cases need one real
+callback with ZERO prompts and one empty reply. The typed production API exposes
+no language field; this consumer does NOT claim to validate wire language.
+
+Only the exact ID's active 0600/UID:GID10000/single-link/no-follow tmpfs management
+file may be read, through fixed local docker exec/private bounded PIPE. Reader
+validates the complete schema/10-digit bytes/echo/24hex ID/75s TTL before emitting
+any bytes; host revalidates in memory. No answer is printed, logged, passed in
+argv/environment, copied to host files or saved in Keychain. The reviewed
+production sole-waiter/PID-safe tool owner bounds each metadata/reader command to
+10s, suppresses stderr, cancels/reaps owned children and limits output. Callback
+reply resolution is locked against closure; drain awaits handlers. Swift/Data/
+JSON/libssh2 copies cannot guarantee complete memory zeroization.
+
+MINA deliberately has NO SFTP. Accepted auth-only cases require ALL of:
+- exact single typed callback/reply and no late/extra answer;
+- public FileServiceError kind=transport, operation=sftp-init, code=-21 exactly
+  (locked libssh2 1.11.1 channel failure after the authenticated guard);
+- independently read server status generated/response_callbacks/accepted +1,
+  zero_response_callbacks +1 only for zero case, all other outcomes/late unchanged;
+- after awaited native close, bounded status polling proves sessions=0,
+  pending=[] and scheduler_queue=0. No sleep alone establishes completion.
+zero-reject instead requires typed authentication/authenticate/nil-code plus
+rejected+1. Any generic error, timeout, transport failure, missing callback,
+concurrent status delta, unexpected SFTP success or unknown shape fails.
+Reports explicitly say authOnly=true, sftpSuccess=false, fileAcceptance=false,
+productAcceptance=false; this is NOT SFTP success, FILE AC, GUI or enterprise MFA.
+Budgets are test-only TCP20/operation20/case30; separate bounded management and
+handler/status drain do not expand product PERF budgets or guarantee a total
+30s wall-clock process lifetime.
+
+Async cases use one zero callback and one [] reply, no response-file read.
+Outer coordinator must set exactly scenario approval/reject/cancel --delay 8.
+The consumer independently reads the fixed UID10000/0600/no-follow scenario file
+and refuses a different scenario/delay; it never changes provider policy itself.
+Approval requires exact sftp-init/-21 plus approved+1; reject requires typed
+.authentication plus rejected+1. Timing reference is the local monotonic instant
+immediately BEFORE the successful zero-reply resolve, so backend completion must
+be >=8s later, not merely >=8s from the earlier case/TCP start. Records expose
+only fixed timestamps/counters, never raw error text or responses.
+
+cancel-wait first proves that reply.resolve succeeded and management status has
+this exact attempt in scenario=cancel, responded=true, prompt_count=0 with exact
+generated/callback increments and no outcome increment. Local token cancellation
+occurs >=1s after the reply reference, after that proof and strictly before
+reply+8s. A separate bounded read-only status owner remains usable after the
+connection/response owner is cancelled. Expected result must be precisely typed
+cancelled/authenticate/-10001; generic transport/closed/timeout does NOT pass.
+After awaited close, status must prove session-closed+1, no approved increment,
+and sessions/pending/queue zero. Consumer then waits until >=8s AFTER observing
+the responded pending state (conservatively beyond the original decision due),
+reads status again and requires the same exact delta/idle proof. This verifies
+no approval after a closed pending attempt at that due time; it is NOT a forced
+late-callback race test, and lateReplyCount=0 alone is not such evidence.
+
+Async approval/reject/cancel live behavior remains UNVERIFIED at this buildpoint.
+TTL75s and forced stale-result races are not implemented or claimed.
+
+Original SSH/SFTP preparation usage follows.
+
 This is NOT the shipping macOS26 App, the min26 Stability driver, first-contact
 GUI trust acceptance, real MFA coverage, or an interoperability result.
 Do not start Docker, services or this consumer's --live branch until the primary
@@ -93,6 +286,18 @@ PTY text, shell prompt or sleep. 30s case budget; cancel then closeTab and await
 Public SSH generic launchFailed/exit255 is NOT sufficient evidence of credential
 rejection: these cases return negativeUnclassified/nonzero rather than claiming
 bad-password/unregistered-key acceptance. SFTP uses typed .authentication only.
+
+Test-only loopback budgets: host-key scan 15s, shared SSH/SFTP connection 20s,
+SFTP per-operation 20s. The Files backend uses operationTimeout for SSH handshake,
+trust, authentication and SFTP init too; connectionTimeout covers only DNS/TCP.
+The relay accepts local TCP before its bounded metadata check (~3s observed)
+and exec/forwarding setup (~3s observed), which can exhaust a 5s handshake limit.
+These 20s stage limits allow that test-infrastructure overhead, NOT product
+latency/PERF claims or an authentication-failure reclassification. Stage maxima
+are not reserved serial budgets and need not sum to the case budget. The 30s
+SSH deadline, existing SFTP watchdog (600 x 50ms) and separate 12s SSH drain are
+unchanged. The SFTP watchdog requests cancellation, not a hard wall-clock limit
+on cleanup/close. Shipping macOS26 defaults/gates and Stability are unchanged.
 
 SFTP positive creates /fixture/home/openlxssh-real-<ownUUID>, writes one tiny
 exclusive payload, bounded reads + SHA256 comparison, list/lstat, closes handles,

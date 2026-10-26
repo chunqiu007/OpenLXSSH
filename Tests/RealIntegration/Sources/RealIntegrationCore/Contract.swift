@@ -77,8 +77,13 @@ public struct Contract: Codable, Sendable {
     public let expectedBaseImage: String
     public let expectedBuiltImageID: String
     public let responsePlan: ResponsePlan
-    public static let connectionSeconds = 10.0
-    public static let operationSeconds = 5.0
+    // Test-only relay allowance for a bounded 3s Docker metadata check plus
+    // exec/forwarding overhead; not shipping defaults or product PERF budgets.
+    public static let hostKeyScanSeconds = 15
+    public static let connectionSeconds = 20
+    // The Files backend also applies this per-operation limit to handshake,
+    // trust, authentication and SFTP init after the local TCP connect returns.
+    public static let operationSeconds = 20.0
     public static let caseSeconds = 30.0
     public static let drainSeconds = 12.0
 

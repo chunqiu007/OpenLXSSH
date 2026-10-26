@@ -1,10 +1,12 @@
 # OpenLXSSH V1.0 必要验收与外部条件
 
-本表不是用户批准，也不会启动任何服务或上传。整体Goal仍未完成；先完成所有可独立执行的本地工作，最终再一次性集中处理以下条件。详细AC状态以 `docs/acceptance.md` 为准。
+本表本身不是用户批准，也不会自动启动服务或上传。整体Goal仍未完成；具体AC状态以 `docs/acceptance.md` 为准。
+
+**当前授权已更新：** 用户本人已明确同意按本方案从官方来源安装Docker Desktop、下载构建必要Ubuntu ARM64镜像/测试依赖，并运行四认证及必要多提示服务。限OpenLXSSH测试、127.0.0.1:22221～22225，不LAN、不真实凭据/生产数据挂载、不宿主远程登录、不生产服务器、不Apple公证上传；安装前重核磁盘、按方案控制资源，许可/系统授权由用户本人处理。这一真实答复取代此前“等待环境授权”，不等于许可已接受或环境已验证可用。
 
 ## 隔离运行环境
 
-当前开发机没有已验证可用的Linux VM/容器或SSH服务；没有开启macOS远程登录，也没有连接公司/生产服务器。项目仅准备了 `Tests/IntegrationEnvironment/` 源码与静态测试。
+当前已获用户本人授权；官方Docker4.97已安装并核验签名，外部GUI后的实际settings记录许可版本2、2CPU/4GiB/40GiB，Engine资源实物一致。本机context/builder、固定Ubuntu24.04 ARM64镜像/PAMABI及四OpenSSH服务和MINA服务均已真实核验；有限127 opaque relay保留internal/no-egress边界。生产API基础SSH/SFTP、MINA双提示/零提示/8s审批拒绝取消和远端2GiB/1000文件核心campaign已有实际证据，见验收表引用报告。没有开启macOS远程登录，也没有连接公司/生产服务器；这些宿主15分项不代表完整AUTH/FILE或目标macOS26产品通过。
 
 建议统一使用一种获用户批准的本地Apple Silicon Linux容器运行时（例如官方Docker Desktop），Ubuntu24.04 ARM64官方digest固定后构建。起步2vCPU/4GiB，磁盘需预留40GiB以上用于四服务及2GiB往返；开发机当前磁盘数字会变化，实施前重新检查。服务只绑定127.0.0.1:22221–22224，独立内部网络、不桥接LAN、不挂载host路径或Docker socket，不privileged。构建镜像/软件包下载需要联网，运行期禁外部出口；具体权限与清理见fixture README。
 
@@ -18,11 +20,11 @@
 - 直接密码：记住/未记住、Keychain不可用人工回退、错误密码有界；目标macOS26自动使用条件另核系统ssh版本/签名/认证前提，不按prompt投递。
 - 私钥/密码后接OTP：长期凭据与unknown挑战隔离，错误/过期OTP、多轮并发不串用；关闭后迟到答案无效。
 - 等待审批、拒绝、取消及零输入通知：受控模拟只证明交互状态机，不宣称兼容所有企业厂商。
-- fixture OpenSSH PAM会串行化多提示，不能用多轮替代**同一wire消息中多个提示**。固定 Apache MINA SSHD2.20.0/commit2221febd396cd3daafdfbf2ff982c6d0eb69a203 的成熟后端方案已有源码/许可依据，public API支持单消息多/zero，protected多轮薄适配尚未编译；见 `docs/reports/auth-multiprompt-backend-evidence.md`。建议额外非特权服务仅127.0.0.1:22225、Java只在测试容器，需与原环境一并批准，未启动/互通。
+- fixture OpenSSH PAM会串行化多提示，不能用多轮替代**同一wire消息中多个提示**。固定 Apache MINA SSHD2.20.0/commit2221febd396cd3daafdfbf2ff982c6d0eb69a203 的成熟后端已构建/运行，单消息双提示、零提示及8s审批接受/拒绝/等待取消已通过生产libssh2核心验证；来源/许可见 `docs/reports/auth-multiprompt-backend-evidence.md`，实际证据见 `docs/reports/real-mina-kbi.md`。非特权服务入口仅127.0.0.1:22225、Java只在测试容器；不代表真实企业MFA或完整AUTH验收。
 - 首次/再次主机信任、非22端口、已知hostkey轮换阻止新握手，精确人工替换后恢复；不静默删库。
 - 正式App远端TUI、中文/Unicode/Emoji/组合字符、控制键、缩放、Bracketed Paste。嵌套SSH在远程终端手动执行，内层认证不接收本机保存秘密。
 - SFTP密码/私钥/适用交互认证、同握手信任、按需连接；目录/创建/重命名/精确删除计划、Finder拖入、整目录/特殊原名/链接策略。
-- 真实2GiB与1000文件往返摘要、取消、断开、permission/disk-full、扩展能力/安全提交不足处理。当前本地压力通过不替代这些结果。
+- 真实2GiB与1000文件往返摘要、双向25%取消、权限与当前服务提交能力已完成核心campaign；实际断连/磁盘满、另一不支持扩展的服务及正式App/mac26仍需补齐。现有结果见 `docs/reports/real-sftp-file-acceptance.md`，不以本地压力或少量微型往返替代缺项。
 
 ## 长测与资源
 

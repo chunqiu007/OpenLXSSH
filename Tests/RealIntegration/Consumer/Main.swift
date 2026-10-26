@@ -11,7 +11,38 @@ import RealIntegrationPOSIX
 @main enum Main {
     @MainActor static func main() {
         do {
-            let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--openssh-auth" {
+                let options = try OpenSSHOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(OpenSSHOptions.help); return }
+                if options.action == .validate { print("OpenSSH auth syntax valid; no files, Docker or connection; NOT acceptance."); return }
+                try SignatureGuard.validate()
+                guard let path = options.contractPath,
+                      let root = Bundle.main.object(forInfoDictionaryKey: "RealIntegrationFixtureRoot") as? String,
+                      let build = Bundle.main.object(forInfoDictionaryKey: "RealIntegrationBuildRoot") as? String,
+                      root.hasSuffix("/Tests/IntegrationEnvironment"), build.hasSuffix("/Tests/RealIntegration/.build") else { throw OpenSSHError.invalidContract }
+                _ = NSApplication.shared
+                NSApp.setActivationPolicy(.prohibited)
+                Task { @MainActor in exit(await OpenSSHConsumer.execute(path: path, fixtureRoot: root, buildRoot: build)) }
+                NSApp.run()
+                return
+            }
+            if arguments.first == "--auth-only" {
+                let options = try MinaOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(MinaOptions.help); return }
+                if options.action == .validate { print("AUTH-ONLY syntax valid; no files, Docker or connection; NOT acceptance."); return }
+                try SignatureGuard.validate()
+                guard let path = options.contractPath,
+                      let root = Bundle.main.object(forInfoDictionaryKey: "RealIntegrationFixtureRoot") as? String,
+                      let build = Bundle.main.object(forInfoDictionaryKey: "RealIntegrationBuildRoot") as? String,
+                      root.hasSuffix("/Tests/IntegrationEnvironment"), build.hasSuffix("/Tests/RealIntegration/.build") else { throw MinaError.invalidContract }
+                _ = NSApplication.shared
+                NSApp.setActivationPolicy(.prohibited)
+                Task { @MainActor in exit(await MinaConsumer.execute(path: path, fixtureRoot: root + "/multiprompt", buildRoot: build)) }
+                NSApp.run()
+                return
+            }
+            let options = try Options.parse(arguments)
             if options.action == .help { print(Options.help); return }
             if options.action == .validate { print("Syntax valid; no file I/O, signature check, AppKit or network; NOT acceptance."); return }
             try SignatureGuard.validate()
@@ -99,7 +130,7 @@ import RealIntegrationPOSIX
                 if input.contract.service == .keyonly { authentication = SSHAuthentication(method: .privateKey(try AbsolutePath(keyPath), keyboardInteractive: false)) }
                 else { authentication = SSHAuthentication(method: .passwordOnly) }
                 let configuration = try SSHSessionConfiguration(connection: connection, authentication: authentication,
-                                                               connectTimeout: 10, serverAliveInterval: 5, serverAliveCountMax: 1)
+                                                               connectTimeout: Contract.connectionSeconds, serverAliveInterval: 5, serverAliveCountMax: 1)
                 guard let helper else { throw SmokeError.signedAppRequired }
                 let item = try SSHCase(input: input, trust: trust, sessions: run + "/sessions", helper: helper, response: password)
                 report = await item.run(configuration: configuration, stop: stop)

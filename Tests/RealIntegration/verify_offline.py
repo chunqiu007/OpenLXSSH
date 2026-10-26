@@ -33,7 +33,15 @@ def main():
         # These all use nonexistent paths and MUST succeed/refuse without opening them.
         for arguments, expected in [([], 0), (['--help'], 0), (['validate', '--contract', '/not/a/file/real-integration.json'], 0),
             (['--live', '--contract', '/not/a/file/real-integration.json'], 2),
-            (['--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/real-integration.json'], 2)]:
+            (['--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/real-integration.json'], 2),
+            (['--auth-only', '--help'], 0),
+            (['--auth-only', 'validate', '--contract', '/not/a/file/auth-only.json'], 0),
+            (['--auth-only', '--live', '--contract', '/not/a/file/auth-only.json'], 2),
+            (['--auth-only', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/auth-only.json'], 2),
+            (['--openssh-auth', '--help'], 0),
+            (['--openssh-auth', 'validate', '--contract', '/not/a/file/openssh-auth.json'], 0),
+            (['--openssh-auth', '--live', '--contract', '/not/a/file/openssh-auth.json'], 2),
+            (['--openssh-auth', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/openssh-auth.json'], 2)]:
             output = subprocess.run([str(preflight), *arguments], cwd=HERE, env=env, capture_output=True, timeout=10)
             checks.append({'command': [str(preflight), *arguments], 'cwd': str(HERE), 'exitCode': output.returncode, 'expectedExitCode': expected})
             if output.returncode != expected:

@@ -69,6 +69,23 @@ final class SafetyTests: XCTestCase {
         XCTAssertThrowsError(try key.claim(prompt: "anything", masked: true, hasHint: false))
     }
     func testTimeoutCancelAndTickCounters() throws {
+        XCTAssertEqual(Contract.hostKeyScanSeconds, 15)
+        XCTAssertEqual(Contract.connectionSeconds, 20)
+        XCTAssertEqual(Contract.operationSeconds, 20)
+        XCTAssertEqual(Contract.operationSeconds, TimeInterval(Contract.connectionSeconds))
+        XCTAssertEqual(Contract.caseSeconds, 30)
+        XCTAssertEqual(Contract.drainSeconds, 12)
+        XCTAssertLessThan(TimeInterval(Contract.hostKeyScanSeconds), Contract.caseSeconds)
+        XCTAssertLessThan(TimeInterval(Contract.connectionSeconds), Contract.caseSeconds)
+        // API limits apply to each stage, not a reserved serial sum.
+        XCTAssertLessThan(Contract.operationSeconds, Contract.caseSeconds)
+        // The outer cap remains absolute, not the sum of per-stage allowances.
+        var wholeCase = try WaitBudget(start: 100, seconds: Contract.caseSeconds, maximumTicks: 600)
+        try wholeCase.tick(now: 129.95)
+        XCTAssertThrowsError(try wholeCase.tick(now: 130)) { XCTAssertEqual($0 as? SmokeError, .timeout) }
+        var drain = try WaitBudget(start: 100, seconds: Contract.drainSeconds, maximumTicks: 240)
+        try drain.tick(now: 111.95)
+        XCTAssertThrowsError(try drain.tick(now: 112)) { XCTAssertEqual($0 as? SmokeError, .timeout) }
         var deadline = try WaitBudget(start: 100, seconds: 3, maximumTicks: 2)
         try deadline.tick(now: 100); try deadline.tick(now: 101)
         XCTAssertEqual(deadline.ticks, 2)
