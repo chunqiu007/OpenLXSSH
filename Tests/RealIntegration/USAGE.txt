@@ -1,0 +1,111 @@
+OpenLXSSH real integration consumer — test-only host15 preparation
+
+This is NOT the shipping macOS26 App, the min26 Stability driver, first-contact
+GUI trust acceptance, real MFA coverage, or an interoperability result.
+Do not start Docker, services or this consumer's --live branch until the primary
+session explicitly confirms Engine-ready after the human completes Docker's
+agreement/permissions and verifies VM resources. A listening port is NOT approval.
+
+OFFLINE COMMANDS (all paths absolute)
+  /usr/bin/python3 -B /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RealIntegration/verify_offline.py
+  /usr/bin/python3 -B /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RealIntegration/build_host.py validate
+  /usr/bin/python3 -B /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RealIntegration/build_host.py build --sign-development
+
+The Swift package is only the dependency-free safety/preflight test graph.
+build_host.py reads the reviewed pinned existing checkout/native manifests,
+snapshots sources and native headers/archives, invokes the approved upstream
+SwiftTerm generator, and compiles with the existing explicit Transport host-probe
+opt-in and Files min15. It never calls probe APIs, SwiftPM resolution or Docker.
+All outputs/caches are under this subtree's .build/host-UUID. Public native export
+headers/licenses that already have mode0664 are hash-checked against the locked
+native manifest and privately snapshotted; shared files are never chmod'd.
+
+The real consumer uses public DirectSSHSession.connect and
+LibSSH2FileService.connect with a shared HostTrustStore. The wrapper and helper
+have the production fixed DISTINCT identifiers org.openlxssh.OpenLXSSH and
+org.openlxssh.askpass, same existing Development Team, Hardened Runtime, no
+entitlements, offline timestamp=none, helper signed first. Do not install or
+launch this test wrapper as the product. No Developer ID, notarization or upload.
+
+FUTURE CONTRACT — ONLY after Engine-ready/authorization and a real fixture collect
+
+Select ONE exact collect generation path. Do not search latest, reuse a previous
+generation's trust, fall back across generations, accept ssh-keyscan output,
+read ~/.ssh/Keychain, or pass secret values in arguments/environment/logs.
+All imported files must be current-UID, regular, single-link, 0600, no ACL;
+.runtime/service/generation must be 0700 no ACL; no symlink path components.
+
+The manual test coordinator creates immutable real-integration.json INSIDE the
+selected generation, mode0600/noACL, using exactly these fields (placeholders
+below are NOT runnable inputs; do not invent provenance/fingerprints):
+
+{
+  "schema": 1,
+  "fixtureLabel": "env-fixture-a",
+  "mode": "ssh",
+  "testCase": "positive",
+  "service": "keyonly",
+  "host": "127.0.0.1",
+  "port": 22221,
+  "user": "fixture",
+  "credentialDirectory": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/IntegrationEnvironment/.runtime/keyonly/credentials-<exact12hex>",
+  "expectedFingerprint": "SHA256:<manually verified from out-of-band export>",
+  "expectedBaseImage": "docker.io/library/ubuntu:24.04@sha256:<reviewed64hex>",
+  "expectedBuiltImageID": "sha256:<exact built64hex>",
+  "responsePlan": {"kind": "none"}
+}
+
+Fixed choices only:
+- keyonly/22221: positive or unregistered-key. Reads id_ed25519 + .pub only from
+  that generation; unregistered-key generates a fresh own-run disposable key
+  with production's bounded tool owner and /usr/bin/ssh-keygen, never borrowing
+  another generation/service's key or altering authorized_keys.
+- passwordonly/22222: positive or bad-password. Reads that generation's
+  password.txt; bad-password changes one byte in memory to guarantee inequality.
+- mode ssh or sftp. No kbd/MFA, alternate user/host/port/method, retries or guesses.
+- ssh passwordonly additionally requires responsePlan
+  {"kind":"single-manual-password","expectedPromptSHA256":"<exact64hex>"}.
+  The manual test coordinator independently reviews the expected one-request
+  OpenSSH control-plane prompt and provides its UTF-8 SHA256. This is exact
+  request equality, NOT substring/Password:/terminal parsing or automated prompt
+  interpretation. Unknown prompt, hint/kind change, a second request or an
+  unconsumed response fails closed. No automatic saved-password API is used.
+- all other combinations require responsePlan {"kind":"none"}. No extra answers.
+
+expectedFingerprint, fingerprint.txt and known_hosts must agree, with the exact
+service/port and provenance.json's base_image/built_image_id/service. Mature
+HostPublicKey validation runs before store.confirm. Automated trust is seeded
+ONLY from this manually verified out-of-band local management export, NOT a scan.
+THIS DOES NOT TEST FIRST-CONTACT GUI ACCEPTANCE OR AUTHORIZE AUTO-TRUST IN APP.
+
+FUTURE LIVE INVOCATION — not run during preparation
+Use the EXACT App path printed by a successful signed build, not a glob/latest:
+  /absolute/Tests/RealIntegration/.build/host-<exactUUID>/OpenLXSSHRealIntegration.app/Contents/MacOS/OpenLXSSHRealIntegration --live --authorized-local-fixture --engine-ready --contract /Users/liuwenshuo/Desktop/OpenLXSSH/Tests/IntegrationEnvironment/.runtime/<fixedservice>/credentials-<exact12hex>/real-integration.json
+
+Run each immutable case contract explicitly. No arbitrary host/credential tester.
+Default/help and validate --contract perform SYNTAX ONLY and never open files;
+only the explicit live invocation can open the authorized contract/material.
+The two flags are accident gates, not a substitute for primary/human approval.
+
+SSH success requires the production .connected outer-auth event, never PID spawn,
+PTY text, shell prompt or sleep. 30s case budget; cancel then closeTab and await
+.closed + nil ownedPID with a separate 12s drain budget. No terminal recording.
+Public SSH generic launchFailed/exit255 is NOT sufficient evidence of credential
+rejection: these cases return negativeUnclassified/nonzero rather than claiming
+bad-password/unregistered-key acceptance. SFTP uses typed .authentication only.
+
+SFTP positive creates /fixture/home/openlxssh-real-<ownUUID>, writes one tiny
+exclusive payload, bounded reads + SHA256 comparison, list/lstat, closes handles,
+removes only its known regular payload and its now-empty UUID directory, then
+awaits native async close. Parent components must lstat as directories. Unknown
+children/symlinks abort cleanup; no recursion or deletion of pre-existing data.
+On cancellation/transport failure native disposal may prevent remote cleanup:
+report cleanupIncomplete and coordinate cleanup of the exact own UUID only.
+SFTP v3 lstat checks cannot eliminate same-user component replacement races.
+
+Outputs: only fixed case/counter/result/exit metadata to stdout and own-run
+result.json. No raw error/terminal/prompt/credential text. No secret persistence
+except the exact own 0600 temporary SSH key copy, removed after awaited closure.
+Swift/Data/native copies cannot guarantee full memory zeroization. Interrupted
+preparation may retain the exact private live-UUID directory; coordinator must
+inspect/clean that exact owned run, never broad recursive cleanup of remote data.
