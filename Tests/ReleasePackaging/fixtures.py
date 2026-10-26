@@ -79,6 +79,23 @@ def zip_app(app, destination):
                     archive.write(path, app.name + "/" + path.relative_to(app).as_posix())
 
 
+# Independent fixture witnesses for the reviewed hidden-native adapter. These are
+# simulated nm definitions, never compiled/native-link interoperability evidence.
+NATIVE_FIXTURE_SYMBOLS = {
+    "libssh2.a": ("_libssh2_session_init_ex", "_libssh2_session_handshake", "_libssh2_sftp_init"),
+    "libcrypto.a": ("_OPENSSL_init_crypto", "_OpenSSL_version", "_EVP_CIPHER_fetch"),
+}
+
+
+def native_nm(symbols, binding="external", section="__TEXT,__text"):
+    return "\n".join(f"{0x100000000 + index * 16:016x} ({section}) {binding} {symbol}"
+                     for index, symbol in enumerate(symbols)) + "\n"
+
+
+def native_archive_nm(library):
+    return "unit-native.o:\n" + native_nm(NATIVE_FIXTURE_SYMBOLS.get(library, ()), binding="private external")
+
+
 class FakeRunner:
     """Only simulates local tool boundaries. Never runs a build/signature/network call."""
     def __init__(self, root=None, missing_helper=False, signed=False, bad_runtime=False,
@@ -134,7 +151,20 @@ class FakeRunner:
             elif args[1] == "otool":
                 output = load_commands(dependencies=("/usr/lib/libSystem.B.dylib",)).encode()
             elif args[1] == "nm":
-                output = ("_$s4GRDB12FixtureOnly\n" + self.extra_symbols).encode()
+                if args[2:-1] == ["-g", "-U", "-j"]:
+                    output = ("_$s4GRDB12FixtureOnly\n" + self.extra_symbols).encode()
+                elif args[2:-1] == ["-g", "-U", "-m"] and Path(args[-1]).suffix == ".a":
+                    output = native_archive_nm(Path(args[-1]).name).encode()
+                elif args[2:-1] == ["-U", "-m"]:
+                    symbols = []
+                    # Preserve the old fixtures' native inclusion intent, with
+                    # explicit multi-API defined-text simulated output for new calls.
+                    for library, marker in (("libssh2.a", "_libssh2_"), ("libcrypto.a", "_OpenSSL_version")):
+                        if marker in self.extra_symbols:
+                            symbols.extend(NATIVE_FIXTURE_SYMBOLS[library])
+                    output = native_nm(symbols).encode()
+                else:
+                    raise AssertionError(args)
             else:
                 output = b"fixture toolchain version (not a real toolchain record)\n"
         elif args[0] == "/usr/bin/codesign":

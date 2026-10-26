@@ -745,23 +745,149 @@ def runtime_code_sources(app, code):
     return sources
 
 
+NATIVE_SYMBOL_PATTERNS = {"libssh2": r"_libssh2_[A-Za-z0-9_]+",
+                          "openssl": r"_(?:OpenSSL_version|OPENSSL_init_crypto|EVP_[A-Za-z0-9_]+)"}
+NATIVE_REQUIRED_SYMBOLS = {
+    "libssh2": {"_libssh2_session_init_ex", "_libssh2_session_handshake", "_libssh2_sftp_init"},
+    "openssl": {"_OPENSSL_init_crypto", "_OpenSSL_version", "_EVP_CIPHER_fetch"},
+}
+
+
+def native_text_definitions(output, *, archive=False):
+    """Accept only nm -U -m's explicit defined native functions, never imports/data.
+
+    Hidden archive APIs can become non-external in the final Mach-O. A local name
+    alone is not provenance: the caller must match it to a unique defined function
+    in a hash-verified archive. Unknown output/bindings are not evidence.
+    """
+    definitions, member = [], None
+    for line in output.splitlines():
+        if archive and line.endswith(":"):
+            header = re.fullmatch(r"([A-Za-z0-9_.+-]+\.o):", line)
+            member = header.group(1) if header else None
+            continue
+        match = re.fullmatch(
+            r"([0-9a-fA-F]{16}) \(([^(),\s]+),([^(),\s]+)\) "
+            r"(external|private external|non-external(?: \(was a private external\))?) (_[A-Za-z0-9_]+)", line)
+        if not match:
+            continue
+        address, segment, section, binding, symbol = match.groups()
+        if (segment, section) != ("__TEXT", "__text") or not any(
+                re.fullmatch(pattern, symbol) for pattern in NATIVE_SYMBOL_PATTERNS.values()):
+            continue
+        if archive and binding not in {"external", "private external"}:
+            continue
+        require(not archive or member is not None, "dependency-evidence",
+                "Native archive symbol output lacks a reviewed object-member mapping.")
+        definitions.append({"symbol": symbol, "address": address.lower(), "section": "__TEXT,__text",
+                            "binding": binding, **({"member": member} if archive else {})})
+    return definitions
+
+
+def native_dependency_evidence(root, app, code, runner):
+    """Read-only adapter for exact defined-text symbols and pinned native inputs."""
+    candidates = {binary.relative_to(app).as_posix(): native_text_definitions(
+        runner.checked(["/usr/bin/xcrun", "nm", "-U", "-m", binary])) for binary in code}
+    evidence = {identity: [] for identity in NATIVE_SYMBOL_PATTERNS}
+    present = {identity: any(re.fullmatch(pattern, entry["symbol"]) for entries in candidates.values() for entry in entries)
+               for identity, pattern in NATIVE_SYMBOL_PATTERNS.items()}
+    require(present["libssh2"] == present["openssl"], "dependency-evidence",
+            "libssh2 and its selected OpenSSL backend must both have defined native functions.")
+    for identity, required in NATIVE_REQUIRED_SYMBOLS.items():
+        pattern = NATIVE_SYMBOL_PATTERNS[identity]
+        require(all(not any(re.fullmatch(pattern, entry["symbol"]) for entry in entries)
+                    or required <= {entry["symbol"] for entry in entries} for entries in candidates.values()),
+                "dependency-evidence", f"Native {identity} lacks multiple required defined API functions in a code path.")
+    lock_relative = "Packages/OpenLXSSHFiles/native-inputs.json"
+    lock_path = safe_source(root, lock_relative)
+    lock_hash = sha256(lock_path)
+    native_lock = json_file(lock_path)
+    if not any(candidates.values()):
+        return evidence, native_lock, None, None
+    native_root = root / "Packages/OpenLXSSHFiles/.build/native"
+    no_symlink_ancestors(native_root, root)
+    manifest_path = safe_source(native_root, "manifest.json")
+    manifest_hash = sha256(manifest_path)
+    native_manifest = json_file(manifest_path)
+    script_relative = "Packages/OpenLXSSHFiles/Scripts/build-native.py"
+    script_path = safe_source(root, script_relative)
+    script_hash = sha256(script_path)
+    require(native_manifest["inputs"]["lockSHA256"] == lock_hash
+            and native_manifest["inputs"]["scriptSHA256"] == script_hash
+            and native_manifest["dependencies"] == native_lock, "native-provenance",
+            "Native build provenance does not match reviewed native-inputs.json/build script.")
+    archives, definitions = [], {identity: {} for identity in evidence}
+    archive_owners = (("libssh2.a", "libssh2"), ("libssl.a", "openssl"), ("libcrypto.a", "openssl"))
+    for library, _ in archive_owners:
+        source = safe_source(native_root, "install/lib/" + library)
+        digest = sha256(source)
+        require(digest == native_manifest["outputs"].get("install/lib/" + library),
+                "native-provenance", "A native archive differs from its recorded build output.")
+        archives.append({"path": source.relative_to(root).as_posix(), "sha256": digest})
+    for archive, (_, identity) in zip(archives, archive_owners):
+        output = runner.checked(["/usr/bin/xcrun", "nm", "-g", "-U", "-m", root / archive["path"]])
+        for definition in native_text_definitions(output, archive=True):
+            if re.fullmatch(NATIVE_SYMBOL_PATTERNS[identity], definition["symbol"]):
+                definitions[identity].setdefault(definition["symbol"], []).append({**archive, **definition})
+    provenance = {"path": manifest_path.relative_to(root).as_posix(), "sha256": manifest_hash,
+                  "inputsLock": {"path": lock_relative, "sha256": lock_hash},
+                  "buildScript": {"path": script_relative, "sha256": script_hash},
+                  "verifiedInputArchives": archives}  # Verified inputs, not a claim that every archive contributed code.
+    for identity, pattern in NATIVE_SYMBOL_PATTERNS.items():
+        for path, entries in candidates.items():
+            occurrences = {}
+            for entry in entries:
+                occurrences[entry["symbol"]] = occurrences.get(entry["symbol"], 0) + 1
+            matched = [(entry, definitions[identity].get(entry["symbol"], [])) for entry in entries
+                       if re.fullmatch(pattern, entry["symbol"]) and occurrences[entry["symbol"]] == 1]
+            matched = [(entry, sources[0]) for entry, sources in matched if len(sources) == 1]
+            require(not any(re.fullmatch(pattern, entry["symbol"]) for entry in entries)
+                    or NATIVE_REQUIRED_SYMBOLS[identity] <= {entry["symbol"] for entry, _ in matched},
+                    "dependency-evidence", f"Native {identity} code path lacks the required unique archive API mappings.")
+            if not matched:
+                continue
+            bindings = {binding: sum(entry["binding"] == binding for entry, _ in matched)
+                        for binding in sorted({entry["binding"] for entry, _ in matched})}
+            witness_symbols = NATIVE_REQUIRED_SYMBOLS[identity] | {
+                min(entry["symbol"] for entry, _ in matched if entry["binding"] == binding) for binding in bindings}
+            witnesses = [{**entry, "archiveDefinition": source} for entry, source in matched
+                         if entry["symbol"] in witness_symbols]
+            evidence[identity].append({"path": path, "adapter": "nm-defined-text-exact-archive-match-v1",
+                                       "nmArguments": ["-U", "-m"], "archiveNMArguments": ["-g", "-U", "-m"],
+                                       "codeSHA256BeforeSigning": sha256(app / path),
+                                       "requiredSymbols": sorted(NATIVE_REQUIRED_SYMBOLS[identity]),
+                                       "matchedSymbolCount": len(matched), "matchedSymbolsByBinding": bindings,
+                                       "witnesses": sorted(witnesses, key=lambda item: (item["symbol"], item["address"]))})
+        require(not present[identity] or evidence[identity], "dependency-evidence",
+                f"Native {identity} definitions lack the required API witnesses in the verified archives.")
+    require(sha256(lock_path) == lock_hash and sha256(script_path) == script_hash
+            and sha256(manifest_path) == manifest_hash
+            and all(sha256(root / archive["path"]) == archive["sha256"] for archive in archives),
+            "native-provenance", "Native provenance changed while collecting defined-symbol evidence.")
+    return evidence, native_lock, native_manifest, provenance
+
+
 def prepare_dependency_notices(root, app, code, runner):
     runtime_code_sources(app, code)
     products = integrated_products(root, runner)
     known_products = {"OpenLXSSHCore", "OpenLXSSHSecurity", "OpenLXSSHTrust", "OpenLXSSHTransport", "OpenLXSSHFiles", "SwiftTerm", "GRDB"}
     require(products <= known_products, "unknown-dependency", "Formal App links an unreviewed package product.")
-    symbols_by_path = {binary.relative_to(app).as_posix(): runner.checked(["/usr/bin/xcrun", "nm", "-g", "-U", "-j", binary]) for binary in code}
-    symbol_patterns = {"grdb.swift": r"\$s4GRDB", "swiftterm": r"\$s9SwiftTerm", "libssh2": r"(?m)^_libssh2_",
-                       "openssl": r"(?m)^_(?:OpenSSL_version|OPENSSL_init_crypto|EVP_)",
-                       "swift-argument-parser": r"\$s14ArgumentParser", "swift-png": r"\$s3PNG", "h": r"\$s1H"}
-    linked_paths = {identity: sorted(path for path, symbols in symbols_by_path.items() if re.search(pattern, symbols))
+    symbols_by_path = {binary.relative_to(app).as_posix(): runner.checked(
+        ["/usr/bin/xcrun", "nm", "-g", "-U", "-j", binary]).splitlines() for binary in code}
+    symbol_patterns = {"grdb.swift": r"_\$s4GRDB\S+", "swiftterm": r"_\$s9SwiftTerm\S+",
+                       "swift-argument-parser": r"_\$s14ArgumentParser\S+", "swift-png": r"_\$s3PNG\S+", "h": r"_\$s1H\S+"}
+    linked_paths = {identity: sorted(path for path, symbols in symbols_by_path.items()
+                                   if any(re.fullmatch(pattern, symbol) for symbol in symbols))
                     for identity, pattern in symbol_patterns.items()}
+    native_evidence, native_lock, native_manifest, native_provenance = native_dependency_evidence(root, app, code, runner)
+    linked_paths.update({identity: sorted(item["path"] for item in evidence) for identity, evidence in native_evidence.items()})
     detected = {identity: bool(paths) for identity, paths in linked_paths.items()}
     expectations = {"OpenLXSSHCore": ("grdb.swift",), "OpenLXSSHTransport": ("swiftterm",),
                     "OpenLXSSHFiles": ("libssh2", "openssl")}
     for product, dependencies in expectations.items():
         for identity in dependencies:
-            require(product not in products or detected[identity], "dependency-evidence", "An integrated product lacks defined-symbol dependency evidence; stripped/changed builds need an explicitly reviewed evidence adapter.")
+            require(product not in products or detected[identity], "dependency-evidence",
+                    f"Integrated product {product} lacks defined-symbol dependency evidence for {identity}; changed/stripped builds need an explicitly reviewed evidence adapter.")
     require(detected["grdb.swift"], "dependency-evidence", "Formal App does not contain verifiable GRDB code.")
     require(detected["libssh2"] == detected["openssl"], "dependency-evidence", "libssh2 and its selected OpenSSL backend must be integrated together.")
     lock_path = "OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
@@ -786,23 +912,11 @@ def prepare_dependency_notices(root, app, code, runner):
         records.append({"name": name, "identity": identity, "included": included, "linkedCodePaths": linked_paths[identity],
                         "version": pin["state"].get("version"), "revision": pin["state"]["revision"],
                         "source": pin["location"], "resolvedInAppGraph": identity in app_pins,
-                        "evidence": "defined symbols in embedded code" if included else "not linked; a resolved pin alone is not inclusion evidence",
+                        "evidence": "defined external symbols in embedded code (nm -g -U -j)" if included else "not linked; a resolved pin alone is not inclusion evidence",
                         "licensePaths": [notice["path"] for notice in notices], "licenses": notices})
     known = set(local_specs)
     require(not (set(app_pins) - known), "unknown-dependency", "App lock contains an unreviewed third-party dependency; add real integration/license evidence before packaging.")
     native_root = root / "Packages/OpenLXSSHFiles/.build/native"
-    native_lock_path = safe_source(root, "Packages/OpenLXSSHFiles/native-inputs.json")
-    native_lock = json_file(native_lock_path)
-    native_manifest = None
-    if detected["libssh2"]:
-        no_symlink_ancestors(native_root, root)
-        native_manifest = json_file(safe_source(native_root, "manifest.json"))
-        require(native_manifest["inputs"]["lockSHA256"] == sha256(native_lock_path)
-                and native_manifest["dependencies"] == native_lock, "native-provenance", "Native build provenance does not match reviewed native-inputs.json.")
-        for library in ("libssh2.a", "libssl.a", "libcrypto.a"):
-            relative = "install/lib/" + library
-            require(sha256(safe_source(native_root, relative)) == native_manifest["outputs"].get(relative),
-                    "native-provenance", "A native archive differs from its recorded build output.")
     for identity, name in (("libssh2", "libssh2"), ("openssl", "OpenSSL")):
         item = native_lock[identity]
         included = detected[identity]
@@ -823,7 +937,10 @@ def prepare_dependency_notices(root, app, code, runner):
         records.append({"name": name, "identity": identity, "included": included, "version": item["version"],
                         "linkedCodePaths": linked_paths[identity],
                         "revision": item["commit"], "sourceArchiveSHA256": item["sha256"], "source": item["url"],
-                        "evidence": "defined symbols plus pinned native archive/notice hashes" if included else "not linked into current App",
+                        "evidence": ("defined __TEXT,__text API symbols (external/private external/non-external as recorded) "
+                                     "matched by exact name to hash-verified native archive definitions; "
+                                     "symbol-name provenance only, not bitcode equivalence or a complete binary SBOM") if included else "not linked into current App",
+                        "symbolEvidence": native_evidence[identity], "nativeBuildProvenance": native_provenance if included else None,
                         "licensePaths": [notice["path"] for notice in notices], "licenses": notices})
     notice = app / "Contents/Resources/ThirdPartyNotices/NOTICE.txt"
     no_symlink_ancestors(notice, app)

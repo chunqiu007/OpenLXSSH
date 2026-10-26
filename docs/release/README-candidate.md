@@ -17,8 +17,17 @@ python3 Scripts/package-release-candidate.py --allow-dirty
 - 正式 `Contents/Helpers/openlxssh-askpass` 必须已集成，否则明确失败，不从实验区域拷贝替代品。
 - 检查 App 命名/Bundle ID、arm64、所有 Mach-O 的最低 macOS 26.0、可重定位的完整运行依赖闭包（支持裸 `@loader_path` / `@executable_path`，仍检查 bundle 内边界）；直接读取二进制 header/load-command，入口必须为 `MH_EXECUTE` 且有落在可执行文件段的有效 `LC_MAIN`。拒绝 Homebrew、临时/工作区依赖、逃逸链接、未使用的嵌入代码、测试/构建/签名材料。
 - V1 当前静态链接依赖，只批准主程序与固定 askpass helper 两个运行代码路径；manifest 逐节点记录第一方来源/提交与实际链接依赖，依赖条目反向记录 `linkedCodePaths` 和许可证。不因依赖闭包有效就接受新 `.framework` / `.dylib`；未知节点一律失败，需先独立审查来源、许可与 filetype，再修改白名单，不自动归属到名称相近的依赖。XPC/插件等新布局同样须先审查支持。
-- 用正式 target/lock、未剥离的已定义符号与原生库来源/摘要判断实际集成。GRDB、SwiftTerm、libssh2/OpenSSL 仅在有集成证据时标为 `included=true`，并在复制后的 App 中加入对应真实许可证。未链接的 SwiftPM 传递包不会假称已包含。新依赖、未知/已剥离符号方案或原生来源不一致时失败，需先审查适配。
+- 用正式 target/lock、实际已定义符号与原生库来源/摘要判断集成；target 声明或 resolved pin 本身不是已链接证明。Swift 包仍要求 `nm -g -U -j` 的完整、锚定模块符号名。native 使用下述明确审查的 hidden-static 适配器；不泛放行 local 名称、大小写近似、字符串内容或 undefined import。GRDB、SwiftTerm、libssh2/OpenSSL 仅在有对应证据时标为 `included=true`，并在复制后的 App 中加入完整的真实许可证。未链接的 SwiftPM 传递包不会假称已包含。新依赖、未知格式、全剥离无符号证明或原生来源不一致时仍失败。
 - App SHA256 使用 `sha256-canonical-tree-v1`：对排序后的相对路径、类型、模式、链接目标、文件大小/摘要组成的规范 JSON 求摘要；不声称是目录的普通文件摘要。ZIP 使用普通 SHA256，并逐项比对内容/模式。扩展属性不修改；其 ZIP 元数据包含在 ZIP 摘要中，不在 App 树摘要中。
+
+## Native hidden-static 符号证据
+
+真实 Release 只读诊断发现 `OpenLXSSHFiles` 的 libssh2/OpenSSL API 在主程序中为 `(__TEXT,__text) non-external (was a private external)`；native 构建记录有 `-fvisibility=hidden`。因此 `nm -g` 过滤掉这些定义不代表没链接，也不能据此说“符号已 strip”。适配器 `nm-defined-text-exact-archive-match-v1` 只接受 `nm -U -m` 明确列出的 `__TEXT,__text` 函数定义及四种已审查 binding（`external`、`private external`、`non-external`、`non-external (was a private external)`）。undefined、absolute、data/const、未知 binding、plain strings 或 substring 均不作证据。
+
+- 先校验 `native-inputs.json`、`Packages/OpenLXSSHFiles/Scripts/build-native.py` 与 native `manifest.json` 的输入摘要，再校验 `libssh2.a`、`libssl.a`、`libcrypto.a` 的全部三个 archive 摘要，之后才读取 archive 符号；收集结束再次核对输入摘要。不会重建 native。
+- App/helper 每个有证据的代码路径必须同时包含该库三个关键 API 的真实 text 定义。libssh2 为 `_libssh2_session_init_ex`、`_libssh2_session_handshake`、`_libssh2_sftp_init`；OpenSSL 为 `_OPENSSL_init_crypto`、`_OpenSSL_version`、`_EVP_CIPHER_fetch`。每个 API 都须按**完整同名**映射到所属、已校验 archive 中唯一的 external/private-external text 定义和 `.o` member，不能用别库中的同名、单个前缀或多个代码路径拼成证明。API/工具格式改变时失败，需重新审查适配。
+- manifest 的 native `symbolEvidence` 记录实际代码路径、签名前代码 SHA256、匹配数及实际 binding、多个精确 witness、archive member/定义/摘要；`nativeBuildProvenance` 记录 native manifest、输入 lock、构建脚本和三个已校验 archive。`verifiedInputArchives` 只表示校验过的构建输入，不表示每个 archive（例如 `libssl.a`）都有代码进入 App；具体 witness 记录其真正来源。
+- 这是已定义符号名与固定来源的可复核映射，**不是位码等价校验，也不是完整二进制 SBOM 证明**；不替代既有 Mach-O/依赖闭包、许可证、签名或功能验收。`--verify-manifest` 仍只复核候选内容/归档/许可证摘要，不重新运行 symbol/source provenance 审计。
 
 只复核已产出候选的内容摘要（不会构建或签名，也不重新证明系统信任）
 
@@ -47,4 +56,4 @@ python3 Scripts/package-release-candidate.py --signing development --identity '<
 python3 -B -m unittest discover -s Tests/ReleasePackaging -p 'test_*.py' -v
 ```
 
-测试仅使用临时假 App/依赖数据、模拟签名/评估命令，以及临时假 App 的本地 `ditto` 归档；不构建正式 App、不执行 Apple 公证、真实签名或安装。实际 Release 构建/候选仍须等 App/helper/依赖集成完成并结束并发构建后另行实跑。macOS 26 启动、真实 SSH/SFTP、安全与双机安装均需独立验收。
+测试仅使用临时假 App/依赖数据、模拟符号/签名/评估命令，以及临时假 App 的本地 `ditto` 归档；不构建正式 App、不执行 Apple 公证、真实签名或安装。hidden-static 适配器的真实 Release 符号复核是独立的只读诊断，不等于已重新生成可交付候选；实际 Release 构建/打包仍须待 App 工程编辑与并发构建结束后另行实跑。macOS 26 启动、真实 SSH/SFTP、安全与双机安装均需独立验收。

@@ -47,7 +47,10 @@ def native_provenance(root):
     lock = p.json_file(lock_path)
     lock["openssl"]["licenseSHA256"] = p.sha256(license_dir / "openssl/LICENSE.txt")
     lock_path.write_text(json.dumps(lock))
-    manifest = {"inputs": {"lockSHA256": p.sha256(lock_path)}, "dependencies": lock,
+    script = root / "Packages/OpenLXSSHFiles/Scripts/build-native.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# UNIT build script fixture only; never executed\n")
+    manifest = {"inputs": {"lockSHA256": p.sha256(lock_path), "scriptSHA256": p.sha256(script)}, "dependencies": lock,
                 "outputs": outputs,
                 "licenseSHA256": {relative: p.sha256(license_dir / relative) for relative in paths}}
     (base / "manifest.json").write_text(json.dumps(manifest))
