@@ -30,4 +30,4 @@ Sessions根在mkdir UUID前核对，UUID在创建配置前核，config与root/UU
 
 ## 未完成
 
-无授权服务器，四类认证/MFA/审批/握手后密钥变化/嵌套SSH均未测；macOS26自动白名单与运行、Sandbox、DeveloperID/公证、人工IME/TUI/长期稳定性未验。正式包尚未全量移植历史different-signer/queued-exec/complex/OOL矩阵，集成回归须补。不能以此或App构建宣布Goal完成。
+无授权服务器，四类认证/MFA/审批/握手后密钥变化/嵌套SSH均未测；macOS26自动白名单与运行、Sandbox、DeveloperID/公证、人工IME/TUI/长期稳定性未验。正式包历史different-identifier/adHoc/queued-exec/complex/OOL矩阵后续已补齐并发现修复voucher/timeout ownership，主管独立Release完整复验通过，见 `p7-transport-adversarial.md`；真正第二Apple Team仍未测。不能以此或App构建宣布Goal完成。

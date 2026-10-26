@@ -175,9 +175,19 @@ static int send_message(mach_port_t destination, mach_port_t receive, const void
     message.header.msgh_id = reply ? AP_MACH_REPLY : AP_MACH_REQUEST;
     message.count = (uint32_t)count; memcpy(message.bytes, bytes, count);
     int error = (int)mach_msg(&message.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, message.header.msgh_size, 0, MACH_PORT_NULL, 250, MACH_PORT_NULL);
-    // On a failed send Mach has pseudo-received owned header rights back into the
-    // message. Destroy that returned message instead of guessing a port name.
-    if (error) mach_msg_destroy(&message.header);
+    // A failed send can pseudo-receive a new owned send-once right into LOCAL.
+    // mach_msg_destroy deliberately leaves LOCAL alone (normally a borrowed
+    // receive name). Release only the returned MOVE right, never the original
+    // MAKE_SEND_ONCE receive name when copyin has not happened.
+    if (error) {
+        if (MACH_MSGH_BITS_LOCAL(message.header.msgh_bits) == MACH_MSG_TYPE_MOVE_SEND_ONCE &&
+            MACH_PORT_VALID(message.header.msgh_local_port)) {
+            ap_mach_drop_reply(message.header.msgh_local_port);
+            message.header.msgh_local_port = MACH_PORT_NULL;
+            message.header.msgh_bits &= ~MACH_MSGH_BITS_LOCAL_MASK;
+        }
+        mach_msg_destroy(&message.header);
+    }
     memset_s(&message, sizeof(message), 0, sizeof(message)); return error;
 }
 int ap_mach_send_request(const char *name, const void *bytes, size_t count, uint32_t *reply_receive) {
@@ -194,7 +204,9 @@ int ap_mach_send_reply(uint32_t send_once, const void *bytes, size_t count) { re
 int ap_mach_receive(uint32_t receive, int reply, int timeout_ms, ap_mach_message *out) {
     (void)memset_s(out, sizeof(*out), 0, sizeof(*out));
     receive_buffer buffer = {0}; mach_msg_header_t *header = (mach_msg_header_t *)buffer.bytes;
-    mach_msg_option_t options = MACH_RCV_MSG | MACH_RCV_TIMEOUT | MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) | MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT);
+    // Receive vouchers explicitly so the inline-only policy below can reject
+    // and destroy their rights; without this option the kernel strips them.
+    mach_msg_option_t options = MACH_RCV_MSG | MACH_RCV_TIMEOUT | MACH_RCV_VOUCHER | MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) | MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT);
     int error = (int)mach_msg(header, options, 0, sizeof(buffer.bytes), receive, (mach_msg_timeout_t)(timeout_ms < 0 ? 0 : timeout_ms), MACH_PORT_NULL);
     if (error) {
         // RCV_TOO_LARGE without MACH_RCV_LARGE consumes and destroys the oversized

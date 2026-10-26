@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import COpenLXSSHAskpass
+import CTransportAdversary
 
 private func output(_ text: String) {
     let bytes = Array(text.utf8)
@@ -21,6 +22,25 @@ if args.first == "--ipc" {
     do { try MainActor.assumeIsolated { try IPCVerification.run() }; exit(0) }
     catch { output("IPC verification failed (details withheld)\n"); exit(1) }
 }
+if args.first == "--adversarial-rights" {
+    for kind in 0..<Int32(ADV_CASE_COUNT) {
+        let result = ap_adv_check_local_ownership(kind)
+        if result != 0 { output("ADVERSARIAL ownership failed kind=\(kind) error=\(result)\n"); exit(1) }
+    }
+    let result = ap_adv_check_send_once()
+    output("ADVERSARIAL rights result=\(result)\n"); exit(result == 0 ? 0 : 1)
+}
+if args.first == "--adversarial" {
+    do { try MainActor.assumeIsolated { try IPCVerification.runAdversarial() }; exit(0) }
+    catch { output("Adversarial verification failed (details withheld)\n"); exit(1) }
+}
+if args.first == "--adversarial-parent", args.count == 5 {
+    exit(runAdversarialParent(mode: args[1], client: args[2], nextImage: args[3], record: args[4]))
+}
+if args.first == "--adversarial-client", args.count == 4 {
+    exit(runAdversarialClient(mode: args[1], record: args[2], nextImage: args[3]))
+}
+if args.first == "--adversarial-standby", args.count == 2 { exit(runAdversarialStandby(stage: args[1])) }
 if args.first == "--event-parent", args.count == 3 {
     exit(runEventParent(helper: args[1], mode: args[2]))
 }

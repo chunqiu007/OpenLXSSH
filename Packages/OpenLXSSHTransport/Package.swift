@@ -22,7 +22,8 @@ let package = Package(
         .executableTarget(name: "OpenLXSSHAskpassHelper", dependencies: ["OpenLXSSHAskpass"])
     ] + (hostProbe ? [
         .testTarget(name: "OpenLXSSHTransportTests", dependencies: ["OpenLXSSHTransport", "OpenLXSSHAskpass", "COpenLXSSHAskpass"]),
-        .executableTarget(name: "TransportFixture", dependencies: ["OpenLXSSHTransport", "OpenLXSSHAskpass", "COpenLXSSHAskpass"], swiftSettings: [.define("TRANSPORT_HOST_PROBE"), .unsafeFlags(["-Xcc", "-DTRANSPORT_HOST_PROBE"])])
+        .target(name: "CTransportAdversary", dependencies: ["COpenLXSSHAskpass"]),
+        .executableTarget(name: "TransportFixture", dependencies: ["OpenLXSSHTransport", "OpenLXSSHAskpass", "COpenLXSSHAskpass", "CTransportAdversary"], swiftSettings: [.define("TRANSPORT_HOST_PROBE"), .unsafeFlags(["-Xcc", "-DTRANSPORT_HOST_PROBE"])])
     ] : []),
     swiftLanguageModes: [.v5]
 )
