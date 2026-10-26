@@ -474,6 +474,134 @@ exec(compile(code,'<exact-private-reader>','exec'),{'__name__':'__main__'})
             self.assertTrue(list(runtime.rglob('credentials-*')))
             self.assertFalse(any(path.is_file() for path in runtime.rglob('*')))
 
+    def invoke_public_challenge(self, driver, runtime, *, stdout=None, sleep=None, expires_at=100.5):
+        # Isolate only server/read boundaries. Cleanup uses actual filesystem
+        # operations, a real created fd and public non-OTP metadata in tmpdir.
+        payload = {'expires_at': expires_at, 'public_marker': 'SYNTHETIC_NOT_A_SECRET_OR_OTP'}
+        clock = {'wall': 100.0, 'mono': 10.0}
+        def advance(delay):
+            if sleep is not None: sleep(delay, clock)
+            else:
+                clock['wall'] += delay
+                clock['mono'] += delay
+        with mock.patch.object(driver, 'RUNTIME', runtime), \
+                mock.patch.object(driver, 'exec_server', return_value='a'*64), \
+                mock.patch.object(driver, 'copy_private_json', return_value=payload), \
+                mock.patch.object(driver, 'docker', side_effect=AssertionError('Docker called')), \
+                mock.patch.object(driver.time, 'time', side_effect=lambda: clock['wall']), \
+                mock.patch.object(driver.time, 'monotonic', side_effect=lambda: clock['mono']), \
+                mock.patch.object(driver.time, 'sleep', side_effect=advance), \
+                mock.patch.object(sys, 'stdout', stdout if stdout is not None else io.StringIO()):
+            driver.challenge({'project':'synthetic-project'}, 'key-kbd', 'a'*24)
+
+    def test_challenge_output_errors_cleanup_original_fd(self):
+        driver = module('fixture')
+        for stage in ('write', 'flush'):
+            for error in (BrokenPipeError, KeyboardInterrupt):
+                with self.subTest(stage=stage, error=error.__name__), \
+                        tempfile.TemporaryDirectory(prefix='openlxssh-challenge-output-') as raw:
+                    root = Path(raw).resolve()
+                    output = io.StringIO()
+                    method = mock.Mock(side_effect=error('synthetic output interruption'))
+                    with mock.patch.object(output, stage, method):
+                        with self.assertRaises(error):
+                            self.invoke_public_challenge(driver, root, stdout=output)
+                    self.assertFalse((root/'key-kbd'/('challenge-'+'a'*24+'.json')).exists(),
+                                     'output/flush failure left the created challenge file')
+
+    def test_challenge_ttl_permissions_and_synthetic_content_never_printed(self):
+        driver = module('fixture')
+        with tempfile.TemporaryDirectory(prefix='openlxssh-challenge-ttl-') as raw:
+            root = Path(raw).resolve()
+            target = root/'key-kbd'/('challenge-'+'a'*24+'.json')
+            output = io.StringIO()
+            observed = []
+            def inspect_then_advance(delay, clock):
+                self.assertTrue(target.is_file())
+                self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+                self.assertEqual(target.stat().st_uid, os.getuid())
+                self.assertEqual(target.stat().st_nlink, 1)
+                self.assertEqual(json.loads(target.read_text())['public_marker'], 'SYNTHETIC_NOT_A_SECRET_OR_OTP')
+                observed.append(delay)
+                clock['wall'] += delay
+                clock['mono'] += delay
+            original_write = os.write
+            writes = []
+            def short_write(fd, value):
+                writes.append(len(value))
+                return original_write(fd, value[:5])
+            with mock.patch.object(driver.os, 'write', side_effect=short_write):
+                self.invoke_public_challenge(driver, root, stdout=output, sleep=inspect_then_advance)
+            self.assertTrue(observed)
+            self.assertGreater(len(writes), 1)
+            self.assertFalse(target.exists())
+            self.assertNotIn('SYNTHETIC_NOT_A_SECRET_OR_OTP', output.getvalue())
+            self.assertIn(str(target), output.getvalue())
+
+    def test_challenge_partial_write_failure_removes_only_created_file_and_reaps_fd(self):
+        driver = module('fixture')
+        with tempfile.TemporaryDirectory(prefix='openlxssh-challenge-partial-') as raw:
+            root = Path(raw).resolve()
+            target = root/'key-kbd'/('challenge-'+'a'*24+'.json')
+            original_write = os.write
+            original_fdopen = os.fdopen
+            touched = []
+            def short_then_fail(fd, value):
+                touched.append(fd)
+                if len(touched) == 1:
+                    return original_write(fd, value[:7])
+                raise OSError('synthetic partial write failure')
+            class FailingStream:
+                # Exercise the old buffered-writer failure boundary too, so the
+                # red test detects leaked partial content rather than new APIs.
+                def __init__(self, fd, *args, **kwargs): self.stream = original_fdopen(fd,*args,**kwargs)
+                def __enter__(self): return self
+                def write(self, value):
+                    self.stream.write(value[:7])
+                    self.stream.flush()
+                    touched.append(self.stream.fileno())
+                    raise OSError('synthetic partial write failure')
+                def __exit__(self, *_args): self.stream.close()
+            with mock.patch.object(driver.os, 'write', side_effect=short_then_fail), \
+                    mock.patch.object(driver.os, 'fdopen', side_effect=FailingStream):
+                with self.assertRaises(OSError): self.invoke_public_challenge(driver,root)
+            self.assertTrue(touched)
+            self.assertFalse(target.exists(), 'partial output left a challenge file')
+            for fd in set(touched):
+                with self.assertRaises(OSError): os.fstat(fd)
+
+    def test_challenge_ttl_keeps_replacement_files_symlinks_and_existing_target(self):
+        driver = module('fixture')
+        for replacement in ('regular','symlink'):
+            with self.subTest(replacement=replacement), \
+                    tempfile.TemporaryDirectory(prefix='openlxssh-challenge-replaced-') as raw:
+                root = Path(raw).resolve()
+                target = root/'key-kbd'/('challenge-'+'a'*24+'.json')
+                outside = root/'public-outside'
+                outside.write_text('PUBLIC_REPLACEMENT_CONTENT')
+                old_inode = []
+                def replace_then_expire(delay, clock):
+                    if not old_inode:
+                        old_inode.append(target.stat().st_ino)
+                        target.unlink()
+                        if replacement=='regular': target.write_text('PUBLIC_REPLACEMENT_CONTENT')
+                        else: target.symlink_to(outside)
+                    clock['wall'] += delay
+                    clock['mono'] += delay
+                self.invoke_public_challenge(driver,root,sleep=replace_then_expire)
+                self.assertTrue(target.exists(), 'TTL cleanup removed a replacement entry')
+                if replacement=='regular': self.assertNotEqual(target.stat().st_ino,old_inode[0])
+                else: self.assertTrue(target.is_symlink())
+                self.assertEqual(target.read_text(),'PUBLIC_REPLACEMENT_CONTENT')
+        with tempfile.TemporaryDirectory(prefix='openlxssh-challenge-existing-') as raw:
+            root = Path(raw).resolve()
+            (root/'key-kbd').mkdir(mode=0o700)
+            target = root/'key-kbd'/('challenge-'+'a'*24+'.json')
+            target.write_text('PUBLIC_EXISTING_CONTENT')
+            with self.assertRaises(FileExistsError): self.invoke_public_challenge(driver,root)
+            self.assertEqual(target.read_text(),'PUBLIC_EXISTING_CONTENT')
+
     def test_volume_ownership_protection(self):
         driver = module('fixture')
         state = {'project': 'openlxssh-fixture-abcdef012345'}

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Authorized local-only Docker fixture driver; defaults to no side effects."""
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -442,6 +443,38 @@ def collect(state, service):
     print('Private files written to ' + str(generation) + '; contents were not printed.')
 
 
+@contextlib.contextmanager
+def temporary_challenge_file(target, value):
+    # Keep the created inode open through write, print/flush and TTL cleanup.
+    # O_EXCL refusal never establishes ownership of an existing target.
+    fd = None
+    try:
+        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        pending = memoryview(value.encode('utf-8'))
+        while pending:
+            try:
+                written = os.write(fd, pending)
+            except InterruptedError:
+                continue
+            if written <= 0:
+                raise OSError('challenge file write failed')
+            pending = pending[written:]
+        yield target
+    finally:
+        if fd is not None:
+            try:
+                created = os.fstat(fd)
+                try:
+                    current = target.lstat()
+                except FileNotFoundError:
+                    current = None
+                if (current is not None and stat.S_ISREG(current.st_mode) and current.st_uid == os.getuid()
+                        and (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino)):
+                    target.unlink()
+            finally:
+                os.close(fd)
+
+
 def challenge(state, service, session):
     if not SESSION_RE.fullmatch(session or ''):
         raise FixtureError('use the 24-hex non-secret session ID shown in the pending prompt')
@@ -453,15 +486,12 @@ def challenge(state, service, session):
     if data['expires_at'] <= time.time():
         raise FixtureError('challenge expired')
     target = destination / ('challenge-' + session + '.json')
-    private_write(target, json.dumps(data))
-    print('One-use responses saved to ' + str(target) + '; open privately, never log or capture. '
-          'This foreground command removes them at expiry (Ctrl+C also cleans up).', flush=True)
-    try:
-        while time.time() < data['expires_at']:
-            time.sleep(max(0, min(0.25, data['expires_at'] - time.time())))
-    finally:
-        if target.is_file() and not target.is_symlink():
-            target.unlink()
+    with temporary_challenge_file(target, json.dumps(data)):
+        print('One-use responses saved to ' + str(target) + '; open privately, never log or capture. '
+              'This foreground command removes them at expiry (Ctrl+C also cleans up).', flush=True)
+        deadline = time.monotonic() + max(0, data['expires_at'] - time.time())
+        while time.monotonic() < deadline:
+            time.sleep(max(0, min(0.25, deadline - time.monotonic())))
 
 
 def cleanup_local():
