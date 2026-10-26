@@ -1,5 +1,56 @@
 OpenLXSSH real integration consumer — test-only host15 preparation
 
+SFTP OTP NEGATIVE ADDENDUM — source/offline only, no negative live acceptance
+
+Independent --sftp-otp-negative entry/schema/negative-only budget. Positive
+SFTPAuthContract/SFTPAuthBudget and all existing deadlines remain unchanged.
+Only key-kbd Edplain fixture@127.0.0.1:22223; no alternate method/host/key/retry.
+Future release only, exact new signed App and own contract:
+  <App>/Contents/MacOS/OpenLXSSHRealIntegration --sftp-otp-negative --live --authorized-local-fixture --engine-ready --contract <exactContract>
+Help/validate inert/no file,signer,Docker,network. Case path must be own
+RealIntegration/.build/sftp-otp-negative-case-<12hex>/sftp-otp-negative.json,
+file0600/noACL/singlelink,parents0700/noACL/no symlink/currentUID.
+Exact keys: schema1,taskID:SFTP-OTP-NEGATIVE-A,testCase:bad-otp|expired-otp,
+service:key-kbd,host:127.0.0.1,port:22223,user:fixture,key:edplain,
+credentialDirectory,expectedFingerprint,baseImage,imageID,containerID,project,
+networkID,context,endpoint (all exact reviewed generation/root identity).
+No secret values, TTL override, injected clock, arbitrary delay or prompt hash.
+
+Production public connect uses explicit [publicKey,keyboardInteractive], shared
+out-of-band HostTrustStore, unknown trust reject. Raw A/B/C typed envelopes,
+empty headers/singleprompt/echo=false/same24hex/one-index read enforce exactly
+three secret replies. A/B unchanged. C is read ONCE WHILE VALID via the existing
+fixed UID0/no-follow/privatePIPE reader; its real expires_at is now retained as
+nonsecret metadata, without relaxing reader/host expiry checks. No host OTP file,
+secret argv/env, raw prompt/answer or answer hash ever logged. Input/OTP remain
+redacted,not Codable. All native/Swift copies cannot guarantee zeroization.
+
+bad-otp changes exactly one ASCII digit of in-memory C once, verifies inequality
+without hashing/logging it, submits once BEFORE expiry. expired-otp retains C
+only in memory and polls actual Date/timeIntervalSince1970 plus monotonic elapsed
+time until BOTH pass the original expires_at by50ms; then submits once. No clock
+modification/expiry rewrite/sleep-only evidence, reread after TTL, new session or
+replay. Record C read/submit timestamps and duration, never value/hash. Cancellation
+closes the callback/reader, wakes bounded poll, and awaits owned handler/tool drain.
+
+Negative success ONLY if typed FileServiceError authentication/authenticate/
+nil-code, actualSFTPConnects0,fileOperations0,all three replies/resolutions/reads,
+wrongC or real-expiry proof, exactsessionfile removed,awaited close+handlerdrain.
+A timeout/transport/cancelled/earlydisconnect or failure BEFORE C submission is
+NOT a passed wrong/expired OTP test. No file-service operations are called even
+on an unexpected authenticated SFTP return (it fails then closes immediately).
+Special test-only limits connection20/operation85/active100/full140/drain12;
+managementtool still<=10s,original fixtureTTL75/LoginGrace90 unchanged. Coordinator
+must use bounded external process ownership. Existing positive20/45/85 unchanged.
+
+PAM_AUTH_ERR may directly reject or emit a zero-prompt nonempty informational
+request first. This negative consumer records only first bounded len/SHA/echo
+shape and cancels UNKNOWN shapes; it does NOT infer that arbitrary text is safe
+or auto-answer a notification/zero. If that means typed.cancelled rather than
+.authentication, report FAILED/shape and coordinate a separate review; do not
+reclassify a local cancellation as server credential rejection. Both negative
+cases remain UNVERIFIED until separate primary source review and live release.
+
 SFTP COMBINED-AUTH ADDENDUM — source/offline buildpoint ONLY, NOT live acceptance
 
 Unexpected-callback diagnostic addendum (SFTP-KBI-UNEXPECTED-SHAPE-A): the first

@@ -63,13 +63,14 @@ public struct OpenSSHOTP: Sendable, CustomStringConvertible, CustomDebugStringCo
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: [:]) }
     public let value: Data
+    public let expiresAt: Double
     public static func decode(_ data: Data, session: String, index: Int, now: Double) throws -> Self {
         let object = try MinaJSON.object(data, keys: ["session", "index", "expires_at", "response"])
         guard Contract.hex(session, count: 24), (0..<3).contains(index), object["session"] as? String == session,
               object["index"] as? Int == index, let expires = object["expires_at"] as? Double, expires.isFinite,
               now.isFinite, expires > now, expires <= now + 75,
               let text = object["response"] as? String, text.utf8.count == 8, text.utf8.allSatisfy({ (48...57).contains($0) }) else { throw OpenSSHError.expiredResponse }
-        return Self(value: Data(text.utf8))
+        return Self(value: Data(text.utf8), expiresAt: expires)
     }
 }
 

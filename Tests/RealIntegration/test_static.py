@@ -372,6 +372,33 @@ exec(compile(program,'fixed-root-reader','exec'))
         consumer = (HERE / 'Consumer/SFTPAuthConsumer.swift').read_text()
         self.assertIn('report?.authenticatedSFTPConnects == 1, report?.bytesWritten == 79, report?.bytesRead == 79', consumer)
         self.assertIn('report?.hashMatched == true, report?.remoteCleanupCompleted == true', consumer)
+    def test_otp_negative_has_one_reader_call_real_expiry_gate_no_secret_log_or_file_ops(self):
+        callbacks = (HERE / 'Consumer/SFTPOTPNegativeCallbacks.swift').read_text()
+        self.assertEqual(callbacks.count('management.response(session:'), 1)
+        self.assertIn('budget.recordRead(index: claim.1, expiry: fetched.expiresAt', callbacks)
+        self.assertIn('Date().timeIntervalSince1970', callbacks)
+        self.assertIn('ProcessInfo.processInfo.systemUptime', callbacks)
+        self.assertIn('budget.resolved(reply.resolve([answer]))', callbacks)
+        self.assertNotIn('reply.resolve([])', callbacks)
+        for forbidden in ('print(', 'writeExclusive', 'sha256(answer', 'sha256(wrong', 'sha256(original'):
+            self.assertNotIn(forbidden, callbacks)
+        consumer = (HERE / 'Consumer/SFTPOTPNegativeConsumer.swift').read_text()
+        self.assertIn('LibSSH2FileService.connect(configuration:', consumer)
+        self.assertIn('operationTimeout: SFTPOTPNegativeContract.operationSeconds', consumer)
+        self.assertIn('try budget.requireInjected()', consumer)
+        self.assertIn('typedRejected, report?.actualSFTPConnects == 0', consumer)
+        self.assertIn('service.cancel(); await service.close()', consumer)
+        for forbidden in ('SFTPAuthRoundTrip', 'service.open(', 'service.mkdir(', 'service.write(', 'service.read(', 'DirectSSHSession(', 'startProbe('):
+            self.assertNotIn(forbidden, consumer)
+        policy = (HERE / 'Sources/RealIntegrationCore/SFTPOTPNegativePolicy.swift').read_text()
+        self.assertIn('expiry > wall, expiry <= wall + 75', policy)
+        self.assertIn('wall >= expiresAt + 0.05 && uptime >= cReadUptime + (expiresAt - cReadWall) + 0.05', policy)
+        self.assertIn('kind == "authentication" && operation == "authenticate" && code == nil', policy)
+        report = policy.split('public struct SFTPOTPNegativeReport:', 1)[1]
+        for forbidden in ('answer:', 'response:', 'password:', 'privateKey:', 'responseHash:', 'responseSHA'):
+            self.assertNotIn(forbidden, report)
+        reader = (HERE / 'Sources/RealIntegrationCore/OpenSSHManagementPolicy.swift').read_text()
+        self.assertIn("time.time()<value['expires_at']<=time.time()+75", reader)
 
 
 if __name__ == '__main__':

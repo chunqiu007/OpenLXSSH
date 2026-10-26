@@ -12,6 +12,21 @@ import RealIntegrationPOSIX
     @MainActor static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--sftp-otp-negative" {
+                let options = try SFTPOTPNegativeOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(SFTPOTPNegativeOptions.help); return }
+                if options.action == .validate { print("OTP negative syntax valid; no files, Docker or connection; NOT acceptance."); return }
+                try SignatureGuard.validate()
+                guard let path = options.contractPath,
+                      let root = Bundle.main.object(forInfoDictionaryKey: "RealIntegrationFixtureRoot") as? String,
+                      let build = Bundle.main.object(forInfoDictionaryKey: "RealIntegrationBuildRoot") as? String,
+                      root.hasSuffix("/Tests/IntegrationEnvironment"), build.hasSuffix("/Tests/RealIntegration/.build") else { throw SFTPOTPNegativeError.invalidContract }
+                _ = NSApplication.shared
+                NSApp.setActivationPolicy(.prohibited)
+                Task { @MainActor in exit(await SFTPOTPNegativeConsumer.execute(path: path, fixtureRoot: root, buildRoot: build)) }
+                NSApp.run()
+                return
+            }
             if arguments.first == "--sftp-auth" {
                 let options = try SFTPAuthOptions.parse(Array(arguments.dropFirst()))
                 if options.action == .help { print(SFTPAuthOptions.help); return }

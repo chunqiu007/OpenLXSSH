@@ -45,7 +45,11 @@ def main():
             (['--sftp-auth', '--help'], 0),
             (['--sftp-auth', 'validate', '--contract', '/not/a/file/sftp-auth.json'], 0),
             (['--sftp-auth', '--live', '--contract', '/not/a/file/sftp-auth.json'], 2),
-            (['--sftp-auth', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/sftp-auth.json'], 2)]:
+            (['--sftp-auth', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/sftp-auth.json'], 2),
+            (['--sftp-otp-negative', '--help'], 0),
+            (['--sftp-otp-negative', 'validate', '--contract', '/not/a/file/sftp-otp-negative.json'], 0),
+            (['--sftp-otp-negative', '--live', '--contract', '/not/a/file/sftp-otp-negative.json'], 2),
+            (['--sftp-otp-negative', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/sftp-otp-negative.json'], 2)]:
             output = subprocess.run([str(preflight), *arguments], cwd=HERE, env=env, capture_output=True, timeout=10)
             checks.append({'command': [str(preflight), *arguments], 'cwd': str(HERE), 'exitCode': output.returncode, 'expectedExitCode': expected})
             if output.returncode != expected:

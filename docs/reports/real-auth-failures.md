@@ -60,6 +60,8 @@ fresh fixedCID/资源/internal/无hostmount/Healthy/空端口和带外公开key�
 
 `DerivedData/Verification/primary-auth-failure-results-a3fe9ec0-fc8f-4456-a9be-a3ae2434862f/`
 
+主管另用新collect generation/新独立case亲跑关键known-host-mismatch→显式replacement：实际handshake `.changed`/typeduntrusted、旧record不变，外层另一步显式替换后newSFTP/list/close成功；自己180s有限relay2/2/0/0 TERM/waitexit0，精确Trust/session/keygen清理且端口释放。证据 `DerivedData/Verification/primary-known-host-live-10f0a92b-36ae-4008-9127-f3ff3a6d16f1/`。未重复wrongphrase场景。
+
 ## 未覆盖
 
 错误/真实过期OTP、真实handshake timeout、OpenSSH解锁错误/恢复UI、实际serverkey轮换、正式GUI/mac26/企业环境仍需独立验收。close依据生产await契约和零peer sockets，不声称所有内部协议CLOSE都另有计数。整体Goal NOT COMPLETE。
