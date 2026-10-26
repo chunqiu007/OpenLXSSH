@@ -77,8 +77,8 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-14 | TERM-02～04 | 有限历史、搜索、中文输入法、Unicode/Emoji、复制/多行及 Bracketed Paste、主题字号可用 | 未执行 |
 | AC-15 | TERM-05 | Vim/Neovim、tmux、htop/btop、Docker 日志以及指定 Claude Code/OpenCode 版本的终端显示与输入可用 | 未执行 |
 | AC-16 | TERM-06～07 | 按主机保活，断线保留当前输出且仅手动重连，连接/认证中关闭可清理 | 未执行 |
-| AC-17 | FILE-01～02 | 文件面板默认隐藏，打开才直连认证；适用的密码、私钥、MFA 与信任验证通过，允许重复 MFA | 未执行 |
-| AC-18 | FILE-03～04 | 浏览、创建目录、重命名、文件/目录删除、Finder 拖入；目标和错误信息正确 | 未执行 |
+| AC-17 | FILE-01～02 | 文件面板默认隐藏，打开才直连认证；适用的密码、私钥、MFA 与信任验证通过，允许重复 MFA | 进行中：正式libssh2/共享Trust按需入口、原生Local面板+synthetic挑战、生产TCP前授权撤销R1主管89/signed通过；真实SFTP/MFA/mac26未验。见 `docs/reports/p6a-native-files-ui.md` |
+| AC-18 | FILE-03～04 | 浏览、创建目录、重命名、文件/目录删除、Finder 拖入；目标和错误信息正确 | 进行中：真实Local原生浏览/mkdir/安全rename/精确删除计划和能力probe已主管复验；上传下载/Finder拖入P6B尚未实现，真实远端未验。见 `docs/reports/p6a-native-files-ui.md` |
 | AC-19 | FILE-03、07 | 单文件、多文件、整目录往返内容一致；中文/空格/特殊字符和符号链接按明确策略处理，无越界或循环 | 进行中：本地根目录漏拷、源等长修改混合内容缺陷已修，主管Release57项含13新回归通过（修前8项36断言失败保留）。真实SFTP与App文件UI仍未执行，不能标整体通过。见 `docs/reports/p6-files-core.md`、`docs/reports/p7-core-review.md` |
 | AC-20 | FILE-05～06 | 覆盖/跳过/重命名及本次批量策略生效，唯一临时文件和提交不会误覆盖竞争目标 | 未执行 |
 | AC-21 | FILE-05～07 | 大文件取消、断线、权限不足、磁盘空间不足及不支持的安全覆盖有明确失败结果，不破坏既有文件 | 未执行 |
@@ -108,12 +108,12 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 
 | 验收 ID | 必须结果 | 当前状态 / 证据 |
 | --- | --- | --- |
-| AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 未执行 |
+| AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 进行中：P6A时点真实未签名内部App/ZIP+manifest UUID996cff64已生成并verify通过，来源/许可/摘要齐；Gatekeeper false/非最终Release，B1上传下载等尚未集成，后续须新候选。见 `docs/reports/p8-packaging-preparation.md` |
 | AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 未执行 |
 | AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 未执行 |
 | AC-36 | 朋友的第二台 Apple Silicon/macOS 26 正常安装，SSH/MFA、终端、SFTP 与退出实际验收 | 待外部条件：尚未安排第二台 Mac 操作 |
 | AC-37 | 用户在公司允许的实际环境手动覆盖适用的认证/审批与嵌套 SSH，记录范围及结果，无秘密进入报告 | 待外部条件：尚未安排实际企业场景验收 |
-| AC-38 | 安装/使用/已知限制说明、阶段审查与本地提交齐全；没有遗漏的必要未完成项 | 未执行 |
+| AC-38 | 安装/使用/已知限制说明、阶段审查与本地提交齐全；没有遗漏的必要未完成项 | 进行中：使用说明 `docs/user-guide.md`、候选说明与 `docs/release/acceptance-prerequisites.md` 已写，明确开发中/未验项；必要功能/Release/外部验收仍未完成 |
 
 手机推送与公司策略具有环境差异：受控模拟验证和实际企业验收分别记录。AI 无权接触或代为输入真实秘密时，由用户自行操作并回报结果；不能因此声称“全部企业环境已兼容”。第二台 Mac 同样不能由本机重复运行替代。
 

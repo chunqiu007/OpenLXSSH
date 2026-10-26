@@ -10,7 +10,7 @@
 
 ## 当前实际状态
 
-正式OpenLXSSH Xcode App/Target已存在，arm64/min26。主机/安全管理与SSH标签/终端/信任认证已完成本地审查提交7ed142e，主管68测试、原生GUI和严格签名离线验证通过；无真实服务器互通。正式Core/Security/Trust/Transport/Files已修本轮ACL与文件完整性缺陷并提交。当前进入P6-App文件面板首个里程碑，整体并非可用完整SSH/SFTP Release。
+正式OpenLXSSH Xcode App/Target已存在，arm64/min26。主机/安全管理、SSH标签和P6A按需SFTP浏览/安全操作均已完成本地独立审查；P6A+认证撤销R1主管89tests/signed、LocalGUI通过，提交90084e4。正在实现P6B1上传下载/Finder/任务及传输关闭保护。已生成P6A时点未签名内部候选UUID996cff64并verify，但Gatekeeper false、非最终Release；无真实服务器互通或目标mac26运行。
 
 | Task | 实际结果/主管证据 | 主要文件 |
 | --- | --- | --- |
@@ -29,15 +29,29 @@
 | P3-LOCAL/R1 | 主管完整46矩阵通过，OpenSSL改3.5.9LTS、typedTCP/同握手信任/显式风险策略；真实SFTP未测 | Experiments/P3；docs/reports/p3-local-files.md |
 | P6-FILES-A / TRANSFER-MANAGER-R1 | 正式Files/Manager主管完整70矩阵通过，R1混合skip修正后主管Release16定向通过、工程师双配置73通过；真实SFTP未验 | Packages/OpenLXSSHFiles；docs/reports/p6-files-core.md |
 
+| P5-APP-SSH-A/ACL/FD/R2 | 主管HostProbe68/GUI15+8+7+17+17/签名8+8+15+5通过并提交7ed142e；真实网络/mac26未验 | Application/OpenLXSSH；docs/reports/p5-native-session-ui.md |
+| P6-FILES-SERVICE-OPERATIONS-A | 主管Release97通过提交7a574ab；服务操作与jobs共享lease/idle/shutdown | Packages/OpenLXSSHFiles；docs/reports/p6-files-core.md |
+| P7-ACL | Security31、Core48、Trust46、Transport35+严格IPC主管通过；前后检查/拒任意ACL策略，不改用户ACL | docs/reports/p7-core-review.md及各包报告 |
+| P7-LOCAL-FILE-STRESS-A | 主管独立Release2GiB/1000逐项SHA+25%取消+FD3/9/3+owned0通过，非远端/PERF | Tests/LocalFileStress；docs/reports/p7-local-file-stress.md |
+| P8-PACKAGING-R1/R2 | 主管101fixtures及真实unsigned P6A候选打包/verify-manifest通过，UUID996cff64；Gatekeeper false/无有效发布签名/未公证，非最终Release | Scripts/package-release-candidate.py；docs/reports/p8-packaging-preparation.md |
+
+| P6A-APP-FILES/R1 | 主管all/signed85与LocalGUI14通过，随后末次saved授权R1主管89/signed通过；提交90084e4，无真实SFTP | Application/OpenLXSSH；docs/reports/p6a-native-files-ui.md |
+| P6-LOCAL-ROOT-FD/TARGETED-CLOSE | 主管Release34通过提交b034db2；工程师双配置107，新增10重复200为本地tests非SSH | Packages/OpenLXSSHFiles；docs/reports/p6-files-core.md |
+
 ## 正在委派与文件所有权
 
-- 恢复核对：用户发送“继续”后重新核对HEAD `fd005f5` 与实际未提交App/Files改动；旧agent不可恢复，重新委派同范围，不重建或覆盖工作。
-- App工程师 agent_f6776fa3-ff7f-4432-9226-b8a46b9feef8：P5含ACL/JournalFD/R2主管验收提交7ed142e。现P6-APP-FILES-A，只App/xcode/根构建验证脚本/AppTests；实现默认隐藏右文件面板、独立认证/共享Trust、目录和安全操作，不上传下载/退出任务决策（P6B后续）。不改Packages/实验/全局文档。
+- 恢复核对：当前实际HEAD c9d5c07，P6A App与主管文档未提交改动均保留；原执行者/审查者不可恢复已按原区域重新派工，不重建或覆盖已有工作。用户正式Goal及运行时当前active持续，新增环境/外部操作边界不变。
+- App P6A原工程师agent_f677已交付停写，运行恢复后SendMessage不可恢复。P6A主管all/signed已exit0（85tests/LocalGUI14），尚待只读专项审查后提交；不覆盖已有工作。
+- P6A认证撤销R1已主管独立89tests/signed通过，原P2定向resolved，整合提交90084e4。App工程师agent_68d3d86f-9ad4-43cc-af1e-d0df030e6887现获P6-APP-TRANSFER-B1唯一App/xcode/构建脚本/AppTests写范围，实现raw选择入队、任务/冲突风险UI、FinderfileURL、window/quit有任务保护；不改Packages/文档，不提交。
+- Files新增agent_876bf232-8daa-4307-9bff-57fa44d40b1c，原7b不可恢复：TARGETED-IDLE-CLOSE-R1+LOCAL-ROOT-FD-R1已交付4文件，主管独立Release34通过并提交b034db2（工程师双配置107/新增10重复200），App可接两兼容API，当前无包写入。
+- 打包实际R2 agent_409da4aa-9f36-42fe-86e8-3b96d7419bf6已交付5文件，主管独立101tests与真实unsignedpack重跑exit0。P6A时点候选UUID996cff64-e5cc-4efe-b4b3-80b3b0a3e4e5，Gatekeeper false/无有效发布签名/未公证上传，非最终Release。首失败UUIDadc54006保留。证据适配精确hidden-native/archive映射，不称strip；当前无写入。
 - Files工程师 agent_7b556d2b-7a15-416f-9e3f-cd1ac6a69082：P7-FILES-INTEGRITY-R2主管Release57通过提交25f802d；R3同service根自拷组件边界修正/新3测试，主管Release16通过提交ff00e7d，工程师双配置89；无当前写入。
 - 只读安全审查 agent_4e309475-302a-47cd-bc5d-e86f2a60203d：三项缺陷已交付，最小复现细节已记录；主管已读对应实现确认，后续修复只读复核。
 - 安全修复 agent_d1ddbcb3-c32e-4b6f-9666-78ea5055f4bb：P7-SECURITY-ACL-R1已交付7文件，主管读差异/11新ACL tests并独立Release31全部通过；拒任意ACL/查询失败、不改用户ACL，正式签名App待统一复验。原Security工程师不可恢复，不覆盖其他区域。
 - 打包准备 agent_ea4ea432-0755-41f2-9899-9a167506dcb2：P8-PACKAGING-R1四项已修，主管独立83fixtures与只读定向复核均通过，5源码/说明+报告提交f1802e2；尚未真实候选build/pack，当前无写入。
 - 本地文件压力 agent_f1657cb3-9d7d-4e94-8d88-1de2cde3a1d4：P7-LOCAL-FILE-STRESS-A已交付；主管读5文件与修正版证据，独立Release完整2GiB+1000/25%取消/逐项SHA+原名/ownedFD0与精确cleanup通过，提交0e0bf7d；旧ownedFD别名计量结果不可引用，详见docs/reports/p7-local-file-stress.md，无当前写入。
+- 稳定性驱动 agent_4e082810-2a2c-43c9-bba7-e8c87f671a0b：P7-STABILITY-DRIVER-PREP/R1已交付；主管独立offline34+6/typecheck/C通过、只读两P2复核resolved。仅驱动源码/准备，未真实链接签名运行、未200/24h；早期离线CLI隐式adhoc偏差保留，最终plan禁签名。详见docs/reports/p7-stability-driver-preparation.md，无当前写入。
+- 主管维护STATE/acceptance/reports/跨模块决策，不与工程师并写文件；恢复核对实际git/代码，记录不是验证替代。
 - 隔离fixture agent_bd3797d8-e478-431b-9566-e7e1b3d5c7a7：源码准备已返回，主管静态13项通过并提交a65bfa2，未启动环境。
 - Transport修复 agent_578fc3b2-d17f-4706-8265-8ee17ae89848：P7-TRANSPORT-ACL-R1已交付4文件，主管独立Release35+6readpass/4签名event/10postexit通过；min26工程师双配置通过，无写入。
 - Core修复 agent_76c08d53-23ed-4690-bb98-f95e60b9b52c：P7-CORE-ACL-R1已交付6文件，工程师双配置/TSan各48，主管独立Release48/真实F_GETLK持锁通过，无写入。
@@ -46,8 +60,8 @@
 - Security新增 agent_d1：P6-SECURITY-AUTH-MATERIAL-A已交付；主管独立Release8与真实四组合libssh2离线memory解析/签验通过，提交b0c3f4d，当前无写入。API仅精确UUID→SecretBytes、caller核Core授权，不经任意路径读私钥。
 - Files下一接口 agent_7b：P6-FILES-SERVICE-OPERATIONS-A已主管读两文件、独立Release97通过，提交7a574ab，当前无写入。withServiceOperation raw默认serialized、安全操作/probe callerScheduled；有界128、activework含ops、shutdown单flight等待cleanup，禁closure自等待shutdown。
 - Security工程师 agent_54e6a1a7-3a1a-4f21-ab8f-438c0aa9a942：原正式包已完成；本次SendMessage不可恢复，ACL修复已交agent_d1，不重试旧ID。
-- 打包只读复核 agent_5378a30d-53de-41cf-99ec-6c0caf895221：只审候选打包器/fixtures，不实际构建签名或上传。
-- Core工程师 agent_73af9b8f-ecfa-48f0-8fff-a89712f8abeb、Trust工程师 agent_e26e9287-a223-4ff6-a7ea-3a3dfd19d4f0：已返回，无写入。
+- 稳定性驱动构建 agent_091f9d0e-836e-4b72-9773-05cf540931ad：P7-STABILITY-DRIVER-BUILD-B，仅Tests/StabilityAcceptance，补真实min26 driver独立离线构建/wrapper及已有Development严格离线签名验证，不运行driver/不网络/不长测；原4e不可恢复，避免重复旧prep。
+- 当前活动提交：c9d5c07稳定性驱动准备/R1（主管offline34+6/typecheck），之前fb388a4工程检查点；P6A尚未提交。完整历史使用git log，不用旧状态文字推定工作区clean。
 - 整体相关本地提交后续：f1802e2候选打包器（83fixtures，未实际pack）、ff00e7d根自拷边界、1e275b1三包ACL、0e0bf7d本地大文件压力夹具、b0c3f4d认证专用内存私钥、7ed142e原生SSH集成/ACL/R2、7a574ab文件操作生命周期。所有本地提交仅相关文件，没有远程推送。
 
 ## 关键技术决定与边界
@@ -75,4 +89,4 @@
 
 ## 下一项具体动作
 
-继续P6-APP-FILES-A受控认证/浏览/安全操作，交付后主管独立审查与native行为验证，再同工程师P6B上传下载/Finder拖入/独立任务/窗口退出保护。保持包API/文档与本地压力边界真实；P8打包器83fixture已审，实际候选等App全部集成结束、工作区稳定后生成。真实互通需新增环境授权，目标mac26与DeveloperID/公证具体产物/双机企业人工仍外部条件；先做完所有独立本地工作，整体未完成。
+继续P6-APP-TRANSFER-B1入队/任务UI/Finder/传输关闭保护，包rootFD+targetedclose已主管验收b034db2可用；工程师交付后主管读diff、真实Local native行为/取消/路径/关闭竞态独立复验，必要修复后提交。并行真实稳定性driver只构建/严格Development离线签名，不运行网络或长测。B1全部收口再生成新完整候选（不覆盖P6A内部候选）。真实互通需新增环境授权，目标mac26、DeveloperID、公证具体产物授权、双机/企业人工仍外部条件；先完成所有独立本地工作，整体未完成。
