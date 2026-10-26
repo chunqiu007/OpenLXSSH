@@ -70,6 +70,7 @@
 
 - 当前已核宿主macOS15.8.1/24H32、arm64；Xcode26.3/SDK26.2/Swift6.2.4。正式min26仅编译，HostProbe min15不冒充目标runtime。
 - 无已验证可用的VM/container/隔离SSH服务；未新增环境/开宿主sshd/连生产。原建议UTM调查和现统一容器fixture方案详见 `docs/release/acceptance-prerequisites.md`；任何新增环境/下载运行须用户批准。
+- 环境授权已通过明确选择询问提交，工具返回用户未作答；这既不是同意，也不是拒绝。后续仅收到自动Goal续跑通知，没有用户本人新增授权。当前等待真实用户答复，不重复弹出同一授权问题、不自动重试安装/下载/服务启动，也不创建定时或闲时任务。此为工程等待状态，不表示已暂停运行时Goal或已完成目标。
 - Apple Development现有1，DeveloperID Application/Installer均0（仅计数）；无公证上传批准。证书/profile/登录由用户安全准备，Agent不代答系统授权。
 - 真实四认证/MFA/多prompt/审批、主机密钥变更、SSH/SFTP、嵌套/TUI/网络异常、200真实连接/5会话连续24h尚未验证。不能用mock、本地循环、短测、改时钟或拼接补齐。
 - macOS26实机/双机安装、中文IME/像素、人工Finder/selector与公司允许环境验收待外部操作。详情与必须提供的记录见 `docs/acceptance.md` 和外部前提文档。
