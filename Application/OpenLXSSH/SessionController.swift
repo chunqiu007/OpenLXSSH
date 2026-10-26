@@ -395,6 +395,14 @@ extension AppIssue {
     func beginWindowClose()
     func closeForWindow() async
     func beginTermination()
+    func freezeTransferAdmission()
+    func resumeTransferAdmission()
+    func activeTransferSnapshot() async -> Bool
+}
+extension FilesWindowLifecycle {
+    func freezeTransferAdmission() {}
+    func resumeTransferAdmission() {}
+    func activeTransferSnapshot() async -> Bool { hasActiveTransfers }
 }
 @MainActor final class AppLifecycleCoordinator {
     let sessions: SessionController
@@ -405,16 +413,23 @@ extension AppIssue {
     var requiresTransferDecision: Bool { transfers.hasActiveTransfers || files?.hasActiveTransfers == true }
     var terminating: Bool { sessions.terminating }
     func beginTermination() { sessions.beginTermination(); files?.beginTermination() }
-    func closeConnections(cancelTransfers: Bool = false) async -> Bool {
+    func freezeCloseAdmission() { sessions.setWindowCleanupAdmissionClosed(true); files?.freezeTransferAdmission() }
+    func resumeAfterContinue() { if !terminating { sessions.setWindowCleanupAdmissionClosed(false); files?.resumeTransferAdmission() } }
+    func activeTransferSnapshot() async -> Bool {
+        let fileJobs = await files?.activeTransferSnapshot() == true
+        return transfers.hasActiveTransfers || fileJobs
+    }
+    func closeConnections(cancelTransfers: Bool = false, retainAdmissionFreeze: Bool = false) async -> Bool {
         if let closeTask { return await closeTask.value }
-        if requiresTransferDecision && !cancelTransfers { return false }
-        sessions.setWindowCleanupAdmissionClosed(true)
-        files?.beginWindowClose()
+        freezeCloseAdmission()
         let task = Task { @MainActor in
+            if await activeTransferSnapshot() && !cancelTransfers { resumeAfterContinue(); closeTask = nil; return false }
+            files?.beginWindowClose()
             if cancelTransfers { await transfers.cancelAllAndWait() }
             await sessions.closeAll()
             await files?.closeForWindow()
-            sessions.setWindowCleanupAdmissionClosed(false)
+            if !retainAdmissionFreeze { sessions.setWindowCleanupAdmissionClosed(false) }
+            else { freezeCloseAdmission() }
             closeTask = nil
             return true
         }

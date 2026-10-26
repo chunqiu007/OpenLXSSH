@@ -20,7 +20,7 @@ import OpenLXSSHFiles
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["exercise", "reopen", "sessions", "sessions-exit", "files-local", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["exercise", "reopen", "sessions", "sessions-exit", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
@@ -48,6 +48,7 @@ import OpenLXSSHFiles
     var model: AppModel { delegate.model }
     private var checks: [Check] = []
     private var actions: [String] = []
+    private var transferPromptTimer: Timer?
     init(delegate: AppDelegate, options: Options) { self.delegate = delegate; self.options = options }
 
     func run() async {
@@ -61,6 +62,7 @@ import OpenLXSSHFiles
             else if options.phase == "sessions" || options.phase == "sessions-exit" { try await sessionExercise() }
             else if options.phase == "transport-config" { try await transportConfiguration() }
             else if options.phase == "files-local" { try await filesLocalExercise() }
+            else if options.phase == "files-transfers" || options.phase == "files-transfer-exit" { try await filesTransferExercise() }
             else { try await securityExercise() }
             try finish(success: true, failure: nil)
             // Leave this Swift MainActor job before AppKit enters its termination loop.
@@ -366,6 +368,115 @@ import OpenLXSSHFiles
         try await wait("files-window-reopen") { self.delegate.mainWindow?.isVisible == true && !self.model.isLoading }
         try check("files-reopen-hidden-no-restore", !model.files.visible && model.files.state == .disconnected && model.files.selectedHost == nil)
     }
+    private func filesTransferExercise() async throws {
+        guard let connector = model.files.connector as? LocalFilesProbeConnector else { throw Failure.check("transfer-local-fixture") }
+        let base = try AppDataLocation.canonical(options.directory)
+        let local = base.appendingPathComponent("TransferSource"), downloads = base.appendingPathComponent("TransferDownloads")
+        let remote = base.appendingPathComponent("LocalFilesFixture")
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: false)
+        try Data(repeating: 61, count: 250000).write(to: local.appendingPathComponent("upload 中文\nfile"))
+        try Data("drop-content".utf8).write(to: local.appendingPathComponent("Finder drop"))
+        try await click("host.add"); try await type("host.name", "Transfers Local fixture")
+        try await type("host.address", "never-connected.invalid"); try await type("host.username", "fixture")
+        try await click("host.save"); try await wait("transfer-host") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        try await selectFirstHost(); delegate.mainWindow?.setContentSize(NSSize(width: 1650, height: 1050))
+        try await click("files.open"); try await click("files.connect")
+        try await wait("transfer-ready") { self.model.files.state == .ready && !self.model.files.busy }
+        model.files.pathPicker.testSelection = [local.appendingPathComponent("upload 中文\nfile")]
+        try await click("files.upload")
+        try await wait("upload-job-finished") { self.model.files.transferSnapshot.jobs.first?.state == .succeeded }
+        try check("picker-target-action-real-local-upload", try Data(contentsOf: remote.appendingPathComponent("upload 中文\nfile")) == Data(contentsOf: local.appendingPathComponent("upload 中文\nfile")))
+        guard let table = find("files.entries", as: NSTableView.self), let source = table.dataSource else { throw Failure.missing("transfer-table") }
+        try check("native-file-url-drop-registered", table.registeredDraggedTypes.contains(.fileURL))
+        let pasteboard = NSPasteboard(name: .init("OpenLXSSH.Drop." + UUID().uuidString))
+        pasteboard.writeObjects([local.appendingPathComponent("Finder drop") as NSURL])
+        let drag = FilesProbeDraggingInfo(pasteboard: pasteboard, window: table.window)
+        let operation = source.tableView?(table, validateDrop: drag, proposedRow: -1, proposedDropOperation: .on)
+        let accepted = source.tableView?(table, acceptDrop: drag, row: -1, dropOperation: .on)
+        try check("registered-native-drop-handler-accepts-fileURLs", operation == .copy && accepted == true)
+        try await wait("drop-job-finished") { self.model.files.transferSnapshot.jobs.count == 2 && self.model.files.transferSnapshot.jobs.allSatisfy { $0.state == .succeeded } }
+        try check("pasteboard-drop-real-local-content", try Data(contentsOf: remote.appendingPathComponent("Finder drop")) == Data("drop-content".utf8))
+        pasteboard.clearContents(); pasteboard.setString("https://not-a-file.invalid", forType: .string)
+        try check("native-drop-rejects-external-text", source.tableView?(table, validateDrop: drag, proposedRow: -1, proposedDropOperation: .on) == [])
+        pasteboard.releaseGlobally()
+        try await click("files.refresh"); try await wait("download-list") { !self.model.files.busy && self.model.files.entries.count == 2 }
+        try await selectFile("upload 中文\nfile")
+        model.files.pathPicker.testSelection = [downloads]
+        try await click("files.download")
+        try await wait("download-job-finished") { self.model.files.transferSnapshot.jobs.count == 3 && self.model.files.transferSnapshot.jobs.allSatisfy { $0.state == .succeeded } }
+        try check("directory-picker-target-action-real-download", try Data(contentsOf: downloads.appendingPathComponent("upload 中文\nfile")) == Data(contentsOf: local.appendingPathComponent("upload 中文\nfile")))
+        // A waiting conflict remains owned at application level while the panel is hidden.
+        model.files.pathPicker.testSelection = [local.appendingPathComponent("upload 中文\nfile")]
+        try await click("files.upload")
+        try await wait("native-transfer-conflict") { self.model.files.transferSnapshot.jobs.last?.state == .waitingConflict }
+        let conflictID = try model.files.transferSnapshot.jobs.last.map { $0.id } ?? { throw Failure.missing("conflict-job") }()
+        try await click("files.hide")
+        try check("tasks-entry-with-panel-hidden", find("transfers.open", as: NSButton.self) != nil && !model.files.visible)
+        try await click("transfer.decision." + conflictID.uuidString)
+        try await click("transfer.conflict.batch"); try await click("transfer.conflict.overwrite")
+        try await wait("native-transfer-risk") { self.model.files.transferSnapshot.jobs.last?.state == .waitingRisk && self.delegate.mainWindow?.attachedSheet == nil }
+        try await click("transfer.decision." + conflictID.uuidString)
+        try await click("transfer.risk.reject")
+        try await wait("native-risk-failed") { self.model.files.transferSnapshot.jobs.last?.state == .failed && self.delegate.mainWindow?.attachedSheet == nil }
+        try check("overwrite-did-not-implicitly-accept-risk", model.files.transferSnapshot.jobs.last?.error?.kind == .riskRejected)
+        try await click("transfer.retry." + conflictID.uuidString)
+        try await wait("native-retry-conflict") { self.model.files.transferSnapshot.jobs.last?.state == .waitingConflict }
+        let retried = try model.files.transferSnapshot.jobs.last ?? { throw Failure.missing("retry-job") }()
+        try check("native-retry-new-id-generation-zero", retried.id != conflictID && retried.retryOf == conflictID && retried.transferredBytes == 0)
+        try await click("transfer.decision." + retried.id.uuidString)
+        try await type("transfer.conflict.name", "renamed native")
+        try await click("transfer.conflict.rename")
+        try await wait("native-rename-success") { self.model.files.transferSnapshot.jobs.last?.state == .succeeded && self.delegate.mainWindow?.attachedSheet == nil }
+        try check("native-single-item-alternate", FileManager.default.fileExists(atPath: remote.appendingPathComponent("renamed native").path))
+        try await click("transfers.remove.prepare")
+        try await click("transfers.remove.confirm")
+        try await wait("native-history-exact-removal") { self.model.files.transferSnapshot.jobs.isEmpty }
+        try check("native-history-review-removes-records-not-files", FileManager.default.fileExists(atPath: remote.appendingPathComponent("renamed native").path))
+        try await click("files.open")
+        await connector.holdTransfer()
+        try Data(repeating: 72, count: 800000).write(to: local.appendingPathComponent("active-lifecycle"))
+        model.files.pathPicker.testSelection = [local.appendingPathComponent("active-lifecycle")]
+        try await click("files.upload"); await connector.waitForTransfer()
+        let activeID = try model.files.transferSnapshot.jobs.last.map { $0.id } ?? { throw Failure.missing("active-job") }()
+        delegate.mainWindow?.performClose(nil)
+        try await wait("lifecycle-first-prompt") { self.find("lifecycle.transfers.continue", as: NSButton.self) != nil }
+        delegate.mainWindow?.performClose(nil)
+        let repeatReply = delegate.applicationShouldTerminate(NSApp)
+        let promptCount = NSApp.windows.filter { $0.isVisible && $0.title == "OpenLXSSH · 活动传输" }.count
+        try check("repeated-window-quit-shares-one-transfer-decision", repeatReply == .terminateLater && promptCount == 1 && !model.lifecycle.terminating)
+        try await click("lifecycle.transfers.continue")
+        try check("native-window-continue-retains-window-job", delegate.mainWindow?.isVisible == true && model.files.transferSnapshot.jobs.last?.state.isActive == true && !model.files.admissionFrozen)
+        // Actual NSApp termination enters AppKit's terminateLater loop. A run-loop timer
+        // drives the real prompt button so the main-queue exclusion cannot hide a deadlock.
+        let keepTimer = Timer(timeInterval: 0.18, repeats: true) { _ in MainActor.assumeIsolated {
+            if let button = self.find("lifecycle.transfers.continue", as: NSButton.self) { button.performClick(nil); self.transferPromptTimer?.invalidate(); self.transferPromptTimer = nil }
+        } }
+        transferPromptTimer = keepTimer
+        RunLoop.main.add(keepTimer, forMode: .common)
+        RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+        try await wait("quit-continue-resumes") { !self.model.files.admissionFrozen && !self.model.lifecycle.terminating && keepTimer.isValid == false }
+        try check("native-quit-continue-does-not-kill-job", delegate.mainWindow?.isVisible == true && model.files.transferSnapshot.jobs.last?.state.isActive == true)
+        if options.phase == "files-transfer-exit" {
+            let cancelTimer = Timer(timeInterval: 0.18, repeats: true) { _ in MainActor.assumeIsolated {
+                if let button = self.find("lifecycle.transfers.cancelClose", as: NSButton.self) { button.performClick(nil); self.transferPromptTimer?.invalidate(); self.transferPromptTimer = nil }
+            } }
+            transferPromptTimer = cancelTimer
+            RunLoop.main.add(cancelTimer, forMode: .common)
+            try check("native-exit-starts-with-active-job", model.files.transferSnapshot.jobs.last?.state.isActive == true)
+            return // run() issues real NSApp.terminate; package cancellation releases the held I/O.
+        }
+        let previous = model.files.manager
+        delegate.mainWindow?.performClose(nil)
+        try await click("lifecycle.transfers.cancelClose")
+        try await wait("transfer-window-cancel-closed") { self.delegate.mainWindow == nil }
+        let final = await previous.snapshot()
+        try check("native-window-awaits-job-and-service-cleanup", final.isClosed && final.jobs.first { $0.id == activeID }?.state == .cancelled && !final.hasActiveWork)
+        _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+        try await wait("transfer-window-reopened") { self.delegate.mainWindow?.isVisible == true && !self.model.isLoading }
+        try check("transfer-reopen-fresh-hidden-manager", !model.files.visible && model.files.transferSnapshot.jobs.isEmpty && !(previous === model.files.manager))
+        await connector.releaseTransfer()
+    }
     private func fixtureEntry(_ name: String) throws -> DirectoryEntry {
         guard let entry = model.files.entries.first(where: { $0.name.bytes == Data(name.utf8) }) else { throw Failure.missing("files-entry") }
         return entry
@@ -616,6 +727,7 @@ import OpenLXSSHFiles
             for child in view.subviews { if let value = visit(child) { return value } }
             return nil
         }
+        if id.hasPrefix("lifecycle.transfers."), let panel = NSApp.windows.first(where: { $0.isVisible && $0 is NSPanel }), let view = panel.contentView { return visit(view) }
         if let view = interactiveWindow()?.contentView { return visit(view) }
         return nil
     }
@@ -715,5 +827,27 @@ import OpenLXSSHFiles
         try data.write(to: options.directory.appendingPathComponent("smoke-" + options.phase + ".json"), options: .atomic)
         FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data("\n".utf8))
     }
+}
+
+/// Synthetic drag metadata exercises the registered NSTableView destination callbacks with
+/// an actual NSPasteboard file-URL payload. It is not a claim of human Finder drag acceptance.
+@MainActor private final class FilesProbeDraggingInfo: NSObject, NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    let draggingDestinationWindow: NSWindow?
+    init(pasteboard: NSPasteboard, window: NSWindow?) { draggingPasteboard = pasteboard; draggingDestinationWindow = window }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    nonisolated var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override nonisolated func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    func resetSpringLoading() {}
 }
 #endif

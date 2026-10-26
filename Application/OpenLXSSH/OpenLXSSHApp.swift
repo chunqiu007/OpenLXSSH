@@ -22,6 +22,14 @@ import SwiftUI
     private var terminating = false
     private var windowClosing = false
     private var windowCloseApproved = false
+    private var closeIntent: CloseIntent?
+    private var closeFlow: Task<Void, Never>?
+    private var terminationReplyPending = false
+    private var closeApproved = false
+    private var transferClosePrompt: NSPanel?
+    private var transferCloseReply: CheckedContinuation<Bool, Never>?
+    private var retainedCleanupReply: CheckedContinuation<Void, Never>?
+    private enum CloseIntent { case window, quit }
     #if HOST_PROBE
     private let smoke: NativeSmoke.Options?
     #endif
@@ -78,17 +86,7 @@ import SwiftUI
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === mainWindow else { return true }
         if windowCloseApproved { return true }
-        guard !windowClosing else { return false }
-        // Files UI will supply the visible transfer decision before this seam returns true.
-        guard !model.lifecycle.requiresTransferDecision else { return false }
-        windowClosing = true
-        Task {
-            if await model.lifecycle.closeConnections() {
-                windowCloseApproved = true
-                sender.performClose(nil)
-            }
-            windowClosing = false
-        }
+        requestClose(.window)
         return false
     }
     func windowWillClose(_ notification: Notification) {
@@ -97,6 +95,7 @@ import SwiftUI
         mainWindow?.contentView = nil
         mainWindow = nil
         windowCloseApproved = false
+        if !terminating { model.lifecycle.resumeAfterContinue() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -107,31 +106,124 @@ import SwiftUI
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
-        guard !model.lifecycle.requiresTransferDecision else { return .terminateCancel }
-        terminating = true
-        model.lifecycle.beginTermination()
-        model.windowClosed()
-        let repository = model.repository
-        let security = model.security
-        Task {
-            _ = await model.lifecycle.closeConnections()
-            #if HOST_PROBE
-            if let smoke, smoke.phase == "sessions-exit" {
-                let result = ["cleanupCompleted": model.sessions.tabs.isEmpty, "selectedTabCleared": model.sessions.selectedTabID == nil]
-                if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) {
-                    try? data.write(to: smoke.directory.appendingPathComponent("termination-cleanup.json"))
+        terminationReplyPending = true
+        requestClose(.quit)
+        return .terminateLater
+    }
+    private func requestClose(_ intent: CloseIntent) {
+        if closeIntent == .quit || intent == .quit { closeIntent = .quit } else { closeIntent = .window }
+        // Synchronous revocation precedes the first task/actor hop, but does not cancel jobs.
+        model.lifecycle.freezeCloseAdmission()
+        if closeFlow != nil, closeApproved, intent == .quit { approveTermination() }
+        guard closeFlow == nil else { return }
+        windowClosing = true
+        closeFlow = Task { @MainActor [self] in
+            let active = await model.lifecycle.activeTransferSnapshot()
+            if active {
+                let cancelAndClose = await askTransferClose()
+                if !cancelAndClose {
+                    model.lifecycle.resumeAfterContinue()
+                    closeIntent = nil; closeFlow = nil; closeApproved = false; windowClosing = false
+                    mainWindow?.makeKeyAndOrderFront(nil)
+                    if terminationReplyPending { terminationReplyPending = false; replyToTermination(false) }
+                    return
                 }
             }
-            #endif
-            do { try await security.close(); try await repository.close() }
-            catch { /* Exit still releases owned resources; never print database descriptions. */ }
-            // AppKit may be inside its terminateLater nested event loop. Use the run loop,
-            // not a MainActor task/main-queue block that can be excluded by that loop.
-            RunLoop.main.perform(inModes: [.default, .eventTracking, .modalPanel]) {
-                MainActor.assumeIsolated { NSApp.reply(toApplicationShouldTerminate: true) }
+            // A declined quit never sets these permanent flags. An approved quit joining
+            // window cleanup does so immediately and shares the same owned cleanup task.
+            closeApproved = true
+            if closeIntent == .quit { approveTermination() }
+            let managerBeforeClose = model.files.manager
+            let labelsBeforeClose = model.files.transferLabels
+            model.files.deferResetUntilCloseAcknowledged()
+            _ = await model.lifecycle.closeConnections(cancelTransfers: true, retainAdmissionFreeze: true)
+            let finalTransfers = await managerBeforeClose.snapshot()
+            let retained = finalTransfers.jobs.flatMap { job in job.retainedTemporaryPaths.map { path -> String in
+                let label = labelsBeforeClose[job.id]
+                let root = label?.localRoots[job.request.destination.serviceID]
+                let bytes = root.map { ($0 == .root ? Data() : $0.bytes) + path.bytes } ?? path.bytes
+                return (label?.endpoint ?? job.request.hostID) + " · " + FileDisplay.bytes(bytes)
+            } }
+            if !retained.isEmpty { await showRetainedCleanup(retained) }
+            model.files.finishWindowCloseReset()
+            if closeIntent == .quit {
+                approveTermination()
+                #if HOST_PROBE
+                if let smoke, smoke.phase == "sessions-exit" {
+                    let result = ["cleanupCompleted": model.sessions.tabs.isEmpty, "selectedTabCleared": model.sessions.selectedTabID == nil]
+                    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) { try? data.write(to: smoke.directory.appendingPathComponent("termination-cleanup.json")) }
+                }
+                if let smoke, smoke.phase == "files-transfer-exit" {
+                    let final = await managerBeforeClose.snapshot()
+                    let result = ["managerClosed": final.isClosed, "allWorkDrained": !final.hasActiveWork,
+                                  "cancelledTransfer": final.jobs.contains { $0.state == .cancelled },
+                                  "sshTabsCleared": model.sessions.tabs.isEmpty,
+                                  "noRetainedTemps": final.jobs.allSatisfy { $0.retainedTemporaryPaths.isEmpty }]
+                    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) { try? data.write(to: smoke.directory.appendingPathComponent("transfer-exit-cleanup.json")) }
+                }
+                #endif
+                do { try await model.security.close(); try await model.repository.close() }
+                catch { /* Do not log database or credential error descriptions. */ }
+                terminationReplyPending = false; replyToTermination(true)
+            } else {
+                windowCloseApproved = true; mainWindow?.performClose(nil)
+                closeIntent = nil; closeFlow = nil; closeApproved = false; windowClosing = false
             }
         }
-        return .terminateLater
+    }
+    private func approveTermination() {
+        guard !terminating else { return }
+        terminating = true; model.lifecycle.beginTermination(); model.windowClosed()
+    }
+    private func replyToTermination(_ approved: Bool) {
+        RunLoop.main.perform(inModes: [.default, .eventTracking, .modalPanel]) {
+            MainActor.assumeIsolated { NSApp.reply(toApplicationShouldTerminate: approved) }
+        }
+    }
+    private func askTransferClose() async -> Bool {
+        await withCheckedContinuation { continuation in
+            transferCloseReply = continuation
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 205), styleMask: [.titled], backing: .buffered, defer: false)
+            panel.title = "OpenLXSSH · 活动传输"
+            let text = NSTextField(wrappingLabelWithString: "仍有传输任务。继续传输会保留主窗口并取消本次退出；取消传输并关闭会等待任务、临时文件清理及全部连接真正结束。已提交项目不会回滚；无法清理的临时文件会留在任务结果中。")
+            text.frame = NSRect(x: 22, y: 78, width: 476, height: 103)
+            let keep = NSButton(title: "继续传输", target: self, action: #selector(continueTransfers))
+            keep.identifier = .init("lifecycle.transfers.continue"); keep.frame = NSRect(x: 30, y: 23, width: 180, height: 32)
+            let cancel = NSButton(title: "取消传输并关闭", target: self, action: #selector(cancelTransfersAndClose))
+            cancel.identifier = .init("lifecycle.transfers.cancelClose"); cancel.frame = NSRect(x: 260, y: 23, width: 220, height: 32)
+            panel.contentView?.addSubview(text); panel.contentView?.addSubview(keep); panel.contentView?.addSubview(cancel)
+            panel.isReleasedWhenClosed = false; panel.level = .modalPanel; panel.center()
+            transferClosePrompt = panel
+            // App-level panel can coexist with a pending transfer/auth sheet. It never
+            // dismantles that sheet merely because the user considered closing the App.
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+    private func showRetainedCleanup(_ paths: [String]) async {
+        await withCheckedContinuation { continuation in
+            retainedCleanupReply = continuation
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 340), styleMask: [.titled], backing: .buffered, defer: false)
+            panel.title = "OpenLXSSH · 未清理的自有临时文件"
+            let heading = NSTextField(wrappingLabelWithString: "连接已关闭，以下自有临时文件未能清理。App 不会扫描或自动删除它们。请复制精确路径并在独立核实后人工处理；关闭后不会恢复这些任务记录。")
+            heading.frame = NSRect(x: 20, y: 258, width: 660, height: 60)
+            let scroll = NSScrollView(frame: NSRect(x: 20, y: 68, width: 660, height: 178)); scroll.hasVerticalScroller = true
+            let text = NSTextView(frame: scroll.bounds); text.isEditable = false; text.isSelectable = true
+            text.string = paths.joined(separator: "\n"); scroll.documentView = text
+            let done = NSButton(title: "已记录路径，继续关闭", target: self, action: #selector(acknowledgeRetainedCleanup))
+            done.identifier = .init("lifecycle.transfers.retained.acknowledge"); done.frame = NSRect(x: 430, y: 20, width: 250, height: 32)
+            panel.contentView?.addSubview(heading); panel.contentView?.addSubview(scroll); panel.contentView?.addSubview(done)
+            panel.isReleasedWhenClosed = false; panel.level = .modalPanel; panel.center(); transferClosePrompt = panel; panel.makeKeyAndOrderFront(nil)
+        }
+    }
+    @objc private func acknowledgeRetainedCleanup() {
+        transferClosePrompt?.orderOut(nil); transferClosePrompt = nil
+        let reply = retainedCleanupReply; retainedCleanupReply = nil; reply?.resume()
+    }
+    @objc private func continueTransfers() { resolveTransferClose(false) }
+    @objc private func cancelTransfersAndClose() { resolveTransferClose(true) }
+    private func resolveTransferClose(_ cancel: Bool) {
+        transferClosePrompt?.orderOut(nil); transferClosePrompt = nil
+        let reply = transferCloseReply; transferCloseReply = nil; reply?.resume(returning: cancel)
     }
 
     private func buildMenu() {

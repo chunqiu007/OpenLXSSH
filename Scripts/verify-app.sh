@@ -80,9 +80,9 @@ os.chmod(data, 0o700)
 (data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
 (logs / 'gui-data-path.txt').write_text(str(data) + '\n')
 binary = root / 'DerivedData/HostProbe/Build/Products/HostProbe/OpenLXSSH.app/Contents/MacOS/OpenLXSSH'
-for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exit', 'files-local'):
+for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exit', 'files-local', 'files-transfers', 'files-transfer-exit'):
     phase_data = data
-    if phase in ('security-sheets', 'sessions', 'sessions-exit', 'files-local'):
+    if phase in ('security-sheets', 'sessions', 'sessions-exit', 'files-local', 'files-transfers', 'files-transfer-exit'):
         phase_data = pathlib.Path(tempfile.mkdtemp(prefix='OpenLXSSH-AppSmoke-'))
         os.chmod(phase_data, 0o700)
         (phase_data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
@@ -105,6 +105,10 @@ for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exi
         assert cleanup == {'cleanupCompleted': True, 'selectedTabCleared': True}
         assert admission == {'windowCloseOverlappedQuit': True, 'terminationPermanent': True, 'reopenRefused': True, 'newSessionRefused': True}
         print('HostProbe real process quit: overlapping window cleanup awaited; repeated quit/reopen/new session cannot bypass termination; exit=0')
+    if phase == 'files-transfer-exit':
+        cleanup = json.loads((phase_data / 'transfer-exit-cleanup.json').read_text())
+        assert cleanup == {'managerClosed': True, 'allWorkDrained': True, 'cancelledTransfer': True, 'sshTabsCleared': True, 'noRetainedTemps': True}
+        print('HostProbe transfer quit: native continue/cancel decision, manager cleanup/services closed, real process exit=0')
     print(f'HostProbe native GUI {phase}: {len(report["checks"])} checks passed')
 print('Isolated GUI data and window captures:', data)
 print('HostProbe does not validate macOS 26 runtime, IME, SSH, SFTP, signing or notarization.')

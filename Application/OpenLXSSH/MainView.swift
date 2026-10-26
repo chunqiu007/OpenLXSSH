@@ -68,6 +68,7 @@ struct MainView: View {
             if files.visible { FilesPanelView(model: files) }
         }
         .frame(minWidth: 920, minHeight: 580)
+        .safeAreaInset(edge: .bottom, spacing: 0) { FilesApplicationUI(model: files) }
         .preferredColorScheme(model.settings.theme == .system ? nil : (model.settings.theme == .dark ? .dark : .light))
         .task { if !model.didLoad { await model.reload() } }
         .onChange(of: model.search) { _, _ in Task { await model.reload() } }
@@ -118,6 +119,7 @@ struct MainView: View {
             NativeButton(title: files.visible ? "隐藏文件面板" : "SFTP 文件…", id: "files.open", enabled: model.didLoad) {
                 if files.visible { files.hide() } else { files.show(host: model.selectedHost) }
             }.fixedSize()
+            NativeButton(title: "传输任务（\(files.transferSnapshot.jobs.filter { $0.state.isActive }.count)）", id: "transfers.open") { files.tasksVisible.toggle() }.fixedSize()
             NativeButton(title: "密钥与凭据…", id: "security.open", enabled: model.didLoad) { editor = EditorPresentation(content: .security) }.fixedSize()
             NativeButton(title: "可信主机…", id: "trust.manage", enabled: model.didLoad) { editor = EditorPresentation(content: .trust) }.fixedSize()
             NativeButton(title: "设置…", id: "settings.open", enabled: model.didLoad) { editor = EditorPresentation(content: .settings) }.fixedSize()
