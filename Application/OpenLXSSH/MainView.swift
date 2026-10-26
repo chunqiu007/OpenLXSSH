@@ -12,8 +12,9 @@ private enum DeletionTarget { case host(HostConfiguration), folder(HostFolder) }
 struct MainView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var sessions: SessionController
+    @ObservedObject private var files: FilesController
     @State private var editor: EditorPresentation?
-    init(model: AppModel) { self.model = model; sessions = model.sessions }
+    init(model: AppModel) { self.model = model; sessions = model.sessions; files = model.files }
     private var title: String {
         switch model.selection {
         case .all: "所有主机"
@@ -64,12 +65,14 @@ struct MainView: View {
                 }
                 }
             }.frame(minWidth: 690)
+            if files.visible { FilesPanelView(model: files) }
         }
         .frame(minWidth: 920, minHeight: 580)
         .preferredColorScheme(model.settings.theme == .system ? nil : (model.settings.theme == .dark ? .dark : .light))
         .task { if !model.didLoad { await model.reload() } }
         .onChange(of: model.search) { _, _ in Task { await model.reload() } }
         .onChange(of: model.selection) { _, _ in Task { await model.reload() } }
+        .onChange(of: model.selectedHostID) { _, _ in if files.visible { files.show(host: model.selectedHost) } }
         .nativeSheet(item: $editor) { presentation in
             switch presentation.content {
             case .host(let host):
@@ -112,6 +115,9 @@ struct MainView: View {
             }
             Spacer(minLength: 8)
             Divider()
+            NativeButton(title: files.visible ? "隐藏文件面板" : "SFTP 文件…", id: "files.open", enabled: model.didLoad) {
+                if files.visible { files.hide() } else { files.show(host: model.selectedHost) }
+            }.fixedSize()
             NativeButton(title: "密钥与凭据…", id: "security.open", enabled: model.didLoad) { editor = EditorPresentation(content: .security) }.fixedSize()
             NativeButton(title: "可信主机…", id: "trust.manage", enabled: model.didLoad) { editor = EditorPresentation(content: .trust) }.fixedSize()
             NativeButton(title: "设置…", id: "settings.open", enabled: model.didLoad) { editor = EditorPresentation(content: .settings) }.fixedSize()

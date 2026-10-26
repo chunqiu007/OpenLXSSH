@@ -159,6 +159,7 @@ struct ReadySession {
     @Published var issue: AppIssue?
     private var closeAllTask: Task<Void, Never>?
     private var tabCloseTasks: [UUID: Task<Void, Never>] = [:]
+    private var windowCleanupAdmissionClosed = false
     private let repository: any AppRepositoryProtocol
     private let credentials: any CredentialAccess
     private let builder: any SessionBuilding
@@ -170,7 +171,7 @@ struct ReadySession {
     }
     var selectedTab: SessionTab? { tabs.first { $0.id == selectedTabID } }
     @discardableResult func open(_ host: HostConfiguration, mode: SessionOpenMode) -> UUID? {
-        guard !closingAll, !terminating else { return nil }
+        guard !closingAll, !terminating, !windowCleanupAdmissionClosed else { return nil }
         if mode == .reuse, let existing = tabs.filter({ $0.hostID == host.id && $0.isReusable }).max(by: { $0.lastActivity < $1.lastActivity }) {
             select(existing.id); return existing.id
         }
@@ -260,7 +261,7 @@ struct ReadySession {
         return tab.isReusable
     }
     func reconnect(_ id: UUID) {
-        guard !closingAll, !terminating, let tab = tabs.first(where: { $0.id == id }), tab.canReconnect else { return }
+        guard !closingAll, !terminating, !windowCleanupAdmissionClosed, let tab = tabs.first(where: { $0.id == id }), tab.canReconnect else { return }
         guard let driver = tab.driver else { prepare(tab); return }
         // Keep the same driver/view, but refresh Core configuration and authorization before a new generation.
         let operation = UUID(); tab.operation = operation; tab.state = .preparing; tab.issue = nil
@@ -304,6 +305,7 @@ struct ReadySession {
         tabCloseTasks[id] = task
         await task.value
     }
+    func setWindowCleanupAdmissionClosed(_ closed: Bool) { windowCleanupAdmissionClosed = closed }
     /// Permanent process-lifetime admission revocation. Window close does not
     /// call this; quit does, before its first asynchronous cleanup boundary.
     func beginTermination() {
@@ -387,16 +389,36 @@ extension AppIssue {
     var hasActiveTransfers: Bool { false }
     func cancelAllAndWait() async {}
 }
+@MainActor protocol FilesWindowLifecycle: AnyObject {
+    var hasActiveTransfers: Bool { get }
+    var hasPendingOperations: Bool { get }
+    func beginWindowClose()
+    func closeForWindow() async
+    func beginTermination()
+}
 @MainActor final class AppLifecycleCoordinator {
     let sessions: SessionController
     var transfers: any TransferLifecycle
+    var files: (any FilesWindowLifecycle)?
+    private var closeTask: Task<Bool, Never>?
     init(sessions: SessionController, transfers: any TransferLifecycle = NoTransfers()) { self.sessions = sessions; self.transfers = transfers }
-    var requiresTransferDecision: Bool { transfers.hasActiveTransfers }
+    var requiresTransferDecision: Bool { transfers.hasActiveTransfers || files?.hasActiveTransfers == true }
     var terminating: Bool { sessions.terminating }
-    func beginTermination() { sessions.beginTermination() }
+    func beginTermination() { sessions.beginTermination(); files?.beginTermination() }
     func closeConnections(cancelTransfers: Bool = false) async -> Bool {
-        if transfers.hasActiveTransfers && !cancelTransfers { return false }
-        if cancelTransfers { await transfers.cancelAllAndWait() }
-        await sessions.closeAll(); return true
+        if let closeTask { return await closeTask.value }
+        if requiresTransferDecision && !cancelTransfers { return false }
+        sessions.setWindowCleanupAdmissionClosed(true)
+        files?.beginWindowClose()
+        let task = Task { @MainActor in
+            if cancelTransfers { await transfers.cancelAllAndWait() }
+            await sessions.closeAll()
+            await files?.closeForWindow()
+            sessions.setWindowCleanupAdmissionClosed(false)
+            closeTask = nil
+            return true
+        }
+        closeTask = task
+        return await task.value
     }
 }

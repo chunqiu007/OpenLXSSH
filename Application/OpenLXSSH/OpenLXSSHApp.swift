@@ -33,8 +33,14 @@ import SwiftUI
         let location = options.map { AppDataLocation.isolated($0.directory) } ?? .applicationSupport
         let repository = AppRepository(location: location)
         let builder = options.map { _ in ProbeSessionBuilder(repository: repository) }
+        let filesConnector: LocalFilesProbeConnector?
+        if let options {
+            let root = options.directory.appendingPathComponent("LocalFilesFixture", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            filesConnector = LocalFilesProbeConnector(root: root)
+        } else { filesConnector = nil }
         model = AppModel(repository: repository, security: SecurityCoordinator(repository: repository, location: location,
-                         credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder)
+                         credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder, filesConnector: filesConnector)
         #else
         guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw CocoaError(.validationMissingMandatoryProperty) }
         model = AppModel(repository: AppRepository())

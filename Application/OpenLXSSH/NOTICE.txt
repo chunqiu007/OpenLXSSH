@@ -10,3 +10,6 @@ SwiftTerm source: https://github.com/migueldeicaza/SwiftTerm.git; MIT, see Swift
 Transitive pinned build dependencies: swift-argument-parser 1.8.2 (Apache-2.0), swift-png 4.5.2 and h 1.0.1.
 See bundled ArgumentParser-LICENSE, SwiftPNG-LICENSE/NOTICE and H-LICENSE/NOTICE for their terms.
 OpenLXSSHTrust is the sole App-owned known_hosts store shared by direct transports.
+OpenLXSSHFiles statically links libssh2 1.11.1 and OpenSSL 3.5.9 LTS (not FIPS certified).
+Sources: https://www.libssh2.org and https://openssl-library.org; pinned provenance and native hashes are in FilesNativeLicenses/manifest.json.
+See FilesNativeLicenses for complete BSD-3-Clause/file-level libssh2 notices and Apache-2.0/OpenSSL notices.

@@ -13,11 +13,11 @@ fi
 if [[ "$MODE" != gui ]]; then
     for configuration in Debug Release; do
         "$ROOT/Scripts/build-app.sh" "$configuration" build-for-testing > "$LOGS/${configuration}-build.log" 2>&1
-        xcodebuild -project "$ROOT/OpenLXSSH.xcodeproj" -scheme OpenLXSSH -configuration "$configuration" \
+        OPENLXSSH_FILES_TARGET26=1 xcodebuild -project "$ROOT/OpenLXSSH.xcodeproj" -scheme OpenLXSSH -configuration "$configuration" \
             -destination 'platform=macOS,arch=arm64' -derivedDataPath "$ROOT/DerivedData/$configuration" \
             -clonedSourcePackagesDirPath "$ROOT/DerivedData/SourcePackages" \
             -onlyUsePackageVersionsFromResolvedFile -skipPackageUpdates -showBuildSettings \
-            CODE_SIGNING_ALLOWED=NO > "$LOGS/${configuration}-settings.log" 2>&1
+            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES > "$LOGS/${configuration}-settings.log" 2>&1
         BINARY="$ROOT/DerivedData/$configuration/Build/Products/$configuration/OpenLXSSH.app/Contents/MacOS/OpenLXSSH"
         xcrun vtool -show-build "$BINARY" > "$LOGS/${configuration}-vtool.log"
         /usr/bin/otool -L "$BINARY" > "$LOGS/${configuration}-libraries.log"
@@ -57,7 +57,14 @@ project = (root / 'OpenLXSSH.xcodeproj/project.pbxproj').read_text()
 assert 'relativePath = Packages/OpenLXSSHSecurity' in project
 assert 'productName = OpenLXSSHSecurity' in project
 assert 'productName = OpenLXSSHTransport' in project
-print(f'{config}: arm64 / min26 / embedded helper / module / runtime libraries / pinned GRDB+SwiftTerm graph checked')
+assert 'productName = OpenLXSSHFiles' in project
+bridge = root / f'DerivedData/{config}/Build/Intermediates.noindex/OpenLXSSHFiles.build/{config}/COpenLXSSHFiles.build/Objects-normal/arm64/Bridge.o'
+assert re.search(r'minos\s+26.0', subprocess.check_output(['xcrun','vtool','-show-build',str(bridge)], text=True))
+native_manifest = json.loads((root / 'Packages/OpenLXSSHFiles/.build/native/manifest.json').read_text())
+import hashlib
+for relative, digest in native_manifest['licenseSHA256'].items():
+    assert hashlib.sha256((app / 'Contents/Resources/FilesNativeLicenses' / relative).read_bytes()).hexdigest() == digest
+print(f'{config}: arm64 / min26 App+Files C object / embedded helper / static native libraries / pinned graph checked')
 PY
     done
     "$ROOT/Scripts/build-app.sh" HostProbe test > "$LOGS/HostProbe-tests.log" 2>&1
@@ -73,9 +80,9 @@ os.chmod(data, 0o700)
 (data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
 (logs / 'gui-data-path.txt').write_text(str(data) + '\n')
 binary = root / 'DerivedData/HostProbe/Build/Products/HostProbe/OpenLXSSH.app/Contents/MacOS/OpenLXSSH'
-for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exit'):
+for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exit', 'files-local'):
     phase_data = data
-    if phase in ('security-sheets', 'sessions', 'sessions-exit'):
+    if phase in ('security-sheets', 'sessions', 'sessions-exit', 'files-local'):
         phase_data = pathlib.Path(tempfile.mkdtemp(prefix='OpenLXSSH-AppSmoke-'))
         os.chmod(phase_data, 0o700)
         (phase_data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')

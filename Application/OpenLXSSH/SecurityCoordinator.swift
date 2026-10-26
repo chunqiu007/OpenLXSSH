@@ -134,6 +134,23 @@ actor SecurityCoordinator {
                 || (reference.algorithm == .rsa && key.publicKey.algorithm == .rsa) else { throw KeyFailure.invalidOpenSSH }
         return keys.rootURL.appendingPathComponent(id.uuidString + ".openssh").path
     }
+    func privateKeyForFileAuthentication(host: HostConfiguration, authorized: Bool) async throws -> SecretBytes {
+        guard authorized, !Task.isCancelled, host.authentication.needsKey, let id = host.keyRef else { throw SecurityUIFailure.notAuthorized }
+        let metadata = try await repository.securityMetadata()
+        try Task.checkCancellation()
+        guard metadata.hosts.contains(host), let reference = metadata.keys.first(where: { $0.id == id }) else { throw RepositoryError.notFound }
+        let keys = try storage().0
+        let key = try await keys.key(id: id)
+        try Task.checkCancellation()
+        guard (reference.algorithm == .ed25519 && key.publicKey.algorithm == .ed25519)
+                || (reference.algorithm == .rsa && key.publicKey.algorithm == .rsa) else { throw KeyFailure.invalidOpenSSH }
+        let secret = try await keys.privateKeyForAuthentication(id: id)
+        try Task.checkCancellation()
+        let after = try await repository.securityMetadata()
+        try Task.checkCancellation()
+        guard after.hosts.contains(host), after.keys.contains(reference) else { throw SecurityUIFailure.notAuthorized }
+        return secret
+    }
     func publicKey(_ id: UUID) async throws -> PublicKey {
         guard try await repository.securityMetadata().keys.contains(where: { $0.id == id }) else { throw RepositoryError.notFound }
         return try await storage().0.publicKey(for: id)

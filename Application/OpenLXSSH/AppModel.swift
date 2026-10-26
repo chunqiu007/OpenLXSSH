@@ -63,6 +63,7 @@ struct AppIssue: Identifiable, Equatable {
     let repository: any AppRepositoryProtocol
     let security: SecurityCoordinator
     let sessions: SessionController
+    let files: FilesController
     let lifecycle: AppLifecycleCoordinator
     let sessionEnvironment: SessionEnvironment
     private let sessionRouter: (any SessionRouting)?
@@ -81,7 +82,8 @@ struct AppIssue: Identifiable, Equatable {
     private var generation = 0
 
     init(repository: any AppRepositoryProtocol, sessionRouter: (any SessionRouting)? = nil, security: SecurityCoordinator? = nil,
-         location: AppDataLocation = .applicationSupport, sessionBuilder: (any SessionBuilding)? = nil) {
+         location: AppDataLocation = .applicationSupport, sessionBuilder: (any SessionBuilding)? = nil,
+         filesConnector: (any FilesConnecting)? = nil) {
         self.repository = repository; self.sessionRouter = sessionRouter
         let security = security ?? SecurityCoordinator(repository: repository, location: location)
         self.security = security
@@ -89,7 +91,9 @@ struct AppIssue: Identifiable, Equatable {
         let builder = sessionBuilder ?? DirectSessionBuilder(repository: repository, security: security, environment: environment,
                                                               scanner: DefaultSystemScanner())
         sessions = SessionController(repository: repository, credentials: security.credentials, builder: builder)
+        files = FilesController(connector: filesConnector ?? LibSSH2FilesConnector(repository: repository, security: security, environment: environment))
         lifecycle = AppLifecycleCoordinator(sessions: sessions)
+        lifecycle.files = files
         sessions.onAuthenticatedMetadata = { [weak self] in Task { await self?.reload() } }
     }
 
@@ -106,6 +110,7 @@ struct AppIssue: Identifiable, Equatable {
             hosts = snapshot.hosts; folders = snapshot.folders; keys = snapshot.keys; settings = snapshot.settings
             sessions.updateSettings(settings)
             if let selectedHostID, !hosts.contains(where: { $0.id == selectedHostID }) { self.selectedHostID = nil }
+            if files.visible { files.show(host: selectedHost) }
             didLoad = true
             issue = nil
             return true

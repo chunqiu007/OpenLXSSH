@@ -227,6 +227,24 @@ import OpenLXSSHTrust
         await controller.closeAll(); try await repo.close()
     }
 
+    func testWholeLifecycleKeepsSSHAdmissionClosedWhileFilesAreStillClosing() async throws {
+        let (repo, sessions, _, _) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let files = ControlledFilesLifecycle(), lifecycle = AppLifecycleCoordinator(sessions: sessions)
+        lifecycle.files = files
+        let first = Task { await lifecycle.closeConnections() }
+        await files.waitForClose()
+        XCTAssertNil(sessions.open(host, mode: .newSession))
+        let second = Task { await lifecycle.closeConnections() }
+        files.releaseClose()
+        let firstResult = await first.value, secondResult = await second.value
+        XCTAssertTrue(firstResult); XCTAssertTrue(secondResult)
+        XCTAssertEqual(files.closeCount, 1)
+        XCTAssertTrue(sessions.tabs.isEmpty)
+        XCTAssertNotNil(sessions.open(host, mode: .newSession))
+        await sessions.tabs.first?.preparation?.value
+        await sessions.closeAll(); try await repo.close()
+    }
     func testLifecycleTransferSeamDoesNotCancelWithoutDecision() async throws {
         let (_, controller, _, _) = try fixture()
         let transfers = LogicTransfers()
@@ -281,6 +299,26 @@ import OpenLXSSHTrust
     func cancel() { set(.disconnected(nil)) }
     func closeTab() { set(.closed); terminal.releaseResources() }
 }
+@MainActor private final class ControlledFilesLifecycle: FilesWindowLifecycle {
+    var hasActiveTransfers = false
+    var hasPendingOperations = true
+    var closeCount = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var arrived: CheckedContinuation<Void, Never>?
+    func beginWindowClose() {}
+    func beginTermination() {}
+    func closeForWindow() async {
+        closeCount += 1
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            arrived?.resume(); arrived = nil
+        }
+        hasPendingOperations = false
+    }
+    func waitForClose() async { if continuation == nil { await withCheckedContinuation { arrived = $0 } } }
+    func releaseClose() { continuation?.resume(); continuation = nil }
+}
+
 @MainActor private final class LogicTransfers: TransferLifecycle {
     var hasActiveTransfers = true
     var cancelCount = 0

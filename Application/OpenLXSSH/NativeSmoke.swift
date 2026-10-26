@@ -5,6 +5,7 @@ import OpenLXSSHCore
 import OpenLXSSHSecurity
 import OpenLXSSHTransport
 import OpenLXSSHTrust
+import OpenLXSSHFiles
 
 /// HostProbe-only in-process GUI exercise. All mutations go through rendered native controls
 /// and their target/action paths, and all files are confined to a marked temporary test root.
@@ -19,7 +20,7 @@ import OpenLXSSHTrust
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["exercise", "reopen", "sessions", "sessions-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["exercise", "reopen", "sessions", "sessions-exit", "files-local", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
@@ -59,6 +60,7 @@ import OpenLXSSHTrust
             else if options.phase == "security-sheets" { try await securitySheets() }
             else if options.phase == "sessions" || options.phase == "sessions-exit" { try await sessionExercise() }
             else if options.phase == "transport-config" { try await transportConfiguration() }
+            else if options.phase == "files-local" { try await filesLocalExercise() }
             else { try await securityExercise() }
             try finish(success: true, failure: nil)
             // Leave this Swift MainActor job before AppKit enters its termination loop.
@@ -300,6 +302,93 @@ import OpenLXSSHTrust
         try check("no-session-restore", model.sessions.tabs.isEmpty && model.connectionNotice == nil)
     }
 
+    private func filesLocalExercise() async throws {
+        guard let connector = model.files.connector as? LocalFilesProbeConnector else { throw Failure.check("local-files-fixture-required") }
+        let root = options.directory.appendingPathComponent("LocalFilesFixture")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("原始\n目录"), withIntermediateDirectories: false)
+        try Data("keep-target".utf8).write(to: root.appendingPathComponent("target"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: root.appendingPathComponent("target"))
+        let startupCount = await connector.count
+        try check("files-startup-hidden-no-connect", !model.files.visible && startupCount == 0)
+        try await click("host.add")
+        try await type("host.name", "真实 Local fixture（不是 SFTP）")
+        try await type("host.address", "never-scanned.invalid")
+        try await type("host.username", "fixture")
+        try await click("host.save")
+        try await wait("files-host-ready") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        try await selectFirstHost()
+        delegate.mainWindow?.setContentSize(NSSize(width: 1600, height: 1000))
+        try await click("files.open")
+        try check("files-open-no-connect", await connector.count == 0)
+        try await click("files.connect")
+        try await wait("files-local-list-ready") { self.model.files.state == .ready && !self.model.files.busy }
+        try check("files-real-local-list", model.files.entries.count == 3)
+        try await click("files.refresh")
+        try await wait("files-repeat-list-ready") { !self.model.files.busy }
+        let repeatCount = await connector.count
+        try check("files-repeated-root-list", model.files.entries.count == 3 && repeatCount == 1)
+        try await click("files.mkdir")
+        try await type("files.operation.name", "GUI 目录")
+        try await click("files.mkdir.risk")
+        try await click("files.operation.confirm")
+        try await wait("files-mkdir-ready") { !self.model.files.busy && self.delegate.mainWindow?.attachedSheet == nil }
+        try check("files-local-mkdir", FileManager.default.fileExists(atPath: root.appendingPathComponent("GUI 目录").path))
+        try await selectFile("GUI 目录")
+        try await click("files.rename")
+        try await type("files.operation.name", "GUI renamed")
+        try await click("files.operation.confirm")
+        try await wait("files-rename-ready") { !self.model.files.busy && self.delegate.mainWindow?.attachedSheet == nil }
+        try check("files-local-safe-rename", FileManager.default.fileExists(atPath: root.appendingPathComponent("GUI renamed").path))
+        try await selectFile("GUI renamed")
+        try await click("files.delete")
+        try await click("files.delete.prepare")
+        try await wait("files-delete-plan-ready") { self.model.files.deleteReview != nil && !self.model.files.busy }
+        try await click("files.delete.review")
+        try await click("files.delete.acknowledge")
+        try await click("files.delete.execute")
+        try await wait("files-delete-complete") { self.model.files.lastDeleteReport != nil && !self.model.files.busy }
+        try check("files-local-exact-delete", model.files.lastDeleteReport?.allSucceeded == true && !FileManager.default.fileExists(atPath: root.appendingPathComponent("GUI renamed").path))
+        try check("files-preserves-unselected-target", try Data(contentsOf: root.appendingPathComponent("target")) == Data("keep-target".utf8))
+        _ = try fixtureEntry("原始\n目录")
+        try await doubleClickFile("原始\n目录")
+        await model.files.waitUntilCurrentWorkCompletes()
+        let rawPath = model.files.path
+        try await click("files.go")
+        try await wait("files-raw-go-ready") { !self.model.files.busy }
+        try check("files-raw-go-does-not-reparse-display", model.files.path == rawPath && rawPath.bytes == Data("/原始\n目录".utf8))
+        try await click("files.hide")
+        try check("files-hide-keeps-ready", model.files.state == .ready && !model.files.visible)
+        let previous = model.files.manager
+        delegate.mainWindow?.performClose(nil)
+        try await wait("files-window-closed") { self.delegate.mainWindow == nil }
+        try check("files-window-closes-services", await previous.snapshot().isClosed)
+        _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+        try await wait("files-window-reopen") { self.delegate.mainWindow?.isVisible == true && !self.model.isLoading }
+        try check("files-reopen-hidden-no-restore", !model.files.visible && model.files.state == .disconnected && model.files.selectedHost == nil)
+    }
+    private func fixtureEntry(_ name: String) throws -> DirectoryEntry {
+        guard let entry = model.files.entries.first(where: { $0.name.bytes == Data(name.utf8) }) else { throw Failure.missing("files-entry") }
+        return entry
+    }
+    private func selectFile(_ name: String) async throws {
+        try await wait("files-table") { self.find("files.entries", as: NSTableView.self) != nil }
+        guard let table = find("files.entries", as: NSTableView.self), let row = model.files.entries.firstIndex(where: { $0.name.bytes == Data(name.utf8) }) else { throw Failure.missing("files-row") }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        try await pause()
+    }
+    private func doubleClickFile(_ name: String) async throws {
+        guard let table = find("files.entries", as: NSTableView.self), let window = table.window,
+              let row = model.files.entries.firstIndex(where: { $0.name.bytes == Data(name.utf8) }) else { throw Failure.missing("files-row") }
+        let point = table.convert(NSPoint(x: 50, y: table.rect(ofRow: row).midY), to: nil)
+        let now = ProcessInfo.processInfo.systemUptime
+        for click in 1...2 {
+            guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: now + Double(click) * 0.03, windowNumber: window.windowNumber, context: nil, eventNumber: click * 2, clickCount: click, pressure: 1),
+                  let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: now + Double(click) * 0.03 + 0.01, windowNumber: window.windowNumber, context: nil, eventNumber: click * 2 + 1, clickCount: click, pressure: 0) else { throw Failure.missing("files-double-click") }
+            NSApp.postEvent(down, atStart: false); NSApp.postEvent(up, atStart: false)
+            try await Task.sleep(for: .milliseconds(60))
+        }
+        try await wait("files-enter-directory") { self.model.files.path.bytes == Data(("/" + name).utf8) }
+    }
     private func transportConfiguration() async throws {
         let resources = try await model.sessionEnvironment.opened()
         try check("strict-bundled-helper-discovered", resources.helper.url.path == Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/openlxssh-askpass").path)
@@ -322,6 +411,20 @@ import OpenLXSSHTrust
         try check("controlled-config-helper-command", controlled.text.contains("--authenticated-event v1") && controlled.text.contains("StrictHostKeyChecking yes") && controlled.text.contains("ProxyJump none"))
         try FileManager.default.removeItem(at: preview)
         try check("offline-preview-no-session", model.sessions.tabs.isEmpty)
+        try check("files-native-static-diagnostics", NativeDiagnostics.smoke() == 0 && NativeDiagnostics.libssh2 == "1.11.1" && NativeDiagnostics.openssl.contains("3.5.9"))
+        let authorizedKey = try await model.security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        let keyHost = HostConfiguration(name: "signed SFTP material boundary", address: "never-connected.invalid", username: "fixture", authentication: .privateKey, keyRef: authorizedKey)
+        try await model.repository.apply([.insertHost(keyHost)])
+        let material = try await model.security.privateKeyForFileAuthentication(host: keyHost, authorized: true)
+        try check("signed-exact-key-memory-material", material.withUnsafeBytes { !$0.isEmpty })
+        do {
+            _ = try await model.security.privateKeyForFileAuthentication(host: keyHost, authorized: false)
+            throw Failure.check("private-material-requires-authorization")
+        } catch SecurityUIFailure.notAuthorized { }
+        try check("private-material-requires-authorization", true)
+        try await model.repository.apply([.deleteHost(keyHost.id)])
+        try await model.security.deleteKey(authorizedKey)
+        try check("signed-material-exact-cleanup", try await model.repository.securityMetadata().keys.isEmpty)
         let direct = DirectSSHSession(trustStore: resources.trust, sessionDirectory: resources.directory,
                                       helper: resources.helper, scanner: OfflineCandidateScanner())
         _ = try direct.connect(configuration)

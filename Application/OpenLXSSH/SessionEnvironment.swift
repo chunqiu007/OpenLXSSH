@@ -18,6 +18,7 @@ struct SessionResources: Sendable {
 actor SessionEnvironment {
     private let location: AppDataLocation
     private var resources: SessionResources?
+    private var sharedTrust: HostTrustStore?
     init(location: AppDataLocation) { self.location = location }
     func opened() throws -> SessionResources {
         let parent = try AppDataLocation.canonical(location.databaseDirectory().deletingLastPathComponent())
@@ -26,7 +27,7 @@ actor SessionEnvironment {
             return resources
         }
         try Self.validateDirectories(parent: parent, create: true)
-        let trust = try HostTrustStore(directory: AbsolutePath(parent.appendingPathComponent("Trust").path))
+        let trust = try sharedTrustStore()
         let helper = try BundledAskpassHelper.discover()
         try Self.validateDirectories(parent: parent, create: false)
         let value = SessionResources(trust: trust, directory: try AbsolutePath(parent.appendingPathComponent("Sessions").path), helper: helper)
@@ -47,7 +48,15 @@ actor SessionEnvironment {
         }
         try AppFileSecurity.directory(fd)
     }
-    func trustStore() throws -> HostTrustStore { try opened().trust }
+    func sharedTrustStore() throws -> HostTrustStore {
+        let parent = try AppDataLocation.canonical(location.databaseDirectory().deletingLastPathComponent())
+        try Self.validateDirectories(parent: parent, create: true)
+        if let sharedTrust { return sharedTrust }
+        let trust = try HostTrustStore(directory: AbsolutePath(parent.appendingPathComponent("Trust").path))
+        try Self.validateDirectories(parent: parent, create: false)
+        sharedTrust = trust; return trust
+    }
+    func trustStore() throws -> HostTrustStore { try sharedTrustStore() }
     nonisolated static func configuration(host: HostConfiguration, keyPath: String?) throws -> SSHSessionConfiguration {
         let identity = HostIdentity(address: try HostAddress(host.address), port: try SSHPort(host.port))
         let auth: SSHAuthentication.Method
