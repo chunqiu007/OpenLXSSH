@@ -15,6 +15,21 @@ public actor LocalFileService: RemoteFileService {
         guard fd >= 0 else { throw Self.error("fixture-root") }
         rootFD = fd
     }
+    /// Copies an already-open local directory FD; the caller retains ownership and must keep it
+    /// valid during initialization. The caller is responsible for safely selecting/traversing
+    /// the upstream directory path. No URL is reopened and non-directory FDs are rejected.
+    public init(rootDirectoryDescriptor: Int32) throws {
+        let fd = fcntl(rootDirectoryDescriptor, F_DUPFD_CLOEXEC, 0)
+        guard fd >= 0 else { throw Self.error("duplicate-local-root") }
+        do {
+            var st = stat()
+            guard Darwin.fstat(fd, &st) == 0 else { throw Self.error("stat-local-root") }
+            guard st.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+                throw FileServiceError(.unsupported, operation: "local-root-not-directory", code: Int64(ENOTDIR))
+            }
+        } catch { Darwin.close(fd); throw error }
+        rootFD = fd
+    }
     deinit {
         for fd in handles.values { Darwin.close(fd) }
         Darwin.close(rootFD)

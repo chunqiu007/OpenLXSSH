@@ -53,6 +53,14 @@ caller取消只通知该token、不service.cancel或取消共享worker；闭包�
 
 工程师仅Manager+新8tests，旧89保留，Debug/Release各97、ASan/TSan新8均退出0。主管读两文件完整差异/测试、独立Release完整97退出0，日志 `.build/verification/p6-files-service-operations-a/primary-release97.log`。真实Local覆盖2msidle+显式idleclose不打断、caller取消等cleanup、并发shutdown等真实close、容量/host/unknown/stale/error、同hostgate/异host并行、安全操作/probe无双锁、多个job/op共享最后user释放。没有真实网络或native重建，App接入另验。
 
+## B1 本地目录FD与定向释放接口
+
+新增兼容 `LocalFileService(rootDirectoryDescriptor:)` 复制已安全选择的本地directory FD，F_DUPFD_CLOEXEC后在副本fstat核目录，不接管caller、不URL重开，失败只关副本一次。App负责上游逐分量noFollow选择；保留旧URL入口且不扩大其final-component noFollow保证。root list继续openat(rootFD,".")独立open description，不能退回共享offset。
+
+Manager新增 `closeIdleServices(_ ids:)`，Set去重复用既有closeServices；unknown/stale幂等、activeusers跳过而非预约、并发target/global/shutdown共享实际close完成点。本次picker/drop enqueue原子拒后仅释放自己newIDs，不能全闲置关闭其他浏览服务或外部直接close留下record。
+
+工程师只4包内文件，Debug/Release相关34及全107（原97+新10）退出0，新10重复20轮共200次通过；不是200次SSH连接。主管阅读4文件差异与新6FD/4targeted tests，独立Release34退出0，日志 `.build/verification/p6-targeted-idle-close-r1/primary-release34.log`。覆盖CLOEXEC/callerclose/FD复用、file/pipe/socketpair/EBADF拒绝无泄漏、rename+symlink路径替换仍锚原directory；target只关自有根/无关可用、jobs/oplease保护、可控closegate证明所有调用等真实close。无上游native重建或SSH互通。
+
 ## 未完成与整合约束
 
 真实SFTP/认证/MFA、rename/fsync扩展、删除与能力probe远端运行未验证，本地FD fixture不是服务器。上游静态库未ASan/TSan插桩。macOS26只编译未实跑。

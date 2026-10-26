@@ -524,6 +524,10 @@ public actor TransferManager {
     /// Explicit idle release (e.g. window close with no work). Job AND service-operation users win.
     /// Hiding a panel or ending an observation is NOT a service-close operation.
     public func closeIdleServices() async { await closeServices(services.filter { $0.value.users == 0 }.map(\.key)) }
+    /// Releases only these services if idle now; unknown/repeated IDs are harmless.
+    /// Active job/operation users are skipped, not scheduled for a later close.
+    /// Awaits actual close completion, sharing any in-progress release or shutdown close.
+    public func closeIdleServices(_ ids: [TransferServiceID]) async { await closeServices(Array(Set(ids))) }
     private func closeServices(_ ids: [TransferServiceID]) async {
         var pending: [(TransferServiceID, Task<Void, Never>)] = []
         for id in ids {

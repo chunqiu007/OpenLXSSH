@@ -281,6 +281,166 @@ final class ServiceOperationTests: XCTestCase, @unchecked Sendable {
         await manager.cancelAllAndWait(); await f.cleanup()
     }
 
+    func testTargetedIdleCloseAfterRejectedBatchLeavesUnrelatedRootUsable() async throws {
+        let f = try OperationFixture(), other = try OperationFixture()
+        let first = OperationProbe(f.source), second = OperationProbe(f.destination), unrelated = OperationProbe(other.source)
+        let manager = TransferManager(idleTimeout: nil)
+        let firstID = try await manager.registerService(first), secondID = try await manager.registerService(second)
+        let unrelatedID = try await manager.registerService(unrelated), unknown = UUID()
+        let request = TransferRequest(hostID: "local", source: TransferLocation(serviceID: firstID, path: try RemotePath("/file")),
+            destination: TransferLocation(serviceID: secondID, path: try RemotePath("/out")))
+        let invalid = TransferRequest(hostID: "local", source: TransferLocation(serviceID: unknown, path: .root),
+            destination: TransferLocation(serviceID: unrelatedID, path: try RemotePath("/never")))
+        let before = await manager.snapshot()
+        do { _ = try await manager.enqueueBatch([request, invalid]); XCTFail("Batch rejection must be atomic") }
+        catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        await manager.closeIdleServices([firstID, secondID, firstID, unknown, secondID])
+        XCTAssertEqual(first.closes, 1); XCTAssertEqual(second.closes, 1); XCTAssertEqual(unrelated.closes, 0)
+        let after = await manager.snapshot(); XCTAssertEqual(after, before)
+        for id in [firstID, secondID] {
+            do {
+                _ = try await manager.withServiceOperation(serviceID: id, hostID: "local") { service, token in try await service.list(.root, token: token) }
+                XCTFail("Released registration must be stale")
+            } catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        }
+        for service in [f.source, f.destination] {
+            do { _ = try await service.list(.root, token: CancellationToken()); XCTFail("Target close must really finish") }
+            catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        }
+        let fresh = OperationProbe(other.destination), freshID = try await manager.registerService(fresh)
+        await manager.closeIdleServices([])
+        await manager.closeIdleServices([firstID, unknown, secondID, firstID])
+        XCTAssertEqual(first.closes, 1); XCTAssertEqual(second.closes, 1); XCTAssertEqual(fresh.closes, 0)
+        let entries = try await manager.withServiceOperation(serviceID: unrelatedID, hostID: "local") { service, token in try await service.list(.root, token: token) }
+        XCTAssertEqual(entries.map(\.name), [try FileName("file")])
+        let job = try await manager.enqueue(TransferRequest(hostID: "local",
+            source: TransferLocation(serviceID: unrelatedID, path: RemotePath("/file")),
+            destination: TransferLocation(serviceID: freshID, path: RemotePath("/out"))))
+        try await waitUntil { await manager.snapshot().jobs.first { $0.id == job }?.state == .succeeded }
+        XCTAssertEqual(try Data(contentsOf: other.destinationURL.appendingPathComponent("out")), Data("local-file".utf8))
+        XCTAssertEqual(unrelated.closes, 0); XCTAssertEqual(unrelated.cancellations, 0)
+        await manager.cancelAllAndWait()
+        XCTAssertEqual(first.closes, 1); XCTAssertEqual(second.closes, 1); XCTAssertEqual(unrelated.closes, 1); XCTAssertEqual(fresh.closes, 1)
+        await f.cleanup(); await other.cleanup()
+    }
+
+    func testTargetedIdleCloseSkipsActiveOperationWithoutDeferringClose() async throws {
+        let f = try OperationFixture(), list = OperationGate()
+        let probe = OperationProbe(f.source, beforeList: { try await list.wait($0) })
+        let manager = TransferManager(idleTimeout: nil), id = try await manager.registerService(probe)
+        let operation = Task { try await manager.withServiceOperation(serviceID: id, hostID: "local") { service, token in
+            try await service.list(.root, token: token)
+        } }
+        try await waitUntil { await list.arrivals == 1 }
+        let before = await manager.snapshot()
+        await manager.closeIdleServices([id, UUID(), id])
+        let during = await manager.snapshot(); XCTAssertEqual(during, before)
+        XCTAssertEqual(probe.closes, 0); XCTAssertEqual(probe.cancellations, 0)
+        await list.release()
+        let result = try await operation.value; XCTAssertEqual(result.map(\.name), [try FileName("file")])
+        try await Task.sleep(for: .milliseconds(10))
+        let next = try await manager.withServiceOperation(serviceID: id, hostID: "local") { service, token in try await service.list(.root, token: token) }
+        XCTAssertEqual(next.map(\.name), [try FileName("file")]); XCTAssertEqual(probe.closes, 0)
+        let finished = await manager.snapshot(); XCTAssertFalse(finished.hasActiveWork); XCTAssertTrue(finished.serviceOperations.isEmpty)
+        await manager.closeIdleServices([id, id]); XCTAssertEqual(probe.closes, 1)
+        await manager.closeIdleServices(); await manager.cancelAllAndWait(); XCTAssertEqual(probe.closes, 1)
+        await f.cleanup()
+    }
+
+    func testTargetedIdleCloseSkipsRunningQueuedAndSharedOperationUsersUntilExplicitRecall() async throws {
+        let f = try OperationFixture(), reading = OperationGate(), firstOperation = OperationGate(), secondOperation = OperationGate()
+        let source = OperationProbe(f.source, beforeRead: { try await reading.wait($0) }), destination = OperationProbe(f.destination)
+        let manager = TransferManager(maxConcurrentJobs: 1, idleTimeout: nil)
+        let sourceID = try await manager.registerService(source), destinationID = try await manager.registerService(destination)
+        let requests = try ["first", "second"].map { name in
+            TransferRequest(hostID: "local", source: TransferLocation(serviceID: sourceID, path: try RemotePath("/file")),
+                destination: TransferLocation(serviceID: destinationID, path: try RemotePath("/" + name)))
+        }
+        let jobs = try await manager.enqueueBatch(requests)
+        try await waitUntil { await reading.arrivals == 1 }
+        let one = Task { try await manager.withServiceOperation(serviceID: sourceID, hostID: "local", scheduling: .callerScheduled) { _, _ in
+            try await firstOperation.wait()
+        } }
+        let two = Task { try await manager.withServiceOperation(serviceID: sourceID, hostID: "local", scheduling: .callerScheduled) { _, _ in
+            try await secondOperation.wait()
+        } }
+        try await waitUntil { await firstOperation.arrivals == 1 }
+        try await waitUntil { await secondOperation.arrivals == 1 }
+        let active = await manager.snapshot()
+        XCTAssertEqual(active.jobs.map(\.state), [.running, .queued]); XCTAssertEqual(active.serviceOperations.count, 2)
+        await manager.closeIdleServices([sourceID, destinationID, sourceID])
+        XCTAssertEqual(source.closes, 0); XCTAssertEqual(destination.closes, 0)
+        await reading.release()
+        try await waitUntil { await manager.snapshot().jobs.filter { jobs.contains($0.id) && $0.state == .succeeded }.count == 2 }
+        await manager.closeIdleServices([sourceID]); XCTAssertEqual(source.closes, 0)
+        await firstOperation.release(); try await one.value
+        await manager.closeIdleServices([sourceID]); XCTAssertEqual(source.closes, 0)
+        await secondOperation.release(); try await two.value
+        try await Task.sleep(for: .milliseconds(10))
+        let entries = try await manager.withServiceOperation(serviceID: sourceID, hostID: "local") { service, token in try await service.list(.root, token: token) }
+        XCTAssertEqual(entries.map(\.name), [try FileName("file")])
+        XCTAssertEqual(source.closes, 0); XCTAssertEqual(destination.closes, 0)
+        let idle = await manager.snapshot(); XCTAssertFalse(idle.hasActiveWork)
+        for name in ["first", "second"] {
+            XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent(name)), Data("local-file".utf8))
+        }
+        await manager.closeIdleServices([sourceID]); XCTAssertEqual(source.closes, 1); XCTAssertEqual(destination.closes, 0)
+        await manager.cancelAllAndWait(); XCTAssertEqual(source.closes, 1); XCTAssertEqual(destination.closes, 1)
+        XCTAssertEqual(source.cancellations, 0); XCTAssertEqual(destination.cancellations, 0)
+        await f.cleanup()
+    }
+
+    func testTargetedGlobalAndShutdownCloseShareSingleActualCompletion() async throws {
+        let f = try OperationFixture(), sourceClose = OperationGate(), destinationClose = OperationGate()
+        let targetReturns = OperationCounter(), lifecycleReturns = OperationCounter()
+        let source = OperationProbe(f.source, beforeClose: { try? await sourceClose.wait() })
+        let destination = OperationProbe(f.destination, beforeClose: { try? await destinationClose.wait() })
+        let manager = TransferManager(idleTimeout: nil)
+        let sourceID = try await manager.registerService(source), destinationID = try await manager.registerService(destination)
+        let target = Task { await manager.closeIdleServices([sourceID, sourceID, UUID()]); await targetReturns.increment() }
+        try await waitUntil { await sourceClose.arrivals == 1 }
+        do { _ = try await manager.registerService(source); XCTFail("A closing object must not be registered again") }
+        catch let error as FileServiceError { XCTAssertEqual(error.kind, .conflict); XCTAssertEqual(error.operation, "service-already-bound") }
+        do {
+            _ = try await manager.withServiceOperation(serviceID: sourceID, hostID: "local") { _, _ in XCTFail("Closing operation must not run") }
+            XCTFail("Closing service must reject operations")
+        } catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        do {
+            _ = try await manager.enqueue(TransferRequest(hostID: "local", source: TransferLocation(serviceID: sourceID, path: RemotePath("/file")),
+                destination: TransferLocation(serviceID: destinationID, path: RemotePath("/out"))))
+            XCTFail("Closing service must reject jobs")
+        } catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        let repeatedTarget = Task { await manager.closeIdleServices([sourceID]); await targetReturns.increment() }
+        let global = Task { await manager.closeIdleServices(); await lifecycleReturns.increment() }
+        try await waitUntil { await destinationClose.arrivals == 1 }
+        let firstShutdown = Task { await manager.cancelAllAndWait(); await lifecycleReturns.increment() }
+        let secondShutdown = Task { await manager.cancelAllAndWait(); await lifecycleReturns.increment() }
+        try await waitUntil { await manager.snapshot().isClosed }
+        target.cancel(); global.cancel(); firstShutdown.cancel()
+        try await Task.sleep(for: .milliseconds(10))
+        let earlyTargets = await targetReturns.value, earlyLifecycle = await lifecycleReturns.value
+        XCTAssertEqual(earlyTargets, 0); XCTAssertEqual(earlyLifecycle, 0)
+        XCTAssertEqual(source.closes, 1); XCTAssertEqual(destination.closes, 1)
+        let sourceArrivals = await sourceClose.arrivals, destinationArrivals = await destinationClose.arrivals
+        XCTAssertEqual(sourceArrivals, 1); XCTAssertEqual(destinationArrivals, 1)
+        await sourceClose.release(); await target.value; await repeatedTarget.value
+        let completedTargets = await targetReturns.value, stillClosing = await lifecycleReturns.value
+        XCTAssertEqual(completedTargets, 2); XCTAssertEqual(stillClosing, 0)
+        do { _ = try await f.source.list(.root, token: CancellationToken()); XCTFail("Target call must await actual close") }
+        catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        let destinationBeforeClose = try await f.destination.list(.root, token: CancellationToken()); XCTAssertTrue(destinationBeforeClose.isEmpty)
+        await manager.closeIdleServices([sourceID, UUID(), sourceID]) // Already removed, while another close is still suspended.
+        await destinationClose.release(); await global.value; await firstShutdown.value; await secondShutdown.value
+        let completedLifecycle = await lifecycleReturns.value; XCTAssertEqual(completedLifecycle, 3)
+        await manager.closeIdleServices([sourceID, destinationID]); await manager.closeIdleServices(); await manager.cancelAllAndWait()
+        XCTAssertEqual(source.closes, 1); XCTAssertEqual(destination.closes, 1)
+        let ended = await manager.snapshot(); XCTAssertTrue(ended.isClosed); XCTAssertFalse(ended.hasActiveWork)
+        XCTAssertTrue(ended.jobs.isEmpty); XCTAssertTrue(ended.serviceOperations.isEmpty)
+        do { _ = try await f.destination.list(.root, token: CancellationToken()); XCTFail("Shutdown must await the other actual close") }
+        catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        await f.cleanup()
+    }
+
     func testSharedServiceJobAndMultipleOperationsReleaseOnlyAfterLastUser() async throws {
         let f = try OperationFixture(), reading = OperationGate(), operations = OperationGate()
         let manager = TransferManager(idleTimeout: nil), probe = OperationProbe(f.source, beforeRead: { try await reading.wait($0) })
