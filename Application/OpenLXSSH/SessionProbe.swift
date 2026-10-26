@@ -4,6 +4,7 @@ import Foundation
 import OpenLXSSHCore
 import OpenLXSSHTransport
 import OpenLXSSHTrust
+import SwiftTerm
 
 /// Public-key-only observation substitute: the real DirectSSHSession stops at
 /// awaitingTrust, so no ssh/keyscan socket or arbitrary process is launched.
@@ -16,7 +17,7 @@ struct OfflineCandidateScanner: HostKeyScanning {
 /// Explicit GUI logic substitute: never starts SSH, scans a network or claims interoperability.
 @MainActor final class ProbeSessionBuilder: SessionBuilding {
     let repository: any AppRepositoryProtocol
-    private(set) var drivers: [ProbeSessionDriver] = []
+    private(set) var drivers: [ProbeWeakDriver] = []
     init(repository: any AppRepositoryProtocol) { self.repository = repository }
     func configuration(hostID: UUID) async throws -> (HostConfiguration, SSHSessionConfiguration) {
         guard let host = try await repository.securityMetadata().hosts.first(where: { $0.id == hostID }) else { throw RepositoryError.notFound }
@@ -24,13 +25,27 @@ struct OfflineCandidateScanner: HostKeyScanning {
     }
     func prepare(hostID: UUID, sessionID: UUID) async throws -> ReadySession {
         let (host, configuration) = try await configuration(hostID: hostID)
-        let driver = ProbeSessionDriver(id: sessionID); drivers.append(driver)
+        let driver = ProbeSessionDriver(id: sessionID); drivers.append(ProbeWeakDriver(driver))
         return ReadySession(host: host, configuration: configuration, driver: driver)
     }
 }
-@MainActor final class ProbeSessionDriver: SessionDriving {
+@MainActor final class ProbeWeakDriver {
+    weak var value: ProbeSessionDriver?
+    init(_ value: ProbeSessionDriver) { self.value = value }
+}
+@MainActor final class ProbeTerminalMetrics {
+    var fedBytes: UInt64 = 0
+    var fedBatches = 0
+    var hiddenBatches = 0
+    var input = Data()
+    var resizeEvents = 0
+    var closeCount = 0
+    var disposedCount = 0
+}
+@MainActor final class ProbeSessionDriver: SessionDriving, TerminalViewDelegate {
     let id: UUID
     let terminal = NativeTerminalView()
+    let terminalMetrics = ProbeTerminalMetrics()
     private(set) var token: SessionToken?
     private(set) var state: SSHSessionState = .idle
     var canReconnect: Bool { switch state { case .idle, .disconnected, .failed: true; default: false } }
@@ -45,7 +60,24 @@ struct OfflineCandidateScanner: HostKeyScanning {
     var holdClose = false
     private var closeContinuation: CheckedContinuation<Void, Never>?
     private var closeStarted = false
-    init(id: UUID) { self.id = id }
+    init(id: UUID) { self.id = id; terminal.terminalDelegate = self }
+    func feedPressure(_ bytes: Data) throws {
+        guard state == .connectionPending, !closeStarted, bytes.count <= 16384 else { throw TransportError.invalidConfiguration }
+        terminal.feed(byteArray: [UInt8](bytes)[...])
+        terminalMetrics.fedBytes += UInt64(bytes.count); terminalMetrics.fedBatches += 1
+        if terminal.isHidden { terminalMetrics.hiddenBatches += 1 }
+    }
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        guard !closeStarted, terminalMetrics.input.count + data.count <= TerminalSettings.maximumInputBytes else { return }
+        terminalMetrics.input.append(contentsOf: data)
+    }
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { terminalMetrics.resizeEvents += 1 }
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+    func bell(source: TerminalView) {}
     func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
         let token = SessionToken(sessionID: id, generation: (self.token?.generation ?? 0) + 1)
         self.token = token; self.configuration = configuration
@@ -75,7 +107,7 @@ struct OfflineCandidateScanner: HostKeyScanning {
     }
     func cancel() { state = .disconnected(nil); onState?(token, state) }
     func closeTab() {
-        guard !closeStarted else { return }; closeStarted = true
+        guard !closeStarted else { return }; closeStarted = true; terminalMetrics.closeCount += 1
         state = .closing; onState?(token, state)
         Task {
             if holdClose {
@@ -87,12 +119,32 @@ struct OfflineCandidateScanner: HostKeyScanning {
                 closeDidStart?()
                 try? await Task.sleep(for: closeDelay)
             }
-            state = .closed; terminal.releaseResources(); onState?(token, state); closeCompletion?()
+            state = .closed; terminal.terminalDelegate = nil; terminal.releaseResources()
+            if terminal.updateUiClosed() { terminalMetrics.disposedCount += 1 }
+            onState?(token, state); closeCompletion?()
         }
     }
     func releaseClose() {
         holdClose = false
         let continuation = closeContinuation; closeContinuation = nil; continuation?.resume()
+    }
+}
+struct ProbeOutputLoad {
+    static let viewCount = 5
+    static let batches = 200
+    static let intervalMilliseconds = 40
+    static let historyLines = 10000
+    static let maximumBatchBytes = 8192
+    static func marker(view: Int) -> String { "P7-END-V\(view)-000199" }
+    static func batch(view: Int, index: Int) -> Data {
+        precondition((0..<viewCount).contains(view) && (0..<batches).contains(index))
+        let line = String(format: "V%d-B%06d ", view, index) + "中文 e\u{301} output " + String(repeating: "0123456789abcdef", count: 8)
+        var text = String(repeating: "\u{1b}[32m" + line + "\u{1b}[0m\r\n", count: 24)
+        text += "status old\r\u{1b}[2Kstatus replaced V\(view)-\(index)\r\n"
+        if index == batches - 1 { text += marker(view: view) + "\r\n" }
+        let bytes = Data(text.utf8)
+        precondition(bytes.count <= maximumBatchBytes)
+        return bytes
     }
 }
 #endif

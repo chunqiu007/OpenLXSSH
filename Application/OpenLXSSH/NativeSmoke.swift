@@ -1,5 +1,6 @@
 #if HOST_PROBE
 import AppKit
+import Darwin
 import Foundation
 import OpenLXSSHCore
 import OpenLXSSHSecurity
@@ -20,7 +21,7 @@ import OpenLXSSHFiles
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["exercise", "reopen", "sessions", "sessions-exit", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["exercise", "reopen", "sessions", "sessions-exit", "sessions-pressure", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
@@ -60,6 +61,7 @@ import OpenLXSSHFiles
             else if options.phase == "reopen" { try await verifyRelaunch() }
             else if options.phase == "security-sheets" { try await securitySheets() }
             else if options.phase == "sessions" || options.phase == "sessions-exit" { try await sessionExercise() }
+            else if options.phase == "sessions-pressure" { try await sessionPressureExercise() }
             else if options.phase == "transport-config" { try await transportConfiguration() }
             else if options.phase == "files-local" { try await filesLocalExercise() }
             else if options.phase == "files-transfers" || options.phase == "files-transfer-exit" { try await filesTransferExercise() }
@@ -304,6 +306,131 @@ import OpenLXSSHFiles
         try check("no-session-restore", model.sessions.tabs.isEmpty && model.connectionNotice == nil)
     }
 
+    private func sessionPressureExercise() async throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + 55
+        var samples: [[String: Any]] = []
+        var heartbeatCount = 0, heartbeatMaximum = 0.0
+        var lastHeartbeat = ProcessInfo.processInfo.systemUptime
+        let heartbeat = Timer(timeInterval: 0.05, repeats: true) { _ in MainActor.assumeIsolated {
+            let now = ProcessInfo.processInfo.systemUptime
+            heartbeatMaximum = max(heartbeatMaximum, now - lastHeartbeat); lastHeartbeat = now; heartbeatCount += 1
+        } }
+        RunLoop.main.add(heartbeat, forMode: .common)
+        defer { heartbeat.invalidate() }
+        samples.append(try pressureSample(stage: "before-five-views"))
+        try await click("host.add"); try await type("host.name", "P7 render logic fixture, not SSH")
+        try await type("host.address", "never-connected.invalid"); try await type("host.username", "fixture")
+        try await click("host.save")
+        try await wait("pressure-host") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        try await selectFirstHost()
+        for _ in 0..<ProbeOutputLoad.viewCount { try await click("session.new") }
+        try await wait("pressure-five-drivers") { self.model.sessions.tabs.count == 5 && self.model.sessions.tabs.allSatisfy { $0.driver is ProbeSessionDriver && $0.preparation == nil } }
+        var ids: [UUID] = [], identities: [ObjectIdentifier] = [], weakViews: [PressureWeakTerminal] = [], metrics: [ProbeTerminalMetrics] = []
+        for tab in model.sessions.tabs {
+            guard let driver = tab.driver as? ProbeSessionDriver else { throw Failure.check("pressure-fixture-only") }
+            ids.append(tab.id); identities.append(ObjectIdentifier(driver.terminal)); weakViews.append(PressureWeakTerminal(driver.terminal)); metrics.append(driver.terminalMetrics)
+            driver.terminal.setHistoryLimit(ProbeOutputLoad.historyLines); driver.terminal.resize(cols: 80, rows: 24)
+        }
+        try check("pressure-five-real-views-distinct", Set(identities).count == 5)
+        try check("pressure-no-authenticated-network-state", model.sessions.tabs.allSatisfy { $0.state == .connectionPending })
+        samples.append(try pressureSample(stage: "five-views-before-output"))
+        var producerFailure: String?
+        let outputStart = ProcessInfo.processInfo.systemUptime
+        let producer = Task { @MainActor in
+            do {
+                for batch in 0..<ProbeOutputLoad.batches {
+                    try Task.checkCancellation()
+                    guard ProcessInfo.processInfo.systemUptime < deadline else { throw Failure.timeout("pressure-producer") }
+                    for view in 0..<ProbeOutputLoad.viewCount {
+                        guard let driver = self.model.sessions.tabs.first(where: { $0.id == ids[view] })?.driver as? ProbeSessionDriver else { throw Failure.missing("pressure-driver") }
+                        try driver.feedPressure(ProbeOutputLoad.batch(view: view, index: batch))
+                    }
+                    // One batch is created/fed at a time; no unbounded producer queue or byte drops.
+                    try await Task.sleep(for: .milliseconds(ProbeOutputLoad.intervalMilliseconds))
+                }
+            } catch { producerFailure = "producer.failed-or-deadline" }
+        }
+        defer { producer.cancel() }
+        var interactions = 0
+        while metrics[0].fedBatches < ProbeOutputLoad.batches && producerFailure == nil {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw Failure.timeout("pressure-interactions") }
+            let index = interactions % ids.count
+            try await click("tab.select." + ids[index].uuidString)
+            try await type("terminal.search", "V\(index)-B")
+            try await click("terminal.search.next")
+            guard let driver = model.sessions.selectedTab?.driver as? ProbeSessionDriver else { throw Failure.missing("pressure-selected") }
+            try check("pressure-same-instance-\(interactions)", ObjectIdentifier(driver.terminal) == identities[index])
+            guard let window = delegate.mainWindow else { throw Failure.missing("pressure-window") }
+            let size = interactions.isMultiple(of: 2) ? NSSize(width: 1260, height: 920) : NSSize(width: 1510, height: 1000)
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); actions.append("resize.pressure-window")
+            if interactions % 5 == 0 {
+                window.orderOut(nil)
+                let batchBefore = metrics.map(\.fedBatches)
+                try await Task.sleep(for: .milliseconds(120))
+                window.makeKeyAndOrderFront(nil); actions.append("hideShow.pressure-window")
+                try check("pressure-hidden-window-consumes-\(interactions)", zip(metrics, batchBefore).allSatisfy { $0.fedBatches > $1 })
+            }
+            samples.append(try pressureSample(stage: "output-\(interactions)")); interactions += 1
+        }
+        await producer.value
+        try check("pressure-producer-finished", producerFailure == nil)
+        let outputElapsed = ProcessInfo.processInfo.systemUptime - outputStart
+        var viewReports: [[String: Any]] = []
+        for view in 0..<ids.count {
+            try await click("tab.select." + ids[view].uuidString)
+            guard let driver = model.sessions.selectedTab?.driver as? ProbeSessionDriver else { throw Failure.missing("pressure-final-driver") }
+            try check("pressure-final-instances-unchanged-\(view)", ObjectIdentifier(driver.terminal) == identities[view])
+            try check("pressure-resize-events-observed-\(view)", metrics[view].resizeEvents > 1)
+            let expected = (0..<ProbeOutputLoad.batches).reduce(UInt64(0)) { $0 + UInt64(ProbeOutputLoad.batch(view: view, index: $1).count) }
+            let marker = ProbeOutputLoad.marker(view: view)
+            try check("pressure-exact-byte-batch-count-\(view)", metrics[view].fedBytes == expected && metrics[view].fedBatches == ProbeOutputLoad.batches)
+            try check("pressure-hidden-view-consumed-\(view)", metrics[view].hiddenBatches > 0)
+            try check("pressure-final-marker-\(view)", driver.terminal.text.contains(marker))
+            try await type("terminal.search", marker); try await click("terminal.search.next")
+            try check("pressure-final-search-\(view)", driver.terminal.search(marker))
+            let input = "P7-INPUT-\(view)-中文"
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(input, forType: .string)
+            try await click("terminal.paste")
+            try check("pressure-real-paste-input-\(view)", metrics[view].input == Data(input.utf8))
+            try check("pressure-scrollback-bounded-\(view)", driver.terminal.retainedRowCount <= ProbeOutputLoad.historyLines + driver.terminal.rows)
+            viewReports.append(["view":view,"expectedBytes":expected,"fedBytes":metrics[view].fedBytes,"batches":metrics[view].fedBatches,"hiddenBatches":metrics[view].hiddenBatches,"markerFound":true,"searchFound":true,"inputBytes":metrics[view].input.count,"resizeEvents":metrics[view].resizeEvents,"columns":driver.terminal.columns,"rows":driver.terminal.rows,"retainedRows":driver.terminal.retainedRowCount])
+        }
+        NSPasteboard.general.clearContents()
+        heartbeat.invalidate()
+        try check("pressure-heartbeat-under-500ms", heartbeatCount > 20 && heartbeatMaximum <= 0.5)
+        try await click("hosts.refresh")
+        try await wait("pressure-ui-restored") { !self.model.isLoading }
+        samples.append(try pressureSample(stage: "stopped-before-close"))
+        delegate.mainWindow?.performClose(nil); actions.append("close.pressure-window")
+        try await wait("pressure-window-closed") { self.delegate.mainWindow == nil && self.model.sessions.tabs.isEmpty }
+        try check("pressure-five-closed-disposed", metrics.reduce(0) { $0 + $1.closeCount } == 5 && metrics.reduce(0) { $0 + $1.disposedCount } == 5)
+        try await wait("pressure-weak-views-released") { weakViews.allSatisfy { $0.value == nil } }
+        samples.append(try pressureSample(stage: "after-close-weak-zero"))
+        _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+        try await wait("pressure-reopen") { self.delegate.mainWindow?.isVisible == true && !self.model.isLoading }
+        try check("pressure-reopen-no-tabs", model.sessions.tabs.isEmpty && model.connectionNotice == nil)
+        try await click("hosts.refresh")
+        samples.append(try pressureSample(stage: "after-reopen"))
+        let report: [String: Any] = ["scope":"HostProbe unoptimized logic driver + real NativeTerminalView render input; not SSH/PTY/network/PERF acceptance","durationSeconds":ProcessInfo.processInfo.systemUptime-started,"outputSeconds":outputElapsed,"declaredIntervalMilliseconds":ProbeOutputLoad.intervalMilliseconds,"maximumBatchBytes":ProbeOutputLoad.maximumBatchBytes,"configuredHistory":ProbeOutputLoad.historyLines,"initialColumns":80,"initialRows":24,"producerQueueBatches":1,"droppedBytes":0,"heartbeatCount":heartbeatCount,"heartbeatMaximumMilliseconds":heartbeatMaximum*1000,"heartbeatCheckMilliseconds":500,"interactions":interactions,"views":viewReports,"closed":5,"disposed":5,"weakViewsAliveAfterClose":weakViews.filter { $0.value != nil }.count,"resourceSamples":samples]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted,.sortedKeys]).write(to: options.directory.appendingPathComponent("pressure-metrics.json"))
+        try check("pressure-under-60-seconds", ProcessInfo.processInfo.systemUptime-started < 60)
+    }
+    private func pressureSample(stage: String) throws -> [String: Any] {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "%cpu=,rss="]
+        process.environment = ["PATH":"/usr/bin:/bin", "LC_ALL":"C"]
+        let output = Pipe(); process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        try process.run(); let bytes = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw Failure.check("pressure-self-resource-sample") }
+        let fdBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard fdBytes > 0 else { throw Failure.check("pressure-self-fd-sample") }
+        var storage = [UInt8](repeating: 0, count: Int(fdBytes) + 64 * MemoryLayout<proc_fdinfo>.stride)
+        let captured = storage.withUnsafeMutableBytes { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count)) }
+        guard captured > 0 else { throw Failure.check("pressure-self-fd-sample") }
+        return ["stage":stage,"time":ProcessInfo.processInfo.systemUptime,"selfPID":pid,"fdCount":Int(captured)/MemoryLayout<proc_fdinfo>.stride,"cpuAndRSSKiB":String(decoding:bytes,as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines)]
+    }
     private func filesLocalExercise() async throws {
         guard let connector = model.files.connector as? LocalFilesProbeConnector else { throw Failure.check("local-files-fixture-required") }
         let root = options.directory.appendingPathComponent("LocalFilesFixture")
@@ -827,6 +954,11 @@ import OpenLXSSHFiles
         try data.write(to: options.directory.appendingPathComponent("smoke-" + options.phase + ".json"), options: .atomic)
         FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data("\n".utf8))
     }
+}
+
+@MainActor private final class PressureWeakTerminal {
+    weak var value: NativeTerminalView?
+    init(_ value: NativeTerminalView) { self.value = value }
 }
 
 /// Synthetic drag metadata exercises the registered NSTableView destination callbacks with
