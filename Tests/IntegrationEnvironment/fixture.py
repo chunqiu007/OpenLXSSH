@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import time
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / '.runtime'
@@ -24,6 +25,9 @@ PROJECT_RE = re.compile(r'^openlxssh-fixture-[0-9a-f]{12}$')
 SESSION_RE = re.compile(r'^[0-9a-f]{24}$')
 ACTIONS = ('build', 'up', 'stop', 'remove', 'collect', 'scenario', 'rotate-host',
            'challenge', 'data', 'disconnect', 'start', 'inspect')
+LOCAL_CONTEXTS = ('default', 'desktop-linux')
+VERIFIED_CONTEXT = None
+VERIFIED_ENDPOINT = None
 
 
 class FixtureError(Exception):
@@ -90,28 +94,78 @@ def new_state():
     return state
 
 
-def docker(argv, input_data=None, capture=False):
-    env = dict(os.environ, DOCKER_CONTEXT='default', DOCKER_HOST='unix:///var/run/docker.sock')
-    env.pop('DOCKER_TLS_VERIFY', None)
-    env.pop('DOCKER_CERT_PATH', None)
-    # Do not honor remote Docker contexts. The socket is never mounted inside
-    # any container; it is only the explicitly authorized host CLI endpoint.
-    result = subprocess.run(['docker', '--context', 'default'] + argv, input=input_data,
+def docker_environment(context=None):
+    # Never inherit another daemon, builder or Compose-file selection. The
+    # builtin docker-driver builder follows the explicitly pinned CLI context.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(('DOCKER_', 'BUILDX_', 'BUILDKIT_', 'COMPOSE_'))}
+    env['BUILDX_CONFIG'] = str(Path.home() / '.docker' / 'buildx')
+    env['COMPOSE_BAKE'] = 'false'
+    if context is not None:
+        env['DOCKER_CONTEXT'] = context
+        env['BUILDX_BUILDER'] = context
+    return env
+
+
+def docker_cli(argv, input_data=None, capture=False, context=None):
+    if context is not None and context not in LOCAL_CONTEXTS:
+        raise FixtureError('unsupported Docker context')
+    command = ['docker'] + (['--context', context] if context is not None else []) + argv
+    result = subprocess.run(command, input=input_data,
                             stdout=subprocess.PIPE if capture else None,
                             stderr=subprocess.PIPE if capture else None,
-                            env=env, check=False, cwd=str(ROOT))
+                            env=docker_environment(context), check=False, cwd=str(ROOT))
     if result.returncode:
         raise FixtureError('Docker command failed (secret output suppressed)' if capture else 'Docker command failed')
     return result.stdout if capture else b''
 
 
+def docker(argv, input_data=None, capture=False):
+    if VERIFIED_CONTEXT is None:
+        raise FixtureError('verify the local Docker context before issuing commands')
+    return docker_cli(argv, input_data=input_data, capture=capture, context=VERIFIED_CONTEXT)
+
+
+def local_endpoint(endpoint):
+    if not isinstance(endpoint, str):
+        raise FixtureError('Docker endpoint must be an absolute local Unix socket')
+    parsed = urlsplit(endpoint)
+    path = Path(parsed.path)
+    if (parsed.scheme != 'unix' or parsed.netloc or parsed.query or parsed.fragment
+            or not path.is_absolute() or parsed.path.startswith('//') or '..' in path.parts or not path.name
+            or '%' in endpoint or endpoint != 'unix://' + str(path)
+            or any(ord(char) <= 32 for char in endpoint)):
+        raise FixtureError('Docker endpoint must be a normalized absolute local Unix socket')
+    return endpoint
+
+
 def require_local_engine():
-    if os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT') not in (None, '', 'default'):
-        raise FixtureError('unset remote/custom DOCKER_HOST and DOCKER_CONTEXT before using fixture')
-    description = json.loads(docker(['context', 'inspect', 'default'], capture=True))
-    endpoint = description[0]['Endpoints']['docker']['Host']
-    if not endpoint.startswith('unix:///'):
-        raise FixtureError('default Docker context must be a local Unix socket')
+    global VERIFIED_CONTEXT, VERIFIED_ENDPOINT
+    VERIFIED_CONTEXT = VERIFIED_ENDPOINT = None
+    if (os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_TLS_VERIFY')
+            or os.environ.get('DOCKER_CERT_PATH') or os.environ.get('DOCKER_TLS')
+            or os.environ.get('DOCKER_CONTEXT') not in (None, '') + LOCAL_CONTEXTS):
+        raise FixtureError('unset remote/custom Docker host, context and TLS overrides before using fixture')
+    context = os.environ.get('DOCKER_CONTEXT') or docker_cli(['context', 'show'], capture=True).decode().strip()
+    if context not in LOCAL_CONTEXTS:
+        raise FixtureError('only the local default or desktop-linux Docker context is supported')
+    description = json.loads(docker_cli(['context', 'inspect', context], capture=True, context=context))
+    if len(description) != 1 or description[0].get('Name') != context:
+        raise FixtureError('unexpected Docker context metadata')
+    endpoint = local_endpoint(description[0]['Endpoints']['docker']['Host'])
+    VERIFIED_CONTEXT, VERIFIED_ENDPOINT = context, endpoint
+    return context
+
+
+def require_local_builder():
+    # No --bootstrap: only inspect the builtin builder, never start or adopt a
+    # docker-container/remote builder. Fail closed if it points elsewhere.
+    builder = json.loads(docker(['buildx', 'inspect', VERIFIED_CONTEXT, '--format', '{{json .}}'], capture=True))
+    nodes = builder.get('Nodes') or []
+    if builder.get('Driver') != 'docker' or len(nodes) != 1:
+        raise FixtureError('build requires the selected context\'s builtin docker-driver builder')
+    if nodes[0].get('Endpoint') not in (VERIFIED_CONTEXT, VERIFIED_ENDPOINT):
+        raise FixtureError('builder endpoint differs from the verified local Docker context')
 
 
 def compose(state, args):
@@ -275,6 +329,7 @@ def main():
     if args.action == 'build':
         image_input()
         require_local_engine()
+        require_local_builder()
         state = new_state()
         for identifier in resources(state, 'container'):
             item = json.loads(docker(['inspect', identifier], capture=True))[0]

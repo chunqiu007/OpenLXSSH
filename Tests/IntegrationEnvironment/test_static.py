@@ -32,6 +32,7 @@ class StaticTests(unittest.TestCase):
         driver = module('fixture')
         for action in driver.ACTIONS:
             with self.subTest(action=action), mock.patch.object(driver, 'docker', side_effect=AssertionError('Docker called')), \
+                    mock.patch.object(driver, 'docker_cli', side_effect=AssertionError('Docker CLI called')), \
                     mock.patch.object(driver, 'new_state', side_effect=AssertionError('write attempted')), \
                     mock.patch.object(sys, 'argv', ['fixture.py', action]), \
                     mock.patch.object(sys, 'stderr'):
@@ -56,8 +57,13 @@ class StaticTests(unittest.TestCase):
         # Non-secret metadata only. This string is syntax, not a downloaded or
         # verified digest and is never persisted in a runtime state.
         accepted = 'docker.io/library/ubuntu:24.04@sha256:' + 'a' * 64
-        with mock.patch.dict(os.environ, {'OPENLXSSH_UBUNTU_IMAGE': accepted}):
-            self.assertEqual(driver.image_input(), accepted)
+        # Main-session reviewed official ARM64 manifest; syntax check only,
+        # never a registry lookup, pull, provenance claim or build in this test.
+        reviewed = ('docker.io/library/ubuntu:24.04@sha256:'
+                    '18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d')
+        for image in (accepted, reviewed):
+            with mock.patch.dict(os.environ, {'OPENLXSSH_UBUNTU_IMAGE': image}):
+                self.assertEqual(driver.image_input(), image)
         for bad in ('ubuntu:latest', 'ubuntu:24.04', accepted.replace('library/ubuntu', 'other/image'),
                     accepted + '\n', accepted.replace(':24.04@', ':22.04@')):
             with self.subTest(image=bad), mock.patch.dict(os.environ, {'OPENLXSSH_UBUNTU_IMAGE': bad}):
@@ -67,10 +73,126 @@ class StaticTests(unittest.TestCase):
     def test_remote_context_is_rejected_before_cli(self):
         driver = module('fixture')
         for settings in ({'DOCKER_HOST': 'ssh://not-an-authorized-host'}, {'DOCKER_CONTEXT': 'remote'}):
-            with mock.patch.dict(os.environ, settings), mock.patch.object(driver, 'docker',
+            with mock.patch.dict(os.environ, settings, clear=True), mock.patch.object(driver, 'docker_cli',
                                       side_effect=AssertionError('remote CLI attempted')):
                 with self.assertRaises(driver.FixtureError):
                     driver.require_local_engine()
+
+    def test_local_context_selection_pins_all_followup_commands(self):
+        for context, endpoint in (('default', 'unix:///var/run/docker.sock'),
+                                  ('desktop-linux', 'unix:///Users/static/.docker/run/docker.sock')):
+            for explicit in (None, '', context):
+                driver = module('fixture')
+                settings = {} if explicit is None else {'DOCKER_CONTEXT': explicit}
+
+                def local_metadata(command, **kwargs):
+                    if command == ['docker', 'context', 'show']:
+                        return subprocess.CompletedProcess(command, 0, (context + '\n').encode(), b'')
+                    if command == ['docker', '--context', context, 'context', 'inspect', context]:
+                        content = [{'Name': context, 'Endpoints': {'docker': {'Host': endpoint}}}]
+                        return subprocess.CompletedProcess(command, 0, json.dumps(content).encode(), b'')
+                    return subprocess.CompletedProcess(command, 0, b'[]', b'')
+
+                with self.subTest(context=context, explicit=explicit), mock.patch.dict(os.environ, settings, clear=True), \
+                        mock.patch.object(driver.subprocess, 'run', side_effect=local_metadata) as run:
+                    self.assertEqual(driver.require_local_engine(), context)
+                    self.assertEqual(driver.VERIFIED_ENDPOINT, endpoint)
+                    # A changed ambient context cannot redirect a verified run.
+                    with mock.patch.dict(os.environ, {'DOCKER_CONTEXT': 'remote', 'DOCKER_HOST': 'ssh://forbidden'}):
+                        driver.docker(['ps', '-a', '-q'], capture=True)
+                        driver.docker(['image', 'inspect', 'static-image'], capture=True)
+                    for call in run.call_args_list[-2:]:
+                        self.assertEqual(call.args[0][:3], ['docker', '--context', context])
+                        self.assertEqual(call.kwargs['env']['DOCKER_CONTEXT'], context)
+                        self.assertNotIn('DOCKER_HOST', call.kwargs['env'])
+                        self.assertEqual(call.kwargs['env']['BUILDX_BUILDER'], context)
+
+    def test_context_and_tls_overrides_fail_before_any_cli(self):
+        for settings in ({'DOCKER_CONTEXT': 'company'}, {'DOCKER_CONTEXT': 'desktop-linux\n'},
+                         {'DOCKER_HOST': 'unix:///tmp/another.sock'}, {'DOCKER_TLS_VERIFY': '1'},
+                         {'DOCKER_CERT_PATH': '/not/used'}, {'DOCKER_TLS': '1'}):
+            driver = module('fixture')
+            with self.subTest(keys=list(settings)), mock.patch.dict(os.environ, settings, clear=True), \
+                    mock.patch.object(driver, 'docker_cli', side_effect=AssertionError('CLI attempted')):
+                with self.assertRaises(driver.FixtureError):
+                    driver.require_local_engine()
+                self.assertIsNone(driver.VERIFIED_CONTEXT)
+
+    def test_active_custom_context_is_rejected_before_inspect(self):
+        driver = module('fixture')
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(driver, 'docker_cli', return_value=b'company\n') as cli:
+            with self.assertRaises(driver.FixtureError):
+                driver.require_local_engine()
+            cli.assert_called_once_with(['context', 'show'], capture=True)
+
+    def test_local_endpoint_rejects_remote_alias_and_url_suffixes(self):
+        driver = module('fixture')
+        endpoints = ('tcp://127.0.0.1:2375', 'ssh://localhost', 'unix://host/path/docker.sock',
+                     'unix:relative.sock', 'unix:///tmp/../docker.sock', 'unix:///tmp/./docker.sock',
+                     'unix:///tmp//docker.sock', 'unix:////tmp/docker.sock', 'unix:///tmp/docker.sock/',
+                     'unix:///tmp/docker.sock?host=remote', 'unix:///tmp/docker.sock#remote',
+                     'unix:///tmp/%2e%2e/docker.sock', 'unix:///tmp/docker.sock\n', 'unix:///', None)
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint), mock.patch.dict(os.environ, {'DOCKER_CONTEXT': 'desktop-linux'}, clear=True), \
+                    mock.patch.object(driver, 'docker_cli', return_value=json.dumps([
+                        {'Name': 'desktop-linux', 'Endpoints': {'docker': {'Host': endpoint}}}]).encode()):
+                with self.assertRaises(driver.FixtureError):
+                    driver.require_local_engine()
+                self.assertIsNone(driver.VERIFIED_CONTEXT)
+        with self.assertRaises(driver.FixtureError):
+            driver.docker(['ps'])
+
+    def test_build_environment_cannot_select_remote_builder_or_compose(self):
+        driver = module('fixture')
+        driver.VERIFIED_CONTEXT = 'desktop-linux'
+        settings = {'PATH': '/usr/bin', 'OPENLXSSH_UBUNTU_IMAGE': 'non-secret-metadata',
+                    'DOCKER_HOST': 'ssh://forbidden', 'DOCKER_CONTEXT': 'remote',
+                    'DOCKER_TLS_VERIFY': '1', 'DOCKER_CERT_PATH': '/unused', 'DOCKER_CONFIG': '/unreviewed',
+                    'BUILDX_BUILDER': 'remote', 'BUILDX_CONFIG': '/unreviewed',
+                    'BUILDX_BAKE_GIT_SSH': '/unused', 'BUILDKIT_HOST': 'tcp://forbidden:1234',
+                    'COMPOSE_FILE': '/unreviewed.yaml', 'COMPOSE_BAKE': 'true', 'COMPOSE_PROFILES': 'unreviewed'}
+        with mock.patch.dict(os.environ, settings, clear=True), \
+                mock.patch.object(driver.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'{}', b'')) as run:
+            driver.docker(['compose', 'build', '--pull', 'keyonly'], capture=True)
+            self.assertEqual(run.call_args.args[0][:3], ['docker', '--context', 'desktop-linux'])
+            env = run.call_args.kwargs['env']
+            controlled = {key: value for key, value in env.items()
+                          if key.startswith(('DOCKER_', 'BUILDX_', 'BUILDKIT_', 'COMPOSE_'))}
+            self.assertEqual(controlled, {'DOCKER_CONTEXT': 'desktop-linux', 'BUILDX_BUILDER': 'desktop-linux',
+                                          'BUILDX_CONFIG': str(Path.home() / '.docker' / 'buildx'),
+                                          'COMPOSE_BAKE': 'false'})
+            self.assertEqual(env['OPENLXSSH_UBUNTU_IMAGE'], settings['OPENLXSSH_UBUNTU_IMAGE'])
+
+    def test_builtin_builder_must_match_selected_local_context(self):
+        driver = module('fixture')
+        driver.VERIFIED_CONTEXT = 'desktop-linux'
+        driver.VERIFIED_ENDPOINT = 'unix:///Users/static/.docker/run/docker.sock'
+        for endpoint in (driver.VERIFIED_CONTEXT, driver.VERIFIED_ENDPOINT):
+            builder = {'Driver': 'docker', 'Nodes': [{'Endpoint': endpoint}]}
+            with mock.patch.object(driver, 'docker', return_value=json.dumps(builder).encode()) as cli:
+                driver.require_local_builder()
+                cli.assert_called_once_with(['buildx', 'inspect', driver.VERIFIED_CONTEXT, '--format', '{{json .}}'], capture=True)
+        for builder in ({'Driver': 'remote', 'Nodes': [{'Endpoint': driver.VERIFIED_CONTEXT}]},
+                        {'Driver': 'docker-container', 'Nodes': [{'Endpoint': driver.VERIFIED_CONTEXT}]},
+                        {'Driver': 'docker', 'Nodes': [{'Endpoint': 'default'}]},
+                        {'Driver': 'docker', 'Nodes': [{'Endpoint': 'tcp://forbidden:1234'}]},
+                        {'Driver': 'docker', 'Nodes': [{'Endpoint': driver.VERIFIED_CONTEXT}] * 2},
+                        {'Driver': 'docker', 'Nodes': []}):
+            with self.subTest(builder=builder), mock.patch.object(driver, 'docker', return_value=json.dumps(builder).encode()):
+                with self.assertRaises(driver.FixtureError):
+                    driver.require_local_builder()
+
+    def test_remote_builder_is_rejected_before_build_state_or_compose(self):
+        driver = module('fixture')
+        with mock.patch.object(sys, 'argv', ['fixture.py', 'build', '--authorized-run']), \
+                mock.patch.object(driver, 'image_input', return_value='static-image'), \
+                mock.patch.object(driver, 'require_local_engine'), \
+                mock.patch.object(driver, 'require_local_builder', side_effect=driver.FixtureError('not local')), \
+                mock.patch.object(driver, 'new_state', side_effect=AssertionError('state written')), \
+                mock.patch.object(driver, 'compose', side_effect=AssertionError('build attempted')):
+            with self.assertRaises(driver.FixtureError):
+                driver.main()
 
     def test_runtime_permissions_exclusive_and_symlink_boundary(self):
         driver = module('fixture')
