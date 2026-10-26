@@ -1,6 +1,6 @@
 # 真实 SFTP 密钥/密码与组合认证矩阵
 
-日期2026-10-27，Task REAL-SFTP-COMBINED-AUTH-PREP-A / LIVE-A。**当前PARTIAL：五个单方法正向通过，一项私钥+KBI因额外第四回调被严格拒绝，四项依赖MFA未尝试。** 不用OpenSSH outer-auth或MINA auth-only结果代替SFTP成功。
+日期2026-10-27，Task REAL-SFTP-COMBINED-AUTH-PREP-A / LIVE-A / SFTP-TERMINAL-ZERO-R1 / LIVE-A。**修正测试契约遗漏的精确尾空轮后，五项MFA实际SFTP与79bytes往返全部通过；结合此前五单方法，受控正向矩阵已覆盖。** 原5pass/1fail/4未试矩阵与严格拒绝诊断仍原样保留，不追认旧失败、不冒称GUI/mac26或完整AUTH通过。
 
 ## 实现与主管源审
 
@@ -74,6 +74,28 @@ MFA测试预算当前严格空name/instruction、原始单prompt A→B→C、ech
 
 研究只证明上游路径，未逐补丁核Ubuntu9.6p1-3ubuntu13.20源码完全一致；本次typedcallback形状由独立实际诊断补证。现选择只为固定fixture测试补精确预算：A/B/C三次同session之后，恰一次ordinal4全空header/count0回复[]、不读秘密；earlyzero、重复/第五、非空header、额外prompt仍拒绝。生产已有typed zero处理，无产品修改。此R1尚待源审/真实SFTP成功，不预判通过。
 
+## 精确尾轮R1与五项真实MFA复验
+
+R1只为固定rootfixture测试定义typedphase secret(session,index)/terminalZero。三次同ID A/B/C秘密响应均成功resolve后才允许恰第四全空name/instruction/count0/echo[]，仅reply.resolve([])，不reader。earlyzero、重复/第五、非空header、第四prompt、跨ID/replay/closed/deadline/未resolve均拒绝；empty不设置认证成功。报告拆总reply4、secret3、terminalZero1、managementReads3、late0，prompt[1,1,1,0]。没有修改生产Files/服务器/正向认证默认。
+
+主管完整读Policy/Callbacks及新拒绝矩阵，独立37Swift/14Python/17CLI、344input/36cmd、strict签名通过：`DerivedData/Verification/primary-sftp-terminal-zero-static-83164a17-052e-45e2-a5e1-263bacde9833/`。精确新App `Tests/RealIntegration/.build/host-18b6b488-18a2-4b3d-a054-cc4dd2663bd7/OpenLXSSHRealIntegration.app`，主程序SHA256 `5893e87fb88375a8aa01fc3b626161da2ee99280384019a540a02da26337d420`，helper `dfa7b557c429ceb73d1f44427e28a90149ade927c83864ffa640d9e2fc985767`。已审源码本地提交52f358a，非产品发布。
+
+两MFA服务freshgeneration/带外trust及原CIDpolicy核验后，各案一次无重试，先最小两案成功再补另外三种密钥；未重跑五个单方法：
+
+| 新MFA分案 | 实际耗时/退出 | 结果 |
+| --- | --- | --- |
+| key-kbd Ed25519无口令 | 24.965s / 0 | authenticatedSFTP1、79IO/hash/list2/lstat5、精确清理/awaitclose |
+| password-kbd | 24.960s / 0 | 同上 |
+| key-kbd Ed25519有口令 | 25.148s / 0 | 同上 |
+| key-kbd RSA无口令 | 24.954s / 0 | 同上 |
+| key-kbd RSA有口令 | 25.128s / 0 | 同上 |
+
+五案均callback4/总reply4/secret3/terminalZero1/read3/late0、prompt[1,1,1,0]/echo[[false],[false],[false],[]]、无unexpected；每个精确server session文件随后不存在。唯一900s有限relay16441 TERM/waitexit0，accepted5/finished5/rejected0/cleanup_failed0；5token/owner/tombstone和所属DockerPID消失、端口无listener、五服务Healthy。193受检依赖源与App/契约hash不变，Git检查点变化仅元数据。
+
+原报告/契约/cwd/exit/cleanup：`Tests/RealIntegration/.build/sftp-terminal-zero-live-aa46be86-ec4b-421e-9483-54d7fe0f0751/`。主管独立重读五个原result并核预算/actualSFTP/79IO/hash/精确清理，证据 `DerivedData/Verification/primary-sftp-mfa-results-907bc22f-8961-46b4-8de5-146179aaa3c0/`。
+
+主管另用同精确App、新独立case亲跑password-kbd一次：actualSFTP1、79bytes写读/hash/list2/lstat5、callback4/secret3/empty1/read3、sessionfileRemoved/close通过；自己180s有限relay1/1/0/0 TERM/waitexit0，端口释放。证据 `DerivedData/Verification/primary-sftp-mfa-live-07febd37-da0c-4d27-a871-16758915a503/`。没有机械重复全部十项。
+
 ## 未完成
 
-尚缺修正尾空协议预算后的组合MFA完整成功、错误/过期/并发边界、目标macOS26/正式App按需整合与其他必要验收。整体Goal NOT COMPLETE。
+受控正向SFTP认证矩阵已覆盖，不代表错误/过期OTP、并发/迟到、目标macOS26/正式App完整文件交互或企业环境。错误/真实过期OTP独立负例另准备，严格判typed.authentication而非timeout/transport。整体Goal NOT COMPLETE。
