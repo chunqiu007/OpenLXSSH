@@ -55,7 +55,10 @@ enum AppRealIntegrationArguments {
 enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
-enum AppRealIntegrationPhase: String, Codable, Sendable { case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close" }
+enum AppRealIntegrationPhase: String, Codable, Sendable {
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel"
+    var isTransfer: Bool { self != .readOnly }
+}
 struct AppRealTransferScope: Sendable {
     static let sourceBytes: UInt64 = 16 * 1024 * 1024
     static let chunkBytes = 65_536
@@ -73,15 +76,35 @@ struct AppRealTransferScope: Sendable {
     }
     func permitsRemote(_ path: Data) -> Bool { path == Data(remoteDirectory.utf8) || path == Data(remotePayload.utf8) }
 }
+struct AppRealWindowTransferGate {
+    static func sameIdentity(jobID: UUID, generation: UUID, sourceServiceID: UUID, destinationServiceID: UUID, host: String,
+                             expected: [String]) -> Bool {
+        expected == [jobID.uuidString, generation.uuidString, sourceServiceID.uuidString, destinationServiceID.uuidString, host]
+    }
+    static func cancelledAndDrained(state: String, managerClosed: Bool, activeWork: Bool, sshClosed: Bool, pidPresent: Bool, windowPresent: Bool, closedServices: Int, handles: Int) -> Bool {
+        state == "cancelled" && managerClosed && !activeWork && sshClosed && !pidPresent && !windowPresent && closedServices == 1 && handles == 0
+    }
+}
+struct AppRealWindowCheckpoint: Encodable, Sendable {
+    let runID: String, event: String
+    let jobID: UUID, generation: UUID, serviceID: UUID, hostID: UUID
+    let serverBinding: String, sourceBytes: UInt64, progressBytes: UInt64
+    let remoteRootBase64: String, payloadBase64: String, temporaryBase64: String
+    let connectionAttempts: Int
+    let retainedTemporaryPathsBase64: [String]
+    let phase = AppRealIntegrationPhase.windowContinueCancel
+}
 enum AppRealTransferStage: String, Codable, Sendable {
     case source, mkdir, enterOwnedRoot, probePrepare, probeExecute, transferContext, uploadControl, observeJob
     case pendingDecision, firstJobIdentity, temporaryLedger, preCloseAction, preHideAction, awaitSSHClose
+    case windowFirstClose, windowContinue, windowSecondClose, windowCancelClose, windowAwaitClosed, windowFinalCancelled
     case awaitTransfer, finalSucceeded, sameServiceContext, remoteDigest, remoteCleanup, localCleanup, complete
 }
 enum AppRealTransferGuard: String, Codable, Error, Sendable {
     case mkdirContext, mkdirLedger, emptyOwnedRoot, probeScope, probeResult, serviceBinding, noPreviousJobs
     case singleJob, pendingRiskMismatch, firstJobIdentity, temporaryCount, preCloseInflight, preCloseIdentity
     case sessionConnected, closeControl, preHideInflight, preHideIdentity, hideControl, finalJobIdentity
+    case windowFirstInflight, windowContinueIdentity, windowContinueAdmission, windowSecondInflight, windowCancelIdentity, windowFinalCancelled, windowNotClosed, windowResources
     case unexpectedFinalDecision, finalSucceeded, sameConnection, sameServiceContext, remoteDigest, ownedCleanupLedger
 }
 enum AppRealDiagnosticJobState: String, Codable, Sendable {
@@ -102,8 +125,8 @@ struct AppRealTransferSnapshot: Codable, Sendable {
     init(stage: AppRealTransferStage, scope: AppRealTransferScope, jobID: UUID?, generation: UUID?, sourceServiceID: UUID?, destinationServiceID: UUID?,
          sourcePath: Data?, destinationPath: Data?, state: String, transferredBytes: UInt64,
          pendingQuestion: AppRealDiagnosticQuestion, riskPath: Data?, ownedPaths: [Data], sshState: AppRealDiagnosticSSHState,
-         ownedSSHPIDPresent: Bool, serverBinding: UUID?, connectionAttempts: Int) {
-        self.stage = stage; phase = .transferSurvivesClose; self.jobID = jobID; self.generation = generation
+         ownedSSHPIDPresent: Bool, serverBinding: UUID?, connectionAttempts: Int, phase: AppRealIntegrationPhase = .transferSurvivesClose) {
+        self.stage = stage; self.phase = phase; self.jobID = jobID; self.generation = generation
         self.sourceServiceID = sourceServiceID; self.destinationServiceID = destinationServiceID
         let localSource = Data(("/" + scope.payloadName).utf8)
         sourcePathBase64 = sourcePath == localSource ? sourcePath?.base64EncodedString() : nil
@@ -145,8 +168,8 @@ struct AppRealIntegrationContract: Codable, Sendable {
     static let base = "docker.io/library/ubuntu:24.04@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d"
     static let image = "sha256:7f633d33bf5af2fbee137385eba3e036ef7bbbcf18fe423d99b25be12d12a363"
     static let project = "openlxssh-fixture-61ed25328c13"
-    static let container = "2db5bbb3cb75a3253d9b02af5ca52cbdc8095230464f82c18d37eca9ac1fc837"
-    static let fingerprint = "SHA256:oCBbJaAjOZMzrKEnj+Z4iHSn74Qc+0tTu9bOzfpwJ5w"
+    static let container = "1253a29501483eb71f80e39b9af5c85e10c3a49329d5e93700fecd3f00f334f2"
+    static let fingerprint = "SHA256:MHUel445tN/gQtcvZikLZVE1mlWZf7U38C0zZTTru+Q"
     static let fixtureRoot = "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/IntegrationEnvironment"
     static let inputRoot = "/Users/liuwenshuo/Desktop/OpenLXSSH/DerivedData/AppRealIntegration/Inputs"
     let schema: Int

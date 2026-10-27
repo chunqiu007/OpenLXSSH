@@ -19,7 +19,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -82,6 +82,44 @@ final class AppRealIntegrationContractTests: XCTestCase {
         XCTAssertEqual(ring.stage, .preCloseAction); XCTAssertEqual(ring.failedGuard, .preCloseInflight)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(ring)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["stage", "failedGuard", "snapshots"])
+    }
+    func testWindowCancelRequiresCancelledWorkerServiceSSHAndWindowDrain() {
+        func gate(_ state: String = "cancelled", _ closed: Bool = true, _ active: Bool = false, _ ssh: Bool = true,
+                  _ pid: Bool = false, _ window: Bool = false, _ services: Int = 1, _ handles: Int = 0) -> Bool {
+            AppRealWindowTransferGate.cancelledAndDrained(state: state, managerClosed: closed, activeWork: active, sshClosed: ssh,
+                pidPresent: pid, windowPresent: window, closedServices: services, handles: handles)
+        }
+        XCTAssertTrue(gate())
+        XCTAssertFalse(gate("succeeded")); XCTAssertFalse(gate("failed")); XCTAssertFalse(gate("running"))
+        XCTAssertFalse(gate("cancelled", false)); XCTAssertFalse(gate("cancelled", true, true))
+        XCTAssertFalse(gate("cancelled", true, false, false)); XCTAssertFalse(gate("cancelled", true, false, true, true))
+        XCTAssertFalse(gate("cancelled", true, false, true, false, true)); XCTAssertFalse(gate("cancelled", true, false, true, false, false, 0))
+        XCTAssertFalse(gate("cancelled", true, false, true, false, false, 1, 1))
+    }
+    func testWindowJobIdentityCannotChangeAcrossContinueAndCancel() {
+        let values = [UUID(), UUID(), UUID(), UUID()], host = UUID().uuidString
+        let expected = values.map(\.uuidString) + [host]
+        XCTAssertTrue(AppRealWindowTransferGate.sameIdentity(jobID: values[0], generation: values[1], sourceServiceID: values[2], destinationServiceID: values[3], host: host, expected: expected))
+        XCTAssertFalse(AppRealWindowTransferGate.sameIdentity(jobID: UUID(), generation: values[1], sourceServiceID: values[2], destinationServiceID: values[3], host: host, expected: expected))
+        XCTAssertFalse(AppRealWindowTransferGate.sameIdentity(jobID: values[0], generation: UUID(), sourceServiceID: values[2], destinationServiceID: values[3], host: host, expected: expected))
+        XCTAssertFalse(AppRealWindowTransferGate.sameIdentity(jobID: values[0], generation: values[1], sourceServiceID: values[2], destinationServiceID: UUID(), host: host, expected: expected))
+        XCTAssertFalse(AppRealWindowTransferGate.sameIdentity(jobID: values[0], generation: values[1], sourceServiceID: values[2], destinationServiceID: values[3], host: "other", expected: expected))
+    }
+    func testWindowCheckpointOnlyContainsBoundedKnownMetadata() throws {
+        let scope = try AppRealTransferScope(runID: id)
+        let checkpoint = AppRealWindowCheckpoint(runID: id, event: "before-first-close", jobID: UUID(), generation: UUID(), serviceID: UUID(), hostID: UUID(),
+            serverBinding: UUID().uuidString, sourceBytes: AppRealTransferScope.sourceBytes, progressBytes: 65536,
+            remoteRootBase64: Data(scope.remoteDirectory.utf8).base64EncodedString(), payloadBase64: Data(scope.remotePayload.utf8).base64EncodedString(),
+            temporaryBase64: Data((scope.remoteDirectory + "/.openlxssh-transfer.01234567-89AB-CDEF-0123-456789ABCDEF.part").utf8).base64EncodedString(), connectionAttempts: 1, retainedTemporaryPathsBase64: [])
+        let data = try JSONEncoder().encode(checkpoint), value = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(value["phase"] as? String, "window-continue-cancel")
+        let snapshot = AppRealTransferSnapshot(stage: .windowFirstClose, scope: scope, jobID: nil, generation: nil,
+            sourceServiceID: nil, destinationServiceID: nil, sourcePath: nil, destinationPath: nil, state: "running", transferredBytes: 65536,
+            pendingQuestion: .none, riskPath: nil, ownedPaths: [], sshState: .connected, ownedSSHPIDPresent: true,
+            serverBinding: nil, connectionAttempts: 1, phase: .windowContinueCancel)
+        XCTAssertEqual(snapshot.phase, .windowContinueCancel)
+        XCTAssertLessThan(data.count, 4096)
+        for forbidden in ["password", "privateKey", "terminal", "errorDescription"] { XCTAssertFalse(String(decoding: data, as: UTF8.self).contains(forbidden)) }
     }
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)

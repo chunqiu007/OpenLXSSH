@@ -218,6 +218,15 @@ struct AppRealSessionFailure: Error {
         let actualJobSucceeded: Bool, unchangedJobServiceHostGeneration: Bool, reconnects: Int
         let cleanedRemoteRoot: Bool, localSourceRemoved: Bool
     }
+    struct WindowEvidence: Encodable {
+        let jobID: UUID, generation: UUID, serviceID: UUID, hostID: UUID
+        let serverBinding: String, sourceBytes: UInt64, sourceSHA256: String
+        let progressAtFirstWindowClose: UInt64, progressAfterContinue: UInt64, progressAtSecondWindowClose: UInt64, progressAtCancelDecision: UInt64
+        let cancelledState: String, managerClosed: Bool, allWorkDrained: Bool, windowClosed: Bool, sshClosedPIDNil: Bool
+        let connectionAttempts: Int, closedServices: Int, publicHandlesAfterClose: Int
+        let retainedTemporaryPathsBase64: [String], createdPathsBase64: [String]
+        let remotePostcheck = "NOT PERFORMED after cancellation: original service may be disposed. External fixed-CID exact-ledger final absence/temp metadata check required; no automatic reconnect."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -229,17 +238,19 @@ struct AppRealSessionFailure: Error {
         let localStoreRemoved: Bool
         let phase: String
         let transfer: TransferEvidence?
+        let windowTransfer: WindowEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
         let publicOpenHandles: Int, publicSuccessfulOpens: Int, publicSuccessfulCloses: Int, publicShutdownClosedHandles: Int
-        let boundary = "Real App native double-click/trust controls and SFTP. Transfer phase covers only explicit 16MiB inflight native SSH close and panel hide; test picker is not manual Finder. Outer-auth is not shellReady. No nested SSH, quit/window-cancel transfer matrix, IME, macOS26 runtime or product PERF claim. Expected CID/image/network are management prerequisites, not inspected by App."
+        let boundary = "Real App native controls and SFTP. Transfer-survives-close tests SSH close/hide; window-continue-cancel tests one real inflight window Continue then CancelAndClose. Cancellation remote absence/temp verification is EXTERNAL pending, never I/O on a closed service. Test picker is not manual Finder. No Quit/IME/macOS26/product PERF claim."
     }
     let delegate: AppDelegate, options: AppRealIntegrationArguments.Options, input: AppRealPublicMaterial, store: AppRealOwnedStore
     let facts: AppRealFilesFacts, credentials: AppRealNoCredentials
     private var checks: [Check] = []
     private var ssh: DirectSessionDriver?, actualPID: Int32?, sshReleased = false
     private var transferEvidence: TransferEvidence?
+    private var windowEvidence: WindowEvidence?
     private var transferDiagnostics = AppRealTransferDiagnostics()
     init(delegate: AppDelegate, options: AppRealIntegrationArguments.Options, input: AppRealPublicMaterial, store: AppRealOwnedStore,
          facts: AppRealFilesFacts, credentials: AppRealNoCredentials) {
@@ -315,7 +326,7 @@ struct AppRealSessionFailure: Error {
             let returned = await facts.returnedProductionServices, listed = await facts.lists
             try check("production-sftp-read-only-list", model.files.state == .ready && returned == 1 && listed >= 2)
             let manager = model.files.manager
-            if input.contract.selectedPhase == .transferSurvivesClose {
+            if input.contract.selectedPhase.isTransfer {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
                 sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
             } else {
@@ -324,9 +335,11 @@ struct AppRealSessionFailure: Error {
                 sshReleased = true
                 try check("same-real-session-closed-pid-released", driver.session.state == .closed && driver.session.ownedProcessID == nil)
             }
-            guard let window = delegate.mainWindow else { throw AppRealIntegrationFailure.nativeControl }
-            window.performClose(nil)
-            try await wait { self.delegate.mainWindow == nil }
+            if input.contract.selectedPhase != .windowContinueCancel {
+                guard let window = delegate.mainWindow else { throw AppRealIntegrationFailure.nativeControl }
+                window.performClose(nil)
+                try await wait { self.delegate.mainWindow == nil }
+            }
             let finalManager = await manager.snapshot(), closedFiles = await facts.closedServices
             try check("window-close-awaited-files", finalManager.isClosed && closedFiles == 1)
             if input.contract.selectedPhase == .transferSurvivesClose {
@@ -342,13 +355,14 @@ struct AppRealSessionFailure: Error {
             try await model.security.deleteKey(key.id)
             try await model.security.close(); try await model.repository.close()
             try check("no-keychain-access", await credentials.forbiddenCalls == 0)
+            if input.contract.selectedPhase == .windowContinueCancel { try store.cleanupTransferSource() }
             try store.cleanupEmptyStore(); removed = true
         } catch {
             if let guardName = error as? AppRealTransferGuard {
                 transferDiagnostics.failed(guardName); failure = "transfer." + guardName.rawValue
             } else { failure = (error as? AppRealSessionFailure)?.code ?? (error as? AppRealIntegrationFailure)?.rawValue ?? "sanitized-native-integration-failure" }
         }
-        if failure != nil, input.contract.selectedPhase == .transferSurvivesClose {
+        if failure != nil, input.contract.selectedPhase.isTransfer {
             await captureTransferDiagnostic(stage: transferDiagnostics.stage, driver: ssh, job: nil)
         }
         if failure != nil {
@@ -360,9 +374,9 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence,
-            failedStage: failure != nil && input.contract.selectedPhase == .transferSurvivesClose ? transferDiagnostics.stage : nil,
-            diagnostics: input.contract.selectedPhase == .transferSurvivesClose ? transferDiagnostics : nil,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence,
+            failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
+            diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),
             publicOpenHandles: facts.openHandleCount(), publicSuccessfulOpens: facts.successfulOpens, publicSuccessfulCloses: facts.successfulCloses,
             publicShutdownClosedHandles: facts.shutdownClosedHandles)
@@ -414,7 +428,7 @@ struct AppRealSessionFailure: Error {
             sourcePath: job?.request.source.path.bytes, destinationPath: job?.request.destination.path.bytes,
             state: job?.state.rawValue ?? "absent", transferredBytes: job?.transferredBytes ?? 0,
             pendingQuestion: question, riskPath: riskPath, ownedPaths: Array(owned.keys), sshState: state,
-            ownedSSHPIDPresent: driver?.session.ownedProcessID != nil, serverBinding: bindings.first.flatMap(UUID.init(uuidString:)), connectionAttempts: attempts)
+            ownedSSHPIDPresent: driver?.session.ownedProcessID != nil, serverBinding: bindings.first.flatMap(UUID.init(uuidString:)), connectionAttempts: attempts, phase: input.contract.selectedPhase)
         transferDiagnostics.record(snapshot)
     }
     private nonisolated static func inspectOwnedTransfer(_ service: any RemoteFileService, scope: AppRealTransferScope, token: CancellationToken) async throws {
@@ -424,7 +438,7 @@ struct AppRealSessionFailure: Error {
             guard try await service.lstat(current, token: token).kind == .directory else { throw AppRealIntegrationFailure.cleanup }
         }
     }
-    private func transferSurvivesClose(tab: SessionTab, driver: DirectSessionDriver) async throws -> TransferEvidence {
+    private func transferSurvivesClose(tab: SessionTab, driver: DirectSessionDriver) async throws -> TransferEvidence? {
         transferDiagnostics.enter(.source)
         let scope = try AppRealTransferScope(runID: input.contract.runID)
         let sourceURL = try store.generateTransferSource(scope), expectedSHA = try store.transferSourceSHA256()
@@ -489,6 +503,11 @@ struct AppRealSessionFailure: Error {
             return path.parent == remoteRoot && path.name?.bytes.starts(with: Data(".openlxssh-transfer.".utf8)) == true && actualCreated[bytes] == false
         }
         guard temporaries.count == 1 else { throw AppRealTransferGuard.temporaryCount }
+        if input.contract.selectedPhase == .windowContinueCancel {
+            windowEvidence = try await windowContinueCancel(first: first, context: context, binding: binding, scope: scope,
+                sourceSHA: expectedSHA, temporary: temporaries[0], manager: manager, driver: driver)
+            return nil
+        }
         transferDiagnostics.enter(.preCloseAction)
         // Wait for both native controls before the final action-time snapshot.
         try await wait { self.find("tab.close." + tab.id.uuidString, NSButton.self)?.isEnabled == true && self.find("files.hide", NSButton.self)?.isEnabled == true }
@@ -577,6 +596,95 @@ struct AppRealSessionFailure: Error {
             actualTemporaryBase64: temporaries[0].base64EncodedString(), actualJobSucceeded: true,
             unchangedJobServiceHostGeneration: true, reconnects: 0, cleanedRemoteRoot: true, localSourceRemoved: true)
     }
+    private func windowContinueCancel(first: TransferJobSnapshot, context: FilesTransferContext, binding: String, scope: AppRealTransferScope,
+                                      sourceSHA: String, temporary: Data, manager: TransferManager, driver: DirectSessionDriver) async throws -> WindowEvidence {
+        guard let window = delegate.mainWindow else { throw AppRealTransferGuard.windowNotClosed }
+        let expectedIdentity = [first.id.uuidString, first.generation.uuidString, first.request.source.serviceID.uuidString,
+            first.request.destination.serviceID.uuidString, first.request.hostID]
+        func same(_ job: TransferJobSnapshot) -> Bool {
+            AppRealWindowTransferGate.sameIdentity(jobID: job.id, generation: job.generation, sourceServiceID: job.request.source.serviceID,
+                destinationServiceID: job.request.destination.serviceID, host: job.request.hostID, expected: expectedIdentity) && job.request == first.request
+        }
+        func inflight(_ job: TransferJobSnapshot) -> Bool { AppRealTransferScope.isRealInflight(state: job.state.rawValue, transferred: job.transferredBytes, sourceBytes: AppRealTransferScope.sourceBytes) }
+        func checkpoint(_ event: String, _ bytes: UInt64, _ attempts: Int, retained: [String] = []) throws {
+            let record = AppRealWindowCheckpoint(runID: scope.runID, event: event, jobID: first.id, generation: first.generation,
+                serviceID: context.serviceID, hostID: context.hostID, serverBinding: binding,
+                sourceBytes: AppRealTransferScope.sourceBytes, progressBytes: bytes,
+                remoteRootBase64: Data(scope.remoteDirectory.utf8).base64EncodedString(), payloadBase64: Data(scope.remotePayload.utf8).base64EncodedString(),
+                temporaryBase64: temporary.base64EncodedString(), connectionAttempts: attempts, retainedTemporaryPathsBase64: retained)
+            let parent = String(options.contractPath!.dropLast("/app-real-integration.json".count)), fd = try AppRealPrivateInput.directory(parent)
+            defer { Darwin.close(fd) }
+            try AppRealPrivateInput.write(JSONEncoder().encode(record), parent: fd, name: "window-" + event + ".json")
+        }
+        transferDiagnostics.enter(.windowFirstClose)
+        try checkpoint("before-first-close", first.transferredBytes, await facts.connectionAttempts)
+        await captureTransferDiagnostic(stage: .windowFirstClose, driver: driver, job: nil)
+        guard let firstAction = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(firstAction), inflight(firstAction),
+              driver.session.state == .connected, driver.session.ownedProcessID == actualPID else { throw AppRealTransferGuard.windowFirstInflight }
+        window.performClose(nil)
+        try checkpoint("first-close", firstAction.transferredBytes, await facts.connectionAttempts)
+        try await wait { self.find("lifecycle.transfers.continue", NSButton.self)?.isEnabled == true }
+        transferDiagnostics.enter(.windowContinue)
+        guard let beforeContinue = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(beforeContinue), inflight(beforeContinue),
+              let keep = find("lifecycle.transfers.continue", NSButton.self) else { throw AppRealTransferGuard.windowContinueIdentity }
+        keep.performClick(nil)
+        try await wait { !self.model.files.admissionFrozen }
+        guard delegate.mainWindow === window, window.isVisible, !model.lifecycle.terminating,
+              ObjectIdentifier(manager) == ObjectIdentifier(model.files.manager),
+              let continued = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(continued), inflight(continued) else { throw AppRealTransferGuard.windowContinueAdmission }
+        let attemptsAfterContinue = await facts.connectionAttempts, bindings = await facts.bindings
+        guard attemptsAfterContinue == 1, bindings == [binding], model.files.state == .ready else { throw AppRealTransferGuard.windowContinueIdentity }
+        try check("window-continue-keeps-real-window-same-running-job", true)
+        try checkpoint("continued", continued.transferredBytes, attemptsAfterContinue)
+        transferDiagnostics.enter(.windowSecondClose)
+        await captureTransferDiagnostic(stage: .windowSecondClose, driver: driver, job: continued)
+        guard let secondAction = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(secondAction), inflight(secondAction),
+              delegate.mainWindow === window, driver.session.state == .connected, driver.session.ownedProcessID == actualPID else { throw AppRealTransferGuard.windowSecondInflight }
+        window.performClose(nil)
+        try checkpoint("second-close", secondAction.transferredBytes, attemptsAfterContinue)
+        try await wait { self.find("lifecycle.transfers.cancelClose", NSButton.self)?.isEnabled == true }
+        transferDiagnostics.enter(.windowCancelClose)
+        guard let atCancel = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(atCancel), inflight(atCancel),
+              let cancel = find("lifecycle.transfers.cancelClose", NSButton.self) else { throw AppRealTransferGuard.windowCancelIdentity }
+        cancel.performClick(nil)
+        try checkpoint("cancel-decision", atCancel.transferredBytes, attemptsAfterContinue)
+        transferDiagnostics.enter(.windowAwaitClosed)
+        // Production close owns cancellation, worker drain and service close. Never simulate
+        // cancellation here or call a possibly disposed service to fake remote absence.
+        let closeDeadline = ProcessInfo.processInfo.systemUptime + 120
+        var retainedAcknowledged = false
+        while delegate.mainWindow != nil {
+            if !retainedAcknowledged, let acknowledge = find("lifecycle.transfers.retained.acknowledge", NSButton.self), acknowledge.isEnabled {
+                let terminal = await manager.snapshot()
+                guard terminal.isClosed, !terminal.hasActiveWork, let job = terminal.jobs.first(where: { $0.id == first.id }), same(job),
+                      job.state == .cancelled else { throw AppRealTransferGuard.windowFinalCancelled }
+                let paths = job.retainedTemporaryPaths.map { $0.bytes.base64EncodedString() }
+                guard paths == [temporary.base64EncodedString()] else { throw AppRealTransferGuard.ownedCleanupLedger }
+                try checkpoint("retained-before-ack", job.transferredBytes, await facts.connectionAttempts, retained: paths)
+                acknowledge.performClick(nil); retainedAcknowledged = true
+            }
+            guard ProcessInfo.processInfo.systemUptime < closeDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let final = await manager.snapshot()
+        guard let cancelled = final.jobs.first(where: { $0.id == first.id }), same(cancelled) else { throw AppRealTransferGuard.windowFinalCancelled }
+        let closedServices = await facts.closedServices, handles = await facts.openHandleCount(), attempts = await facts.connectionAttempts
+        guard AppRealWindowTransferGate.cancelledAndDrained(state: cancelled.state.rawValue, managerClosed: final.isClosed, activeWork: final.hasActiveWork,
+            sshClosed: driver.session.state == .closed, pidPresent: driver.session.ownedProcessID != nil,
+            windowPresent: delegate.mainWindow != nil, closedServices: closedServices, handles: handles), attempts == 1 else { throw AppRealTransferGuard.windowResources }
+        await captureTransferDiagnostic(stage: .windowFinalCancelled, driver: driver, job: cancelled)
+        try check("window-cancel-waits-real-worker-services-ssh", true)
+        try checkpoint("closed", cancelled.transferredBytes, attempts)
+        return WindowEvidence(jobID: first.id, generation: first.generation, serviceID: context.serviceID, hostID: context.hostID,
+            serverBinding: binding, sourceBytes: AppRealTransferScope.sourceBytes, sourceSHA256: sourceSHA,
+            progressAtFirstWindowClose: firstAction.transferredBytes, progressAfterContinue: continued.transferredBytes,
+            progressAtSecondWindowClose: secondAction.transferredBytes, progressAtCancelDecision: atCancel.transferredBytes,
+            cancelledState: cancelled.state.rawValue, managerClosed: final.isClosed, allWorkDrained: !final.hasActiveWork,
+            windowClosed: delegate.mainWindow == nil, sshClosedPIDNil: driver.session.state == .closed && driver.session.ownedProcessID == nil,
+            connectionAttempts: attempts, closedServices: closedServices, publicHandlesAfterClose: handles,
+            retainedTemporaryPathsBase64: cancelled.retainedTemporaryPaths.map { $0.bytes.base64EncodedString() },
+            createdPathsBase64: await facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted())
+    }
     private func check(_ name: String, _ condition: Bool) throws { checks.append(Check(name: name, passed: condition)); if !condition { throw AppRealIntegrationFailure.failedCheck } }
     private func wait(seconds: Double = 90, _ predicate: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
@@ -584,6 +692,7 @@ struct AppRealSessionFailure: Error {
     }
     private func find<T: NSView>(_ id: String, _ type: T.Type) -> T? {
         func visit(_ view: NSView) -> T? { if view.identifier?.rawValue == id, let typed = view as? T { return typed }; for child in view.subviews { if let result = visit(child) { return result } }; return nil }
+        if id.hasPrefix("lifecycle.transfers."), let panel = NSApp.windows.first(where: { $0.isVisible && $0 is NSPanel && $0.title.hasPrefix("OpenLXSSH ·") }), let content = panel.contentView { return visit(content) }
         guard var window = delegate.mainWindow else { return nil }; while let sheet = window.attachedSheet { window = sheet }
         return window.contentView.flatMap(visit)
     }
