@@ -56,8 +56,8 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel"
-    var isTransfer: Bool { self != .readOnly }
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations"
+    var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel }
 }
 struct AppRealTransferScope: Sendable {
     static let sourceBytes: UInt64 = 16 * 1024 * 1024
@@ -75,6 +75,36 @@ struct AppRealTransferScope: Sendable {
         state == "running" && sourceBytes == Self.sourceBytes && transferred > 0 && transferred < sourceBytes
     }
     func permitsRemote(_ path: Data) -> Bool { path == Data(remoteDirectory.utf8) || path == Data(remotePayload.utf8) }
+}
+struct AppRealFileScope: Sendable {
+    let runID: String
+    init(runID: String) throws {
+        guard let id = UUID(uuidString: runID), id.uuidString.lowercased() == runID else { throw AppRealIntegrationFailure.contract }
+        self.runID = runID
+    }
+    var root: String { "/fixture/home/openlxssh-app-files-" + runID }
+    let neighbor = "保留 邻项.txt", folder = "子目录 空格", renamed = "已改名 目录"
+    let child = "内容 e\u{301} [#; $].bin"
+    var payloads: [(String, Int)] { [(neighbor, 4096), (folder + "/" + child, 8192)] }
+    func allowedRisk(_ bytes: Data) -> Bool {
+        [root, root + "/" + neighbor, root + "/" + folder, root + "/" + folder + "/" + child].contains { Data($0.utf8) == bytes }
+    }
+    func expectedDelete(_ name: String) -> [Data: String] {
+        if Data(name.utf8) == Data(renamed.utf8) { return [Data((root + "/" + renamed + "/" + child).utf8): "file", Data((root + "/" + renamed).utf8): "directory"] }
+        if Data(name.utf8) == Data(neighbor.utf8) { return [Data((root + "/" + neighbor).utf8): "file"] }
+        if name == "root" { return [Data(root.utf8): "directory"] }
+        return [:]
+    }
+    func exactDelete(_ entries: [(Data, String)], name: String, issues: Int) -> Bool {
+        let expected = expectedDelete(name)
+        return issues == 0 && !expected.isEmpty && entries.count <= 2 && entries.count == expected.count && Set(entries.map(\.0)).count == entries.count
+            && entries.allSatisfy { expected[$0.0] == $0.1 }
+    }
+}
+struct AppRealFileDigest: Codable, Equatable, Sendable {
+    let relativePathBase64: String
+    let bytes: Int
+    let sha256: String
 }
 struct AppRealWindowTransferGate {
     static func sameIdentity(jobID: UUID, generation: UUID, sourceServiceID: UUID, destinationServiceID: UUID, host: String,
@@ -317,6 +347,39 @@ enum AppRealPrivateInput {
             if n < 0 && errno == EINTR { continue }; guard n > 0 else { throw AppRealIntegrationFailure.unsafeInput }; offset += n
         }
         guard fsync(fd) == 0 else { throw AppRealIntegrationFailure.unsafeInput }; try AppFileSecurity.regularFile(fd)
+    }
+    /// Only the two closed file-operations fixture leaves are accepted. Parent is an already
+    /// held, validated dataset directory FD; '$' is a literal POSIX byte, never shell/config text.
+    static func readKnownFileOperationLeaf(parent: Int32, name: String, scope: AppRealFileScope) throws -> (bytes: Data, device: dev_t, inode: ino_t) {
+        let expectedSize: Int
+        if Data(name.utf8) == Data(scope.neighbor.utf8) { expectedSize = 4096 }
+        else if Data(name.utf8) == Data(scope.child.utf8) { expectedSize = 8192 }
+        else { throw AppRealIntegrationFailure.arguments }
+        try AppFileSecurity.directory(parent)
+        let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw AppRealIntegrationFailure.unsafeInput }; defer { Darwin.close(fd) }
+        try AppFileSecurity.regularFile(fd)
+        var before = stat()
+        guard fstat(fd, &before) == 0, before.st_size == expectedSize, before.st_size <= 16384 else { throw AppRealIntegrationFailure.unsafeInput }
+        var bytes = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = Darwin.read(fd, &buffer, min(buffer.count, 16385 - bytes.count))
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0 else { throw AppRealIntegrationFailure.unsafeInput }
+            if count == 0 { break }; bytes.append(contentsOf: buffer.prefix(count))
+            guard bytes.count <= 16384 else { throw AppRealIntegrationFailure.unsafeInput }
+        }
+        var after = stat(), named = stat()
+        try AppFileSecurity.regularFile(fd); try AppFileSecurity.directory(parent)
+        guard fstat(fd, &after) == 0, fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0 else { throw AppRealIntegrationFailure.unsafeInput }
+        func unchanged(_ value: stat) -> Bool {
+            value.st_dev == before.st_dev && value.st_ino == before.st_ino && value.st_uid == before.st_uid && value.st_gid == before.st_gid &&
+            value.st_mode == before.st_mode && value.st_nlink == before.st_nlink && value.st_size == before.st_size &&
+            value.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec && value.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec &&
+            value.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec && value.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec
+        }
+        guard unchanged(after), unchanged(named), bytes.count == expectedSize else { throw AppRealIntegrationFailure.unsafeInput }
+        return (bytes, after.st_dev, after.st_ino)
     }
     static func sha(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
 }

@@ -37,7 +37,11 @@ actor AppRealFilesFacts {
     }
     func closedHandle(_ id: FileHandleID) { if handles.remove(id) != nil { successfulCloses += 1 } }
     func madeDirectory(_ path: RemotePath) { writes[path.bytes] = true }
-    func committed(_ source: RemotePath, _ destination: RemotePath) { if let kind = writes.removeValue(forKey: source.bytes) { writes[destination.bytes] = kind } }
+    func committed(_ source: RemotePath, _ destination: RemotePath) {
+        let descendants = writes.filter { $0.key.starts(with: source.bytes + Data([47])) }
+        if let kind = writes.removeValue(forKey: source.bytes) { writes[destination.bytes] = kind }
+        for (path, kind) in descendants { writes[path] = nil; writes[destination.bytes + path.dropFirst(source.bytes.count)] = kind }
+    }
     func removed(_ path: RemotePath) { writes[path.bytes] = nil }
     func ownedPaths() -> [Data: Bool] { writes }
     func openHandleCount() -> Int { handles.count }
@@ -152,6 +156,79 @@ final class AppRealOwnedStore: @unchecked Sendable {
               unlinkat(held, source.name, 0) == 0 else { throw AppRealIntegrationFailure.cleanup }
         transferSource = nil
     }
+    private var fileOperationsEntries: [String: (dev_t, ino_t, Bool)] = [:]
+    func prepareFileOperations(_ scope: AppRealFileScope) throws -> (sources: [URL], downloads: URL, digests: [AppRealFileDigest]) {
+        guard fileOperationsEntries.isEmpty else { throw AppRealIntegrationFailure.isolation }
+        func mkdirOwned(_ name: String, parent: Int32, relative: String) throws -> Int32 {
+            guard mkdirat(parent, name, 0o700) == 0 else { throw AppRealIntegrationFailure.isolation }
+            let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw AppRealIntegrationFailure.isolation }
+            try AppFileSecurity.directory(fd); var st = stat(); guard fstat(fd, &st) == 0 else { Darwin.close(fd); throw AppRealIntegrationFailure.isolation }
+            fileOperationsEntries[relative] = (st.st_dev, st.st_ino, true); return fd
+        }
+        let source = try mkdirOwned("FileSources", parent: held, relative: "FileSources"); defer { Darwin.close(source) }
+        let downloads = try mkdirOwned("FileDownloads", parent: held, relative: "FileDownloads"); Darwin.close(downloads)
+        let folder = try mkdirOwned(scope.folder, parent: source, relative: "FileSources/" + scope.folder); defer { Darwin.close(folder) }
+        var digests: [AppRealFileDigest] = []
+        for (relative, size) in scope.payloads {
+            let name = relative == scope.neighbor ? scope.neighbor : scope.child, parent = relative == scope.neighbor ? source : folder
+            let block = Data(SHA256.hash(data: Data(relative.utf8)))
+            var bytes = Data(); while bytes.count < size { bytes.append(block.prefix(min(block.count, size - bytes.count))) }
+            try AppRealPrivateInput.write(bytes, parent: parent, name: name)
+            let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { throw AppRealIntegrationFailure.isolation }
+            var st = stat(); guard fstat(fd, &st) == 0 else { Darwin.close(fd); throw AppRealIntegrationFailure.isolation }; Darwin.close(fd)
+            fileOperationsEntries["FileSources/" + relative] = (st.st_dev, st.st_ino, false)
+            digests.append(AppRealFileDigest(relativePathBase64: Data(relative.utf8).base64EncodedString(), bytes: size, sha256: AppRealPrivateInput.sha(bytes)))
+        }
+        return ([url.appendingPathComponent("FileSources/" + scope.neighbor), url.appendingPathComponent("FileSources/" + scope.folder, isDirectory: true)], url.appendingPathComponent("FileDownloads", isDirectory: true), digests)
+    }
+    func verifyDownloadedFiles(_ scope: AppRealFileScope, expected: [AppRealFileDigest]) throws -> [AppRealFileDigest] {
+        let downloads = try AppRealPrivateInput.directory(url.appendingPathComponent("FileDownloads").path); defer { Darwin.close(downloads) }
+        guard Set(try children(downloads).map { Data($0.utf8) }) == Set([Data(scope.neighbor.utf8), Data(scope.folder.utf8)]) else { throw AppRealIntegrationFailure.failedCheck }
+        let folder = openat(downloads, scope.folder, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard folder >= 0 else { throw AppRealIntegrationFailure.failedCheck }; defer { Darwin.close(folder) }; try AppFileSecurity.directory(folder)
+        guard try children(folder).map({ Data($0.utf8) }) == [Data(scope.child.utf8)] else { throw AppRealIntegrationFailure.failedCheck }
+        var info = stat(); guard fstat(folder, &info) == 0 else { throw AppRealIntegrationFailure.failedCheck }
+        fileOperationsEntries["FileDownloads/" + scope.folder] = (info.st_dev, info.st_ino, true)
+        var actual: [AppRealFileDigest] = []
+        for (relative, size) in scope.payloads {
+            let parent = relative == scope.neighbor ? downloads : folder, name = relative == scope.neighbor ? scope.neighbor : scope.child
+            let read = try AppRealPrivateInput.readKnownFileOperationLeaf(parent: parent, name: name, scope: scope)
+            let digest = AppRealFileDigest(relativePathBase64: Data(relative.utf8).base64EncodedString(), bytes: read.bytes.count, sha256: AppRealPrivateInput.sha(read.bytes))
+            guard read.bytes.count == size, expected.contains(digest) else { throw AppRealIntegrationFailure.failedCheck }
+            fileOperationsEntries["FileDownloads/" + relative] = (read.device, read.inode, false); actual.append(digest)
+        }
+        return actual
+    }
+    func cleanupFileOperations() throws {
+        let all = fileOperationsEntries
+        for (relative, value) in all {
+            let path = url.appendingPathComponent(relative)
+            let fd: Int32
+            if value.2 { fd = try AppRealPrivateInput.directory(path.path) }
+            else {
+                let parts = relative.split(separator: "/").map(String.init)
+                let parent = try AppRealPrivateInput.directory(url.appendingPathComponent(parts.dropLast().joined(separator: "/")).path)
+                defer { Darwin.close(parent) }
+                fd = openat(parent, parts.last!, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            }
+            guard fd >= 0 else { throw AppRealIntegrationFailure.cleanup }; defer { Darwin.close(fd) }
+            var st = stat(); guard fstat(fd, &st) == 0, st.st_dev == value.0, st.st_ino == value.1 else { throw AppRealIntegrationFailure.cleanup }
+            if value.2 {
+                let expected = Set(all.keys.filter { URL(fileURLWithPath: $0).deletingLastPathComponent().path == URL(fileURLWithPath: relative).path }.map { URL(fileURLWithPath: $0).lastPathComponent })
+                guard Set(try children(fd)) == expected else { throw AppRealIntegrationFailure.cleanup }
+            } else { try AppFileSecurity.regularFile(fd) }
+        }
+        for relative in all.keys.sorted(by: { $0.split(separator: "/").count > $1.split(separator: "/").count }) {
+            guard let value = all[relative] else { throw AppRealIntegrationFailure.cleanup }
+            let parts = relative.split(separator: "/").map(String.init), name = parts.last!
+            let parent = parts.count == 1 ? dup(held) : try AppRealPrivateInput.directory(url.appendingPathComponent(parts.dropLast().joined(separator: "/")).path)
+            guard parent >= 0 else { throw AppRealIntegrationFailure.cleanup }; defer { Darwin.close(parent) }
+            var st = stat(); guard fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) == 0, st.st_dev == value.0, st.st_ino == value.1,
+                unlinkat(parent, name, value.2 ? AT_REMOVEDIR : 0) == 0 else { throw AppRealIntegrationFailure.cleanup }
+        }
+        fileOperationsEntries.removeAll()
+    }
     func cleanupEmptyStore() throws {
         var info = stat()
         guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_dev == device, info.st_ino == inode else { throw AppRealIntegrationFailure.cleanup }
@@ -236,6 +313,16 @@ struct AppRealSessionFailure: Error {
         let retainedTemporaryPathsBase64: [String]
         let remotePostcheck = "External fixed-CID exact-ledger final absence/temp check pending. No second SFTP/autoreconnect."
     }
+    struct FileOperationsEvidence: Encodable {
+        let serviceID: UUID, hostID: UUID, serverBinding: String
+        let uploadJobIDs: [UUID], downloadJobIDs: [UUID]
+        let expectedDigests: [AppRealFileDigest], actualDownloadedDigests: [AppRealFileDigest]
+        let renameSourceBase64: String, renameTargetBase64: String
+        let approvedDeletePlanIDs: [UUID], deletedPathsBase64: [String]
+        let unselectedNeighborSHA256Before: String, unselectedNeighborSHA256After: String
+        let remoteRootAbsent: Bool, localKnownSourceAndDownloadsRemoved: Bool
+        let picker = "HostProbe testSelection via native upload/download buttons, NOT manual Finder/NSOpenPanel"
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -249,6 +336,7 @@ struct AppRealSessionFailure: Error {
         let transfer: TransferEvidence?
         let windowTransfer: WindowEvidence?
         let quitTransfer: QuitEvidence?
+        let fileOperations: FileOperationsEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -262,6 +350,7 @@ struct AppRealSessionFailure: Error {
     private var transferEvidence: TransferEvidence?
     private var windowEvidence: WindowEvidence?
     private var quitEvidence: QuitEvidence?
+    private var fileOperationsEvidence: FileOperationsEvidence?
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
     private var quitFailureRecorded = false
@@ -343,6 +432,7 @@ struct AppRealSessionFailure: Error {
             let returned = await facts.returnedProductionServices, listed = await facts.lists
             try check("production-sftp-read-only-list", model.files.state == .ready && returned == 1 && listed >= 2)
             let manager = model.files.manager
+            if input.contract.selectedPhase == .fileOperations { fileOperationsEvidence = try await fileOperations() }
             if input.contract.selectedPhase.isTransfer {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
                 if isQuitPhase { return } // Native termination owns the only store closes and final reply.
@@ -396,12 +486,161 @@ struct AppRealSessionFailure: Error {
         let exitCode: Int32 = failure == nil ? 0 : 1
         RunLoop.main.perform { MainActor.assumeIsolated { () -> Void in exit(exitCode) } }
     }
+    private func fileOperations() async throws -> FileOperationsEvidence {
+        let scope = try AppRealFileScope(runID: input.contract.runID), dataset = try store.prepareFileOperations(scope)
+        let root = try RemotePath(scope.root), home = try RemotePath("/fixture/home"), manager = model.files.manager
+        let initialContext = try model.files.transferContext(upload: false), initialBindings = await facts.bindings
+        var admitted: [UUID: (UUID, TransferRequest)] = [:]
+        func sameService(_ context: FilesTransferContext) async throws {
+            let current = try model.files.transferContext(upload: false), bindings = await facts.bindings
+            guard current.serviceID == context.serviceID, current.hostID == context.hostID, current.lifetime == context.lifetime,
+                  bindings.count == 1, bindings == initialBindings, await facts.connectionAttempts == 1 else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        func browse(_ path: RemotePath) async throws {
+            try await type("files.path", String(decoding: path.bytes, as: UTF8.self)); try await click("files.go")
+            try await wait { self.model.files.path == path && !self.model.files.busy || self.model.files.issue != nil }
+            guard model.files.issue == nil, model.files.state == .ready else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        func select(_ names: [String]) async throws {
+            try await wait { self.find("files.entries", NSTableView.self) != nil }
+            guard let table = find("files.entries", NSTableView.self), table.numberOfRows == model.files.entries.count else { throw AppRealIntegrationFailure.nativeControl }
+            let bytes = Set(names.map { Data($0.utf8) }), rows = IndexSet(model.files.entries.indices.filter { bytes.contains(model.files.entries[$0].name.bytes) })
+            guard rows.count == names.count else { throw AppRealIntegrationFailure.failedCheck }
+            table.selectRowIndexes(rows, byExtendingSelection: false)
+            try await Task.sleep(for: .milliseconds(100))
+            guard table.selectedRowIndexes == rows else { throw AppRealIntegrationFailure.nativeControl }
+        }
+        func terminalJobs(_ count: Int) async throws -> [TransferJobSnapshot] {
+            let deadline = ProcessInfo.processInfo.systemUptime + 120
+            while true {
+                let jobs = await manager.snapshot().jobs
+                guard jobs.count <= count else { throw AppRealIntegrationFailure.failedCheck }
+                for job in jobs {
+                    if let expected = admitted[job.id] {
+                        guard expected.0 == job.generation, expected.1 == job.request else { throw AppRealIntegrationFailure.failedCheck }
+                    } else {
+                        guard job.request.hostID == initialContext.hostID.uuidString,
+                              job.request.source.serviceID == initialContext.serviceID || job.request.destination.serviceID == initialContext.serviceID else { throw AppRealIntegrationFailure.failedCheck }
+                        admitted[job.id] = (job.generation, job.request)
+                    }
+                }
+                for job in jobs where job.state.isActive {
+                    if let decision = job.pendingDecision {
+                        guard case .risk(.remotePathChecksAreNotAtomic(let path)) = decision.question, scope.allowedRisk(path.bytes) else { throw AppRealIntegrationFailure.failedCheck }
+                        try await click("transfer.decision." + job.id.uuidString); try await click("transfer.risk.accept")
+                    }
+                }
+                if jobs.count == count && jobs.allSatisfy({ !$0.state.isActive }) {
+                    guard jobs.allSatisfy({ $0.state == .succeeded && $0.retainedTemporaryPaths.isEmpty }) else { throw AppRealIntegrationFailure.failedCheck }
+                    return jobs
+                }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        func remoteDigest(_ path: RemotePath, relative: String, size: Int, context: FilesTransferContext) async throws -> AppRealFileDigest {
+            try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
+                var current = RemotePath.root
+                for component in path.parent.bytes.dropFirst().split(separator: 47) {
+                    current = try current.appending(FileName(bytes: Data(component)))
+                    guard try await service.lstat(current, token: token).kind == .directory else { throw AppRealIntegrationFailure.failedCheck }
+                }
+                let attributes = try await service.lstat(path, token: token)
+                guard attributes.kind == .regular, attributes.size == UInt64(size) else { throw AppRealIntegrationFailure.failedCheck }
+                let handle = try await service.open(path, mode: .read, token: token)
+                do {
+                    var bytes = Data()
+                    while true {
+                        let chunk = try await service.read(handle, maxBytes: 16384, token: token)
+                        if chunk.isEmpty { break }; bytes += chunk
+                        guard bytes.count <= size else { throw AppRealIntegrationFailure.failedCheck }
+                    }
+                    try await service.closeHandle(handle)
+                    guard bytes.count == size else { throw AppRealIntegrationFailure.failedCheck }
+                    return AppRealFileDigest(relativePathBase64: Data(relative.utf8).base64EncodedString(), bytes: bytes.count, sha256: AppRealPrivateInput.sha(bytes))
+                } catch { try? await service.closeHandle(handle); throw error }
+            }
+        }
+        try check("file-operations-fixed-home-parent", model.files.path == home)
+        try await click("files.mkdir"); try await type("files.operation.name", String(scope.root.split(separator: "/").last!))
+        try await click("files.mkdir.risk"); try await click("files.operation.confirm")
+        try await wait { !self.model.files.busy && self.model.files.entries.contains { $0.name.bytes == root.name?.bytes } || self.model.files.issue != nil }
+        guard await facts.ownedPaths()[root.bytes] == true, model.files.issue == nil else { throw AppRealIntegrationFailure.failedCheck }
+        try await browse(root)
+        try check("file-operations-owned-root-empty", model.files.entries.isEmpty)
+        try await click("files.probe.prepare"); try await wait { self.model.files.probeReview != nil && !self.model.files.busy }
+        guard let probe = model.files.probeReview, probe.plan.parent == root else { throw AppRealIntegrationFailure.failedCheck }
+        try await click("files.probe.review"); try await click("files.probe.approve"); try await click("files.probe.execute")
+        try await wait { self.model.files.lastProbeResult != nil && !self.model.files.busy }
+        guard let result = model.files.lastProbeResult, result.passed, result.retainedPaths.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+        let context = try model.files.transferContext(upload: true), bindings = await facts.bindings
+        guard bindings.count == 1, let binding = bindings.first, context.confirmation?.serverBinding.uuidString == binding else { throw AppRealIntegrationFailure.failedCheck }
+        model.files.pathPicker.testSelection = dataset.sources
+        try await click("files.upload")
+        let uploads = try await terminalJobs(2)
+        try check("native-batch-upload-two-selections", uploads.count == 2 && uploads.allSatisfy { $0.request.destination.serviceID == context.serviceID })
+        try await click("files.refresh"); try await wait { !self.model.files.busy && self.model.files.entries.count == 2 }
+        guard Set(model.files.entries.map { $0.name.bytes }) == Set([Data(scope.neighbor.utf8), Data(scope.folder.utf8)]) else { throw AppRealIntegrationFailure.failedCheck }
+        try await select([scope.neighbor, scope.folder])
+        model.files.pathPicker.testSelection = [dataset.downloads]
+        try await click("files.download")
+        let allJobs = try await terminalJobs(4), downloads = Array(allJobs.dropFirst(2))
+        let actual = try store.verifyDownloadedFiles(scope, expected: dataset.digests)
+        try check("native-download-exact-original-names-size-sha", actual.count == 2)
+        try await sameService(context)
+        let neighborPath = try root.appending(FileName(scope.neighbor))
+        let neighborBefore = try await remoteDigest(neighborPath, relative: scope.neighbor, size: 4096, context: context)
+        try await select([scope.folder]); try await click("files.rename"); try await type("files.operation.name", scope.renamed)
+        try await click("files.operation.confirm")
+        try await wait { self.model.files.pendingRisk != nil || !self.model.files.busy }
+        guard case .remotePathChecksAreNotAtomic(let renameRisk)? = model.files.pendingRisk,
+              renameRisk.bytes == Data((scope.root + "/" + scope.folder).utf8) else { throw AppRealIntegrationFailure.failedCheck }
+        try await click("files.risk.open"); try await click("files.risk.accept")
+        try await wait { !self.model.files.busy }
+        try check("native-rename-old-absent-new-listed", !model.files.entries.contains { $0.name.bytes == Data(scope.folder.utf8) } && model.files.entries.contains { $0.name.bytes == Data(scope.renamed.utf8) } && model.files.issue == nil)
+        var plans: [UUID] = [], deleted: [String] = []
+        func deleteNative(_ name: String, selection: String) async throws {
+            try await select([selection]); try await click("files.delete"); try await click("files.delete.prepare")
+            try await wait { self.model.files.deleteReview != nil && !self.model.files.busy }
+            guard let review = model.files.deleteReview, review.serviceID == context.serviceID,
+                  review.plan.root == (name == "root" ? root : try root.appending(FileName(selection))),
+                  scope.exactDelete(review.plan.items.map { item in (item.path.bytes, item.action == .removeFile ? "file" : item.action == .removeEmptyDirectory ? "directory" : "link") }, name: name, issues: review.plan.issues.count),
+                  review.plan.canExecute, review.plan.linkPolicy == .reject else { throw AppRealIntegrationFailure.cleanup }
+            let planID = review.id
+            plans.append(planID)
+            try await click("files.delete.review"); try await click("files.delete.acknowledge"); try await click("files.delete.execute")
+            try await wait { self.model.files.lastDeleteReport?.planID == planID && !self.model.files.busy }
+            guard let report = model.files.lastDeleteReport, report.allSucceeded,
+                  Set(report.items.map { $0.path.bytes }) == Set(review.plan.items.map { $0.path.bytes }) else { throw AppRealIntegrationFailure.cleanup }
+            deleted += report.items.map { $0.path.bytes.base64EncodedString() }
+        }
+        try await deleteNative(scope.renamed, selection: scope.renamed)
+        let neighborAfter = try await remoteDigest(neighborPath, relative: scope.neighbor, size: 4096, context: context)
+        try check("native-delete-preserves-unselected-neighbor-sha", neighborBefore == neighborAfter && dataset.digests.contains(neighborAfter))
+        try await deleteNative(scope.neighbor, selection: scope.neighbor)
+        try check("owned-root-empty-before-root-delete", model.files.entries.isEmpty)
+        try await browse(home)
+        try await deleteNative("root", selection: String(scope.root.split(separator: "/").last!))
+        try check("native-plan-deleted-empty-owned-root", !model.files.entries.contains { $0.name.bytes == root.name?.bytes })
+        try await sameService(context)
+        try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
+            do { _ = try await service.lstat(root, token: token); throw AppRealIntegrationFailure.cleanup }
+            catch let error as FileServiceError where error.kind == .notFound { }
+        }
+        guard await facts.ownedPaths().isEmpty else { throw AppRealIntegrationFailure.cleanup }
+        try store.cleanupFileOperations()
+        return FileOperationsEvidence(serviceID: context.serviceID, hostID: context.hostID, serverBinding: binding,
+            uploadJobIDs: uploads.map(\.id), downloadJobIDs: downloads.map(\.id), expectedDigests: dataset.digests, actualDownloadedDigests: actual,
+            renameSourceBase64: Data((scope.root + "/" + scope.folder).utf8).base64EncodedString(), renameTargetBase64: Data((scope.root + "/" + scope.renamed).utf8).base64EncodedString(),
+            approvedDeletePlanIDs: plans, deletedPathsBase64: deleted, unselectedNeighborSHA256Before: neighborBefore.sha256,
+            unselectedNeighborSHA256After: neighborAfter.sha256, remoteRootAbsent: true, localKnownSourceAndDownloadsRemoved: true)
+    }
     private func persistReport(failure: String?, removed: Bool) async throws {
         let report = await Report(scanSeconds: options.scanSeconds, passed: failure == nil, failureCode: failure, checks: checks,
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),

@@ -19,7 +19,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -82,6 +82,32 @@ final class AppRealIntegrationContractTests: XCTestCase {
         XCTAssertEqual(ring.stage, .preCloseAction); XCTAssertEqual(ring.failedGuard, .preCloseInflight)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(ring)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["stage", "failedGuard", "snapshots"])
+    }
+    func testFileOperationsScopeAndDeletePlansRejectUnknownLinksAndOverflow() throws {
+        let scope = try AppRealFileScope(runID: id)
+        XCTAssertEqual(scope.root, "/fixture/home/openlxssh-app-files-" + id)
+        XCTAssertEqual(scope.payloads.count, 2); XCTAssertEqual(scope.payloads.reduce(0) { $0 + $1.1 }, 12288)
+        XCTAssertFalse(AppRealIntegrationPhase.fileOperations.isTransfer)
+        XCTAssertTrue(scope.exactDelete([(Data((scope.root + "/" + scope.renamed + "/" + scope.child).utf8), "file"),
+            (Data((scope.root + "/" + scope.renamed).utf8), "directory")], name: scope.renamed, issues: 0))
+        let expected = scope.expectedDelete(scope.renamed).map { ($0.key, $0.value) }
+        XCTAssertFalse(scope.exactDelete(expected, name: scope.renamed, issues: 1))
+        XCTAssertFalse(scope.exactDelete(expected + [(Data((scope.root + "/unknown").utf8), "file")], name: scope.renamed, issues: 0))
+        XCTAssertFalse(scope.exactDelete([(Data((scope.root + "/" + scope.renamed).utf8), "link")], name: scope.renamed, issues: 0))
+        XCTAssertFalse(scope.exactDelete([(Data("/outside".utf8), "directory")], name: "root", issues: 0))
+        XCTAssertFalse(scope.exactDelete([], name: "unknown", issues: 0))
+        XCTAssertFalse(scope.allowedRisk(Data((scope.root + "-outside").utf8)))
+        XCTAssertFalse(scope.allowedRisk(Data((scope.root + "/../escape").utf8)))
+        XCTAssertThrowsError(try AppRealFileScope(runID: "../escape"))
+    }
+    func testFileOperationManifestPreservesRawPOSIXNameBytes() throws {
+        let scope = try AppRealFileScope(runID: id)
+        let path = scope.folder + "/" + scope.child
+        let digest = AppRealFileDigest(relativePathBase64: Data(path.utf8).base64EncodedString(), bytes: 8192, sha256: String(repeating: "a", count: 64))
+        let copy = try JSONDecoder().decode(AppRealFileDigest.self, from: JSONEncoder().encode(digest))
+        XCTAssertEqual(Data(base64Encoded: copy.relativePathBase64), Data(path.utf8))
+        XCTAssertNotEqual(Data(path.precomposedStringWithCanonicalMapping.utf8), Data(path.utf8))
+        XCTAssertEqual(copy, digest)
     }
     func testQuitHooksAreAbsentByDefaultAndOrderedOnceBeforeNativeReply() throws {
         var gate = AppRealQuitHookGate()
@@ -216,6 +242,28 @@ final class AppRealIntegrationContractTests: XCTestCase {
         XCTAssertFalse(value.matchesTrust(host: "127.0.0.1", port: 22221, algorithm: "ssh-ed25519", fingerprint: String(AppRealIntegrationContract.fingerprint.dropLast())))
     }
     #if HOST_PROBE
+    func testKnownSpecialLeafUsesHeldFDWithoutRelaxingGlobalDollarPathGuard() throws {
+        let scope = try AppRealFileScope(runID: id)
+        let temporary = try AppDataLocation.canonical(FileManager.default.temporaryDirectory)
+        let root = temporary.appendingPathComponent("OpenLXSSH-AppTests-special-leaf-" + UUID().uuidString)
+        XCTAssertEqual(mkdir(root.path, 0o700), 0)
+        let parent = try AppRealPrivateInput.directory(root.path)
+        defer { _ = unlinkat(parent, scope.child, 0); Darwin.close(parent); _ = rmdir(root.path) }
+        let payload = Data(repeating: 37, count: 8192)
+        try AppRealPrivateInput.write(payload, parent: parent, name: scope.child)
+        XCTAssertThrowsError(try AppRealIntegrationContract.pathSyntax(root.appendingPathComponent(scope.child).path))
+        let read = try AppRealPrivateInput.readKnownFileOperationLeaf(parent: parent, name: scope.child, scope: scope)
+        XCTAssertEqual(read.bytes, payload)
+        var named = stat(); XCTAssertEqual(fstatat(parent, scope.child, &named, AT_SYMLINK_NOFOLLOW), 0)
+        XCTAssertEqual(read.device, named.st_dev); XCTAssertEqual(read.inode, named.st_ino)
+        XCTAssertThrowsError(try AppRealPrivateInput.readKnownFileOperationLeaf(parent: parent, name: "unknown$leaf", scope: scope))
+        XCTAssertEqual(chmod(root.appendingPathComponent(scope.child).path, 0o644), 0)
+        XCTAssertThrowsError(try AppRealPrivateInput.readKnownFileOperationLeaf(parent: parent, name: scope.child, scope: scope))
+        XCTAssertEqual(chmod(root.appendingPathComponent(scope.child).path, 0o600), 0)
+        XCTAssertEqual(unlinkat(parent, scope.child, 0), 0)
+        XCTAssertEqual(symlinkat("/does-not-exist", parent, scope.child), 0)
+        XCTAssertThrowsError(try AppRealPrivateInput.readKnownFileOperationLeaf(parent: parent, name: scope.child, scope: scope))
+    }
     func testPrivateMetadataRejectsPermissionLinksFIFOAndOversizeWithoutSecrets() throws {
         let temporary = try AppDataLocation.canonical(FileManager.default.temporaryDirectory)
         let root = temporary.appendingPathComponent("OpenLXSSH-AppTests-real-contract-" + UUID().uuidString)
