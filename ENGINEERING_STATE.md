@@ -4,7 +4,7 @@
 
 ## 当前目标、范围与授权
 
-- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 CONTINUE，真实上传/关窗/Quit与外层PTY/Vim分项已通过，正补真实并发认证及嵌套边界。** 不虚构运行环境 Goal 状态变更。
+- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 CONTINUE。上传/关窗/Quit、外层PTY/Vim、独立公钥nested、GUI文件操作和tmux分项已通过；当前补原生搜索/Bracketed Paste及htop有限交互。** 不虚构运行环境 Goal 状态变更。
 - 范围：四类直连 SSH/MFA、多标签、用户手动嵌套 SSH、直连 SFTP、主机/密钥/凭据管理、独立传输与窗口/退出保护。排除自动 ProxyJump、经跳板图形 SFTP、转发、自动重连/恢复。基线见 `docs/requirements.md`。
 - Primary 是唯一主管，主要编码交 software-engineer；工程师 DONE 不等主管验收。用户授权验收后的相关本地 Git 提交，没有 remote push、发布、生产连接或 Apple 公证上传授权。
 - 用户已明确批准官方 Docker Desktop、固定 Ubuntu ARM64/必要依赖、四认证及多提示隔离服务。宿主端口仅 127.0.0.1:22221～22225，不 LAN、不真实凭据/生产挂载、不宿主 sshd、不生产连接、不 Apple 上传。Agent 不代接受法律协议或输入系统凭据。不再重复“等待 Docker 授权”。
@@ -31,7 +31,9 @@
 14. 真实App小数据GUI闭环已过：fileops首011b测试绝对路径校验拒$失败与精确恢复保留，专用FDleafR1保持特殊名/globalpath门后新5c2e24checks/四distinctjobs/nativebatchup-down/原名字节sizeSHA/nativeRename/三审核plan四路径删除/未选邻项SHA同/attempt1/20正常closes-end0/norescue及local-remote根清理主管独立过；已本地b5e6e9e。
 15. tmuxR2完整十帧已通过（旧九门不减、新resize-ready同步），真实inputSHA/31x93/realCtrl-bd-detach/clients0单pane/ownserverkill+serverpanePIDfd/termios/done-returned；三remotePID15913/15916/15917后验absent、socket/status/root自然全消失，无手工清/信号，三localPID/FD端口释放，主管独立验收，已64312bb。旧首与R1失败/stalesocket恢复保持，不等htop/全部工具/视觉/IME/mac26通过。
 
-详见 `docs/reports/real-remote-terminal.md` 与 `docs/reports/app-real-transfer-survival.md`。主管已读原结果、独立核时序/三PID与冻结输入/严格签名。
+16. htop3.3.0独立程序化分项已过：新853d6ab5/actualprobe4c78、35core8pure/strict后唯一838db0真实case strict5/readiness/actual31x93/PTYq正常exit0/termios/自有sleep及htop pidfd清理返回outer，准确PID/start已取得。nonce root/status/htoprc自然消失，无手工远端清理；主会话独立核原JSON/当前源对象签名/三pidfd、本地PID端口通过，已2f6e00f。像素/内部显示/IME/全部TERM05/mac26仍未验。
+
+详见 `docs/reports/real-remote-terminal.md`、`docs/reports/app-real-transfer-survival.md` 和 `docs/reports/real-htop.md`。主管已读原结果、独立核时序/三PID与冻结输入/严格签名。
 
 ## 已验收的本地实现基线
 
@@ -82,8 +84,8 @@
 | SHIPPING-HOOK-CONFIG-REGRESSION-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | Debug/Release各一次真实incremental compile/link arm64min26/无HOST_PROBE define/hooks符号0、19cmd106hash/native160，主会话独立binaryhash/vtool26/nm核过；未运行/签名/打包，报告 `docs/reports/shipping-hook-isolation.md` |
 | APP-FILEOPS-LEAF-R1-LIVE-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae（冻结） | 原011b校验器拒$失败/remote-local精确恢复保留；专用heldparentFD exactleafR1不放宽globalpath、126test49hash14cmd/sign主管过。新5c2e真实24checks/4jobs/2rawdownload原名sizeSHA/rename3plan4delete/邻项保全/20normalcloses/norescue/根与PIDstore全清主管独立验收，已本地b5e6e9e。人工Finder/冲突/正式mac26未涵盖 |
 | REAL-TMUX-RESIZE-R2-LIVE-A / agent_9b78446f-cc66-499c-bdff-efc846e3db1c（已验收冻结） | R2原9门+新增resize-ready总10，C确认/ED2-3清已验history/SIGWINCHselfpipe12sactual31x93/firstpanefailure，138core13pure/31cmd10snap9obj/signed72eeb主管过。唯一8168真实10帧/inputSHA/31x93/realCtrl-bd/clients0单pane/ownserverkill+3pidfdtermios/done-returned/资源自然清理主管独立过，已64312bb。old2fail/stale外恢复不改，pixels/htop false |
-| HTOP-OWN-CHILD-PREP-A / agent_9b78446f-cc66-499c-bdff-efc846e3db1c | newHTOPAcceptance source/offline：固定ownsleep --pid、nonce0700 HOME/XDG/HTOPRC、exactownhtopPID/UID/session/TTY/cbreaknoechoalive与实际31x93后q通过公开PTY；fixedCID只读status管理通道同步闭合元数据不control、不screenregex、noF9/用户进程kill，无build/runtime直到审 |
-| APP-REAL-TERMINAL-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | onlyApp四文件source/offline：newterminal-search-paste phase，真实SSH有限ownmarkerhistory→native上一/下一search actualselectedRange/index/total；pasteFromApplication固定非秘密multiline→远端rawbounded bracketedwrapper/count/SHA/termiosrestore/outerACK，无SFTP/attempt0/credential0，不触NSPasteboard.general、不冒GUIclipboard/IME。先126+pure/受影响签名审点 |
+| HTOP-CONSUMER-BUILD-A / REAL-HTOP-OWN-CHILD-LIVE-A / agent_9b78446f-cc66-499c-bdff-efc846e3db1c（已验收冻结） | 新853d6ab5 App main7f1e1b/helperd86e/probe4c78，11snapshots/9readonlyobjects/3compiles/31cmd（29logs+2签名记录）、35core/8pure/完整typecheck/strict主管过。唯一838db0 fresh案collect/relay/consumer各1、consumer0/strict5、own readiness→actual31x93→PTY q/normalexit→termios/cleanup/returned，remote parent17886-start10752218、htop17888与sleep17887-start10752231均pidfd absent；nonce root/status/htoprc自然gone，无手动remote清理。local81938/82038/82109gone/FD端口释放/4-4-0-0，fixture/source/bundle未变，主管独立验收primary-htop-pass-173f7f6f-9cc0-4cec-8d51-118c3a0fca2d；报告 `docs/reports/real-htop.md`。pixels/internal/IME/mac26 false，runtime交回。 |
+| APP-REAL-TERMINAL-REVIEW-R1 / agent_cef8d152-7e03-48fc-a57a-fbac0729e614 | 接手当前四文件已有phase，原2c连续等待无新修改后已撤销写域/要求停写（TaskStop工具返回not running/status running不一致，不伪称强停成功）；实际四文件hash/mtime稳定且无编译进程才串行重新委派。仅收口actual capture闭合count/hash进Evidence、tcsetattr后tcgetattr==original才restored=ok，保原127/全部旧门，仅offline增量重签后交主管审；未live。原生搜索实际selection/index/total、memory paste不用globalclipboard、noSFTP/credential0仍必需。 |
 | REMAINING-AUTONOMOUS-AC-ASSESS-A / agent_efdcaac5-23d9-4b20-a6fc-b45cfb47cbac | 只读完成，优先补真实GUI文件操作闭环与剩余TUI工具，不重已过项。外部门仍mac26/长测/DeveloperID公证/双机IMEFinder企业及默认Keychain真实动作授权 |
 
 | PUBLIC-CREDENTIAL-REVIEW-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 三原缺陷主会话/原reviewer定向复审resolved；主管独立8pure及完整65Swift17Python29CLI/368快照12复用对象18命令/strict/inert0/0/2通过，仅离线准备，已本地提交6a65bb1。新f201 driver3526b308…；source/build冻结，禁止真实store/Keychain/SecItem/Docker/live。报告 `docs/reports/public-credential-store-preparation.md` |
@@ -111,7 +113,7 @@
 - 实测宿主macOS15.8.1/24H32/arm64，Xcode26.3/17C529、SDK26.2/Swift6.2.4。正式App arm64/min26，HostProbe/独立消费者min15不能冒目标runtime。最新本地磁盘观察约42GiB可用，瞬时值不能沿用为下一安装许可。
 - Docker Desktop4.97.0/build244584官方验签；DMG SHA256 94e4ccec4a035b7dcdf67cfff0520d4b46ee873ae04b155abc0d22b333cc90ad；Agent无sudo/accept-license。外部GUI后LicenseTermsVersion2/2CPU4096MiB/40GiB/AutoStartfalse，Engine实物一致。context desktop-linux固定unix:///Users/liuwenshuo/.docker/run/docker.sock，不建全局特权socket链接。
 - Ubuntu固定24.04 digest18b33ff…、rootimage7f633d33…、project openlxssh-fixture-61ed25328c13。keyonly已按A/B实证仅加AUDIT_WRITE重建为1253CID/MHU指纹（见上），原key-data/network保留；另外三个原CID/hostkeys/start未改，仍七cap。MINA2.20.0/commit2221febd…、image18c77956…/原CID不变。internal/noegress/readonly/no-new-privileges/capdropALL+按服务精确集合/资源受限/namedvolume无hostbind；HostConfig.PortBindings不冒称可达，有限opaque relay仅批准回环端口。
-- 分支 `development/p1-prototypes`；最新本地HEAD **64312bb**（真实tmux10），前 **45b87a5**（状态）、**b5e6e9e**（GUI文件）、**15e55a6**（Nest）等。不宣称产品通过。当前Appterminal-search-paste四源唯一写域/状态验收表未提交，htop只读无写；不得覆盖writer。remote为空、未push。
+- 分支 `development/p1-prototypes`；实际HEAD **2f6e00f**（htop自有进程/缩放/q真实验收），前 **a535624**（tmux验收/搜索粘贴检查点）、**64312bb**（tmux10）、**b5e6e9e**（GUI文件）、**15e55a6**（Nest）等。不宣称产品通过。当前App terminal-search-paste四源已从停滞2c串行交给cef做review R1；HTOP已验收提交冻结、无active runtime。状态/验收由主管维护，不覆盖writer。remote为空、未push。
 - 最近完整内部候选仍 `DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，来源8b6396199db273493a438679df0020fa6ef7c3a4/dirty=false/version0.1.0 build1。arm64/min26/Development strict/runtime通过，Gatekeeper false/spctl3，未公证/上传/安装运行。ZIP7418092B/SHA256 fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e；tree499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066；manifest4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f。不能声称包含后续测试基础设施或报告。
 - 正式min26长期driver `Tests/StabilityAcceptance/.build/driver-71e5e2da-b345-4c4b-ab54-53b8d128209d/wrapper/OpenLXSSHStability.app`，driver66843ddc286375de474e9823ea7353cd7d77265b5e1a8bf1cbf8a009cf7f625a/helper31d0ee0ee9d357d7edd0bfaf129a9ae4b38334fd8955184f6afc049d685a0590；未运行200/24h，不降平台门。
 
@@ -125,8 +127,8 @@
 
 ## 剩余必要工作与外部条件
 
-- 本机可继续：独立key的真实嵌套公钥case（当前首案只到管理READY、relay前失败）；剩余远端TUI/原生复制粘贴搜索/多任务与更多取消排列；正式App并发UI；凭据默认Keychain真实保存/读取/忘记的适当授权与条件。已过上传/window/Quit/外层PTYVim/并发隔离核心不重做；PAM取消challenge自动卫生缺口保留不删验收。未知提示人工，不按普通终端送秘密。
+- 本机可继续：原生搜索/非剪贴板Bracketed Paste、htop有限交互、多任务/切标签/冲突批策略、保活与断线输出保留/仅手动重连的必要欠证；正式App并发认证UI；凭据默认Keychain真实保存/读取/忘记的适当授权与条件。已过上传/window/Quit/外层PTYVim/公钥nested/GUI文件操作/tmux与并发隔离核心不重做；PAM取消challenge自动卫生缺口保留不删验收。未知提示人工，不按普通终端送秘密。
 - 外部仍缺：macOS26真实运行；正式driver200次/五会话真实连续24h；DeveloperID Application/Installer当前0（仅Development1）、对应最终产物Apple上传批准；双机安装、人工IME/Finder/像素、企业允许环境。不能以缩数据/改时钟/HostProbe/多次短测替代。
 - 不创建Cron/OffPeak/常驻，不改电源/保护/宿主SSH，不因普通失败停止全部工作。仅必要信息/权限/无替代外部条件才BLOCKED；整体未完成时不得称COMPLETE。
 
-下一具体审点：2c交APPterminal-search-paste原生双向搜索actualselection/index/total、非clipboard多行原始wrapper/count/SHA实际capture和tcgetattr恢复原值/outerfreshACK的四源127+纯回归/新签名；9b交独立HTOPownchild-ready/size/q正常退出的闭合status只读管理源/纯类型检查，先审再build/唯一runtime。tmux10/GUIfileops等已过不重做；默认Keychain授权/人工globalclipboard/IME/innerpasswordOTP/mac26/200-24h/发布门不降低。
+下一具体审点：cef交App terminal-search-paste最终actual capture count/hash解析及tcgetattr==original恢复断言、新签名冻结，再主管审/单案live；初始127仅编译，不作通过。htop唯一案strict5/ready-actual31x93-PTYq/自然清理已主管通过并2f6e00f提交，不重跑；root无active runtime。只读Explore在定位下一真实双标签/断线历史保留及原生手动重连最小入口，暂不并写四源。默认Keychain授权/人工globalclipboard/IME/innerpasswordOTP/mac26/200-24h/发布门不降低。
