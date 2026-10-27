@@ -1,6 +1,6 @@
 # OpenLXSSH V1.0 — 验收总表
 
-当前状态：正式App/五生产包已有本地实现与分项证据，**整体验收未通过**。已授权隔离环境上，host15真实系统OpenSSH四类正向、SFTP密码/四密钥及组合MFA、MINA多提示/零提示/审批取消、2GiB/1000远端文件、断连/ENOSPC/握手timeout、错误及真实到期OTP、主机密钥不匹配拒绝/显式恢复、公开保存密码授权内存provider已有分项证据；详见 `ENGINEERING_STATE.md` 与对应报告。原生App真实按需读取/无任务关闭重开分项已验，但两次真实上传生命周期案均失败。新短ACK实测认证后failed(launchFailed)/255、loader未发送；PTY/TUI与跨关闭传输仍未通过。macOS26运行、完整GUI/并发/持久化消费、200次/24h、正式Release与双机人工均未完成。
+当前状态：正式App/五生产包已有本地实现与分项证据，**整体验收未通过**。已授权隔离环境中，host15 SSH/SFTP四类认证、多提示/审批、真实2GiB/1000与异常已有分项证据；真实App按需读取、16MiB上传跨关SSH/隐藏、关窗继续取消、真正Quit继续取消均已主管验收。真实外层PTY/Vim12与独立公钥nested12/精确授权恢复通过；两MFA并发取消隔离核心成立，但原case因fixture服务器材料清理失败仍PARTIAL，已exact恢复。历史失败不改写，详见 `ENGINEERING_STATE.md` 和各报告。正式macOS26双配置编译/测试钩子隔离已复核，非目标运行；剩余真实GUI文件操作/其余TUI、人工内层密码OTP/IME/Finder、默认Keychain持久化、200/24h、正式发布和双机企业验收尚未满足。
 
 当前检查点：P6B1/R1已有主管103tests/原生与签名回归；本轮五view有限渲染压力独立通过并提交ba4a2ec，见 `docs/reports/p7-app-output-stress.md`。正式Transport对抗发现的voucher检查与超时dead-name泄漏已最小修复，主管独立Release35/6/4/10/28/28及rights矩阵通过；最终C对应App105/Release/签名及退出回归已核，见 `docs/reports/p7-transport-adversarial.md`。真实网络与目标系统不因此通过。最新干净源8b63961/UUIDfdb05b4d Development内部候选已包含两修复并独立校验，仍Gatekeeper拒绝/未公证或安装；旧候选仅历史。下方阶段历史记录仅指当时状态，当前实现/委派以 `ENGINEERING_STATE.md` 为准。
 
@@ -77,7 +77,7 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-10 | AUTH-05 | 多轮/多提示 Keyboard-Interactive、等待手机审批、拒绝和取消不挂死 UI | 进行中：host15生产libssh2真实MINA单回调双prompt/echo、zero接受/拒绝及固定8s审批接受/拒绝/等待取消通过；主管独立双prompt与pending取消且跨原decisiondue归零抽验通过。auth-only/非GUI/非SFTP，企业审批及OpenSSH多轮/产品交互仍待。见 `docs/reports/real-mina-kbi.md` |
 | AC-11 | AUTH-08～09 | 未知挑战人工输入；并发认证不串用凭据；关闭后旧回答失效；重试有界 | 进行中：正式控制面/签名IPC及代次/取消回归已验；真实同进程两MFA会话同时双PID/OTP-Apending后取消A，旧.cancel typed.stale且AOTPread0，B三OTP/outerconnected1，主管独立核。原整案仍exit1/cleanupIncomplete：A服务端challenge过TTL残留，后仅exactFD管理恢复，非自动清理通过；App并发UI/mac26仍待。见 `docs/reports/real-concurrent-auth.md` |
 | AC-12 | SEC-01 | SSH 与 SFTP 直接连接首次信任、再次匹配、变化拒绝、非默认端口均正确 | 进行中：真实App明确比对/接受127:22221与按需SFTP共享trust匹配通过(testscan15)；Files独立同endpoint旧key mismatch实际handshake.changed/untrusted、旧knownhash不变，另显式replacement新SFTP恢复通过，不自动替换/不声称真实serverrotate。DirectSSH预扫变化/产品管理UI/mac26仍待。见 `docs/reports/real-auth-failures.md`、`docs/reports/app-real-ssh-sftp.md` |
-| AC-13 | NEST-01～04 | 最外层连接后在远端手动执行 ssh，内层认证、控制键、缩放、退出返回上一层正常，App 不投递内层凭据 | 未执行 |
+| AC-13 | NEST-01～04 | 最外层连接后在远端手动执行 ssh，内层认证、控制键、缩放、退出返回上一层正常，App 不投递内层凭据 | 进行中：真实公钥nested分项已主管核过：remoteUID10000新distinctkey/临时exactpublicappend、outerPTY真实系统ssh到1272222、inner12帧/CtrlC/resize/VimSHA/返回outer、App外层auth回调后增量0；双层关闭后auth/trust/config/master恢复baseline/密钥与staging全清。原内层password/OTP/审批与企业人工未验，不将pubkey分项等于全NEST。见 `docs/reports/real-nested-publickey.md` |
 | AC-14 | TERM-02～04 | 有限历史、搜索、中文输入法、Unicode/Emoji、复制/多行及 Bracketed Paste、主题字号可用 | 未执行 |
 | AC-15 | TERM-05 | Vim/Neovim、tmux、htop/btop、Docker 日志以及指定 Claude Code/OpenCode 版本的终端显示与输入可用 | 进行中：原失败保留；环境AUDIT_WRITE/tiny coreEx就绪/size确认同步修后，新R2唯一案strict12帧通过，实际输入SHA/CtrlC/size31×93/Vim文档SHA/termios恢复/done/returned0及PIDFD清理均主管独立核过。不等全部工具/人工IME/mac26通过，见 `docs/reports/real-remote-terminal.md` |
 | AC-16 | TERM-06～07 | 按主机保活，断线保留当前输出且仅手动重连，连接/认证中关闭可清理 | 未执行 |
