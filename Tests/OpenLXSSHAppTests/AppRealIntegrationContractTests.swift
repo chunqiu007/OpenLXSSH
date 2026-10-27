@@ -19,7 +19,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -328,6 +328,106 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
                 XCTAssertEqual(captured.sha256, hash)
             }
         }
+    }
+    func testSessionsReconnectIsClosedTerminalOnlyPhaseAndNonceIsStrict() throws {
+        var value = object(); value["phase"] = "sessions-reconnect"
+        XCTAssertEqual(try decode(value).selectedPhase, .sessionsReconnect)
+        XCTAssertTrue(AppRealIntegrationPhase.sessionsReconnect.isTerminalOnly)
+        XCTAssertTrue(AppRealIntegrationPhase.terminalSearchPaste.isTerminalOnly)
+        for phase in [AppRealIntegrationPhase.readOnly, .fileOperations, .transferSurvivesClose, .windowContinueCancel, .quitContinueCancel] {
+            XCTAssertFalse(phase.isTerminalOnly)
+        }
+        XCTAssertFalse(AppRealIntegrationPhase.sessionsReconnect.isTransfer)
+        for nonce in ["", String(repeating: "a", count: 31), String(repeating: "a", count: 33), String(repeating: "A", count: 32), "bad; command"] {
+            XCTAssertThrowsError(try AppRealSessionsProtocol(nonce: nonce))
+        }
+        XCTAssertNoThrow(try AppRealSessionsProtocol(nonce: String(repeating: "0", count: 32)))
+        XCTAssertEqual(AppRealSessionsProtocol.keepaliveInterval, 7); XCTAssertEqual(AppRealSessionsProtocol.keepaliveCountMax, 2)
+    }
+    func testSessionsAckRolesAreCollisionFreeAndEchoCannotSupplyHistoryOrACK() throws {
+        let plan = try AppRealSessionsProtocol(nonce: String(repeating: "a", count: 32))
+        let commands = AppRealSessionsProtocol.Role.allCases.map { String(decoding: plan.ackCommand($0), as: UTF8.self) }
+        XCTAssertEqual(Set(commands).count, 3)
+        for (role, command) in zip(AppRealSessionsProtocol.Role.allCases, commands) {
+            XCTAssertTrue(command.hasPrefix("printf '\\101\\1231|"))
+            XCTAssertTrue(command.hasSuffix("\\n'\r")); XCTAssertLessThan(command.utf8.count, 128)
+            XCTAssertFalse(command.contains("AS1|")); XCTAssertFalse(try plan.acknowledged(command, role: role))
+            XCTAssertFalse(command.contains("AT1|")); XCTAssertFalse(command.contains("exit "))
+        }
+        let exitCommand = String(decoding: plan.naturalExitCommand, as: UTF8.self)
+        XCTAssertEqual(exitCommand, "printf '\\117PENLX-SESS-HISTORY-" + plan.nonce + "\\n'; exit 0\r")
+        XCTAssertFalse(exitCommand.contains(plan.historyMarker)); XCTAssertLessThan(exitCommand.utf8.count, 128)
+        XCTAssertEqual(plan.historyMarker, "OPENLX-SESS-HISTORY-" + plan.nonce)
+    }
+    func testSessionsAckRejectsWrongRoleNonceDuplicateMalformedAndOversizeFrames() throws {
+        let plan = try AppRealSessionsProtocol(nonce: String(repeating: "a", count: 32))
+        let frame = "AS1|" + plan.nonce + "|a-first|ok|END"
+        XCTAssertTrue(try plan.acknowledged("ordinary text\r\n" + frame, role: .aInitial))
+        XCTAssertTrue(try plan.acknowledged(frame + String(repeating: "x", count: AppRealSessionsProtocol.maximumOutputBytes - frame.utf8.count), role: .aInitial))
+        XCTAssertFalse(try plan.acknowledged(frame, role: .bInitial))
+        XCTAssertFalse(try plan.acknowledged(frame, role: .aReconnected))
+        XCTAssertFalse(try plan.acknowledged(frame.replacingOccurrences(of: plan.nonce, with: String(repeating: "b", count: 32)), role: .aInitial))
+        XCTAssertFalse(try plan.acknowledged(String(frame.dropLast(4)), role: .aInitial))
+        XCTAssertThrowsError(try plan.acknowledged(frame + frame, role: .aInitial))
+        XCTAssertThrowsError(try plan.acknowledged(frame.replacingOccurrences(of: "|ok|", with: "|wrong|"), role: .aInitial))
+        XCTAssertThrowsError(try plan.acknowledged(String(repeating: "x", count: AppRealSessionsProtocol.maximumOutputBytes + 1), role: .aInitial))
+    }
+    func testSessionsIdentityRequiresDistinctObjectsAndExactNextGenerationIncludingPIDReuse() throws {
+        let tab = UUID(), session = UUID()
+        func identity(tabID: UUID? = nil, sessionID: UUID? = nil, generation: UInt64 = 1, pid: Int32 = 111,
+                      parent: Int32 = 50, seconds: UInt64 = 100, micros: UInt64 = 1) -> AppRealSessionsProtocol.Identity {
+            .init(tabID: tabID ?? tab, sessionID: sessionID ?? session, generation: generation,
+                process: .init(pid: pid, parentPID: parent, startSeconds: seconds, startMicroseconds: micros))
+        }
+        let old = identity(), b = identity(tabID: UUID(), sessionID: UUID(), pid: 222)
+        XCTAssertTrue(AppRealSessionsProtocol.independent(old, b, distinctObjects: true))
+        XCTAssertFalse(AppRealSessionsProtocol.independent(old, b, distinctObjects: false))
+        XCTAssertFalse(AppRealSessionsProtocol.independent(old, identity(sessionID: UUID(), pid: 222), distinctObjects: true))
+        XCTAssertFalse(AppRealSessionsProtocol.independent(old, identity(tabID: UUID(), pid: 222), distinctObjects: true))
+        XCTAssertFalse(AppRealSessionsProtocol.independent(old, identity(tabID: UUID(), sessionID: UUID()), distinctObjects: true))
+        let next = identity(generation: 2, pid: 333, seconds: 101)
+        XCTAssertTrue(AppRealSessionsProtocol.reconnected(old, next, sameObjects: true, oldObservedGone: true))
+        // A PID number can be reused only after old absence and a different birth identity.
+        XCTAssertTrue(AppRealSessionsProtocol.reconnected(old, identity(generation: 2, seconds: 101), sameObjects: true, oldObservedGone: true))
+        for wrong in [identity(generation: 1, pid: 333), identity(generation: 3, pid: 333), identity(generation: 2),
+                      identity(tabID: UUID(), generation: 2, pid: 333), identity(sessionID: UUID(), generation: 2, pid: 333),
+                      identity(generation: 2, pid: 0), identity(generation: 2, parent: 0), identity(generation: 2, seconds: 0),
+                      identity(generation: 2, micros: 1_000_000)] {
+            XCTAssertFalse(AppRealSessionsProtocol.reconnected(old, wrong, sameObjects: true, oldObservedGone: true))
+        }
+        XCTAssertFalse(AppRealSessionsProtocol.reconnected(old, next, sameObjects: false, oldObservedGone: true))
+        XCTAssertFalse(AppRealSessionsProtocol.reconnected(old, next, sameObjects: true, oldObservedGone: false))
+        XCTAssertFalse(AppRealSessionsProtocol.reconnected(identity(generation: .max), identity(generation: 0, pid: 333), sameObjects: true, oldObservedGone: true))
+    }
+    func testSessionsNaturalDisconnectCannotBeCancellationNilExitOrLivePID() {
+        func gate(_ disconnected: Bool = true, _ exit: Int32? = 0, _ pid: Int32? = nil, _ reconnect: Bool = true, _ gone: Bool = true) -> Bool {
+            AppRealSessionsProtocol.naturalDisconnect(disconnectedZero: disconnected, lastExitCode: exit, ownedPID: pid, canReconnect: reconnect, oldGone: gone)
+        }
+        XCTAssertTrue(gate()); XCTAssertFalse(gate(false)); XCTAssertFalse(gate(true, nil)); XCTAssertFalse(gate(true, 255))
+        XCTAssertFalse(gate(true, 0, 123)); XCTAssertFalse(gate(true, 0, nil, false)); XCTAssertFalse(gate(true, 0, nil, true, false))
+    }
+    func testSessionsFiniteObservationIsMonotonicBoundedAndRejectsAnyReconnectSample() throws {
+        func sample(_ value: inout AppRealSessionsProtocol.Observation, _ elapsed: Double, _ disconnected: Bool = true,
+                    _ token: Bool = true, _ absent: Bool = true, _ gone: Bool = true, _ b: Bool = true) throws {
+            try value.sample(elapsed: elapsed, disconnectedZero: disconnected, tokenUnchanged: token,
+                ownedPIDAbsent: absent, oldProcessGone: gone, bUnchanged: b)
+        }
+        var value = AppRealSessionsProtocol.Observation(); XCTAssertFalse(value.complete)
+        XCTAssertThrowsError(try sample(&value, 1)); try sample(&value, 0); XCTAssertFalse(value.complete)
+        XCTAssertThrowsError(try sample(&value, 0)); XCTAssertThrowsError(try sample(&value, -.infinity))
+        XCTAssertThrowsError(try sample(&value, .nan)); XCTAssertThrowsError(try sample(&value, 10.001))
+        for flags in [(false, true, true, true, true), (true, false, true, true, true), (true, true, false, true, true),
+                      (true, true, true, false, true), (true, true, true, true, false)] {
+            XCTAssertThrowsError(try sample(&value, 0.5, flags.0, flags.1, flags.2, flags.3, flags.4))
+        }
+        try sample(&value, 1.999); XCTAssertFalse(value.complete)
+        try sample(&value, 2); XCTAssertTrue(value.complete); XCTAssertEqual(value.samples, 3); XCTAssertEqual(value.elapsedSeconds, 2)
+        XCTAssertThrowsError(try sample(&value, 1.5)); XCTAssertEqual(value.samples, 3)
+        var bounded = AppRealSessionsProtocol.Observation(); try sample(&bounded, 0)
+        for i in 1..<256 { try sample(&bounded, Double(i) / 1000) }
+        XCTAssertEqual(bounded.samples, 256); XCTAssertThrowsError(try sample(&bounded, 0.256))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["samples", "elapsedSeconds"])
     }
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)

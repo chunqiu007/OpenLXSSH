@@ -331,6 +331,23 @@ struct AppRealSessionFailure: Error {
         let bracketModeReady: Bool, originalTermiosRestoredAndShellReturned: Bool, sameSessionAndPID: Bool
         let boundary = "Native search field/buttons verified via selection and match summary. Paste uses pasteFromApplication API only; NO global clipboard read/write/copy, not GUI clipboard or manual IME acceptance."
     }
+    struct SessionsEvidence: Encodable {
+        struct Selection: Encodable {
+            let round: Int, selectedTabID: UUID, reusedTabID: UUID
+            let aTokenAndProcessUnchanged: Bool, bTokenAndProcessUnchanged: Bool, originalObjectsRetained: Bool
+        }
+        struct History: Encodable { let selectedRange: [Int], matchIndex: Int, totalMatches: Int }
+        let aInitial: AppRealSessionsProtocol.Identity, bInitial: AppRealSessionsProtocol.Identity, aReconnected: AppRealSessionsProtocol.Identity
+        let distinctInitialObjects: Bool, sameAObjectsAfterReconnect: Bool
+        let reuseSelections: [Selection]
+        let naturalExitCode: Int32, oldAProcessObservedGone: Bool, canReconnectAfterNaturalExit: Bool
+        let historyAfterDisconnect: History, historyAfterReconnect: History
+        let noAutomaticReconnect: AppRealSessionsProtocol.Observation
+        let persistedKeepaliveInterval: Int, persistedKeepaliveCountMax: Int
+        let aInitialKeepalive: [Int], bKeepalive: [Int], aReconnectedKeepalive: [Int]
+        let allDriversClosed: Bool, allOwnedProcessesGone: Bool, noSFTPOrCredentials: Bool
+        let boundary = "Finite two-tab real SSH case; native reuse/switch/manual reconnect, natural outer exit0, retained history. Keepalive CONFIGURATION MAPPING ONLY, not blackhole/liveness proof. No clipboard/IME/macOS26/indefinite no-auto-reconnect claim."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -346,6 +363,7 @@ struct AppRealSessionFailure: Error {
         let quitTransfer: QuitEvidence?
         let fileOperations: FileOperationsEvidence?
         let terminalOperations: TerminalEvidence?
+        let sessionOperations: SessionsEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -361,6 +379,7 @@ struct AppRealSessionFailure: Error {
     private var quitEvidence: QuitEvidence?
     private var fileOperationsEvidence: FileOperationsEvidence?
     private var terminalEvidence: TerminalEvidence?
+    private var sessionsEvidence: SessionsEvidence?
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
     private var quitFailureRecorded = false
@@ -399,7 +418,10 @@ struct AppRealSessionFailure: Error {
             try check("imported-key-matches-current-public-export", importedPublic.algorithm == .ed25519 && publicFields.count >= 2 &&
                 importedPublic.copyString == publicFields.prefix(2).joined(separator: " "))
             try check("fixture-key-source-unmodified", try AppRealPrivateInput.sha(AppRealPrivateInput.read(input.contract.generation + "/id_ed25519", limit: 32768)) == originalSHA)
-            let host = HostConfiguration(name: "Local approved keyonly fixture", address: "127.0.0.1", port: 22221, username: "fixture", authentication: .privateKey, keyRef: key.id)
+            var host = HostConfiguration(name: "Local approved keyonly fixture", address: "127.0.0.1", port: 22221, username: "fixture", authentication: .privateKey, keyRef: key.id)
+            if input.contract.selectedPhase == .sessionsReconnect {
+                host.keepaliveInterval = AppRealSessionsProtocol.keepaliveInterval; host.keepaliveCountMax = AppRealSessionsProtocol.keepaliveCountMax
+            }
             try check("host-saved-no-password", await model.saveHostSecurely(host, isNew: true, password: .manual))
             if isQuitPhase { quitHostID = host.id; quitKeyID = key.id }
             try await doubleClickHost()
@@ -431,8 +453,11 @@ struct AppRealSessionFailure: Error {
             try check("actual-outer-auth-and-owned-pid", tab.state == .connected && driver.session.state == .connected && actualPID != nil)
             let filesBefore = await facts.connectionAttempts
             try check("ssh-did-not-open-sftp", filesBefore == 0 && !model.files.visible)
-            let terminalOnly = input.contract.selectedPhase == .terminalSearchPaste
-            if terminalOnly {
+            let terminalOnly = input.contract.selectedPhase.isTerminalOnly
+            if input.contract.selectedPhase == .sessionsReconnect {
+                sessionsEvidence = try await sessionsReconnect(a: tab, aDriver: driver)
+                sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
+            } else if terminalOnly {
                 terminalEvidence = try await terminalSearchPaste(driver: driver)
             } else {
             try await click("files.open")
@@ -452,7 +477,7 @@ struct AppRealSessionFailure: Error {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
                 if isQuitPhase { return } // Native termination owns the only store closes and final reply.
                 sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
-            } else {
+            } else if input.contract.selectedPhase != .sessionsReconnect {
                 try await click("tab.close." + tab.id.uuidString)
                 try await wait { self.model.sessions.tabs.isEmpty && driver.session.state == .closed && driver.session.ownedProcessID == nil }
                 sshReleased = true
@@ -549,6 +574,182 @@ struct AppRealSessionFailure: Error {
             expectedPasteBytes: plan.expectedPaste.count, capturedPasteBytes: captured.bytes,
             expectedPasteSHA256: expectedHash, capturedPasteSHA256: captured.sha256,
             bracketModeReady: true, originalTermiosRestoredAndShellReturned: true, sameSessionAndPID: true)
+    }
+    private func sessionsReconnect(a: SessionTab, aDriver: DirectSessionDriver) async throws -> SessionsEvidence {
+        let plan = try AppRealSessionsProtocol(nonce: input.contract.runID.replacingOccurrences(of: "-", with: ""))
+        let aSession = aDriver.session, aView = aDriver.terminal
+        func processIdentity(_ pid: Int32) throws -> AppRealSessionsProtocol.ProcessIdentity {
+            guard pid > 0, Darwin.kill(pid, 0) == 0 else { throw AppRealIntegrationFailure.failedCheck }
+            var info = proc_bsdinfo()
+            let size = MemoryLayout<proc_bsdinfo>.size
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size)) == Int32(size),
+                  info.pbi_pid == UInt32(pid), info.pbi_uid == getuid(), info.pbi_ppid == UInt32(getpid()) else { throw AppRealIntegrationFailure.failedCheck }
+            let value = AppRealSessionsProtocol.ProcessIdentity(pid: pid, parentPID: Int32(info.pbi_ppid),
+                startSeconds: info.pbi_start_tvsec, startMicroseconds: info.pbi_start_tvusec)
+            guard value.isValid else { throw AppRealIntegrationFailure.failedCheck }; return value
+        }
+        func gone(_ pid: Int32) -> Bool { guard pid > 0 else { return false }; return Darwin.kill(pid, 0) == -1 && errno == ESRCH }
+        func identity(_ tab: SessionTab, _ driver: DirectSessionDriver) throws -> AppRealSessionsProtocol.Identity {
+            guard tab.driver === driver, let token = driver.token, token.sessionID == driver.session.sessionID,
+                  let pid = driver.session.ownedProcessID else { throw AppRealIntegrationFailure.failedCheck }
+            return AppRealSessionsProtocol.Identity(tabID: tab.id, sessionID: token.sessionID, generation: token.generation, process: try processIdentity(pid))
+        }
+        func connected(_ tab: SessionTab, _ driver: DirectSessionDriver) async throws {
+            let deadline = ProcessInfo.processInfo.systemUptime + 90
+            while tab.state != .connected || driver.state != .connected {
+                guard tab.driver === driver, tab.authentication == nil, tab.trust.isEmpty else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+                if case .failed(let reason) = tab.state { throw AppRealSessionFailure(reason) }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            guard tab.authentication == nil, tab.trust.isEmpty else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+        }
+        func ack(_ role: AppRealSessionsProtocol.Role, _ tab: SessionTab, _ driver: DirectSessionDriver,
+                 expected: AppRealSessionsProtocol.Identity, otherCurrent: () throws -> Void = {}) async throws {
+            try driver.session.sendInput(plan.ackCommand(role))
+            let deadline = ProcessInfo.processInfo.systemUptime + 15
+            while true {
+                try otherCurrent()
+                guard tab.state == .connected, driver.state == .connected, try identity(tab, driver) == expected else { throw AppRealIntegrationFailure.failedCheck }
+                if try plan.acknowledged(driver.terminal.text, role: role) { return }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        func keepalive(_ tab: SessionTab) throws -> [Int] {
+            guard let config = tab.configuration else { throw AppRealIntegrationFailure.failedCheck }
+            return [config.serverAliveInterval, config.serverAliveCountMax]
+        }
+        let persisted = try await model.repository.securityMetadata().hosts.first { $0.id == a.hostID }
+        guard let persisted, persisted.keepaliveInterval == AppRealSessionsProtocol.keepaliveInterval,
+              persisted.keepaliveCountMax == AppRealSessionsProtocol.keepaliveCountMax else { throw AppRealIntegrationFailure.failedCheck }
+        let expectedKeepalive = [persisted.keepaliveInterval, persisted.keepaliveCountMax]
+        let aInitialKeepalive = try keepalive(a), aInitial = try identity(a, aDriver)
+        try check("sessions-a-real-connected-and-keepalive-configuration", a.state == .connected && aDriver.state == .connected && aInitialKeepalive == expectedKeepalive)
+        try await ack(.aInitial, a, aDriver, expected: aInitial)
+        try check("sessions-a-independent-short-shell-ack", true)
+        try await click("session.new")
+        try await wait { self.model.sessions.tabs.count == 2 && self.model.sessions.tabs.contains { $0.id != a.id && $0.driver != nil } }
+        guard let b = model.sessions.tabs.first(where: { $0.id != a.id }), b.hostID == a.hostID,
+              let bDriver = b.driver as? DirectSessionDriver else { throw AppRealIntegrationFailure.failedCheck }
+        let bSession = bDriver.session, bView = bDriver.terminal
+        try await connected(b, bDriver)
+        let bInitial = try identity(b, bDriver), bKeepalive = try keepalive(b)
+        let distinctObjects = a !== b && aDriver !== bDriver && aSession !== bSession && aView !== bView
+        try check("sessions-native-new-distinct-tabs-sessions-views-and-processes", AppRealSessionsProtocol.independent(aInitial, bInitial, distinctObjects: distinctObjects))
+        func objectsRetained() -> Bool {
+            model.sessions.tabs.count == 2 && model.sessions.tabs.contains(where: { $0 === a }) && model.sessions.tabs.contains(where: { $0 === b })
+                && a.driver === aDriver && b.driver === bDriver && aDriver.session === aSession && bDriver.session === bSession
+                && aDriver.terminal === aView && bDriver.terminal === bView
+        }
+        func bCurrent() throws {
+            guard objectsRetained(), b.state == .connected, bDriver.state == .connected,
+                  b.authentication == nil, b.trust.isEmpty, try identity(b, bDriver) == bInitial else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        func bothCurrent() throws {
+            try bCurrent()
+            guard a.state == .connected, aDriver.state == .connected, a.authentication == nil, a.trust.isEmpty,
+                  try identity(a, aDriver) == aInitial else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        try await ack(.bInitial, b, bDriver, expected: bInitial, otherCurrent: bothCurrent)
+        try check("sessions-b-independent-short-shell-ack-and-keepalive", bKeepalive == expectedKeepalive)
+        var selections: [SessionsEvidence.Selection] = []
+        for round in 1...2 {
+            for selected in [a, b] {
+                try bothCurrent(); try await click("tab.select." + selected.id.uuidString)
+                try check("sessions-native-select-round-" + String(round), model.sessions.selectedTabID == selected.id)
+                try bothCurrent(); try await doubleClickHost()
+                try await wait { self.model.sessions.selectedTabID == selected.id }
+                try bothCurrent()
+                try check("sessions-recent-active-host-doubleclick-reuses-round-" + String(round), model.sessions.selectedTabID == selected.id && objectsRetained())
+                selections.append(SessionsEvidence.Selection(round: round, selectedTabID: selected.id, reusedTabID: model.sessions.selectedTabID!,
+                    aTokenAndProcessUnchanged: try identity(a, aDriver) == aInitial, bTokenAndProcessUnchanged: try identity(b, bDriver) == bInitial,
+                    originalObjectsRetained: objectsRetained()))
+            }
+        }
+        try await click("tab.select." + a.id.uuidString); try bothCurrent()
+        try aSession.sendInput(plan.naturalExitCommand)
+        let exitDeadline = ProcessInfo.processInfo.systemUptime + 30
+        while aSession.state != .disconnected(0) || a.state != .disconnected(0) || !a.canReconnect || !aSession.canReconnect || !gone(aInitial.process.pid) {
+            try bCurrent()
+            if case .failed(let reason) = aSession.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < exitDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let observedExit = aSession.lastExitCode, oldObservedGone = gone(aInitial.process.pid)
+        let reconnectableAfterNaturalExit = a.canReconnect && aSession.canReconnect
+        try check("sessions-actual-natural-exit-zero-reaped-and-reconnectable", AppRealSessionsProtocol.naturalDisconnect(
+            disconnectedZero: a.state == .disconnected(0) && aSession.state == .disconnected(0), lastExitCode: observedExit,
+            ownedPID: aSession.ownedProcessID, canReconnect: reconnectableAfterNaturalExit, oldGone: oldObservedGone))
+        func disconnectedCurrent() throws {
+            try bCurrent()
+            guard aDriver.token == SessionToken(sessionID: aInitial.sessionID, generation: aInitial.generation), aSession.state == .disconnected(0), a.state == .disconnected(0),
+                  aSession.lastExitCode == 0, aSession.ownedProcessID == nil, a.canReconnect, aSession.canReconnect,
+                  gone(aInitial.process.pid) else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        try await click("tab.select." + b.id.uuidString); try disconnectedCurrent()
+        try await click("tab.select." + a.id.uuidString); try disconnectedCurrent()
+        func history() async throws -> SessionsEvidence.History {
+            try await type("terminal.search", plan.historyMarker); try await click("terminal.search.next")
+            let range = aView.selectedRange(), summary = aView.searchMatchSummary(plan.historyMarker, limit: 2)
+            guard summary.total == 1, summary.index == 1, range.location != NSNotFound,
+                  range.length == plan.historyMarker.utf16.count else { throw AppRealIntegrationFailure.failedCheck }
+            return SessionsEvidence.History(selectedRange: [range.location, range.length], matchIndex: summary.index, totalMatches: summary.total)
+        }
+        let historyDisconnected = try await history(); try disconnectedCurrent()
+        try check("sessions-disconnected-history-native-search-retained", historyDisconnected.totalMatches == 1)
+        let observationStart = ProcessInfo.processInfo.systemUptime
+        var observation = AppRealSessionsProtocol.Observation()
+        func sample(_ elapsed: Double) throws {
+            try disconnectedCurrent()
+            try observation.sample(elapsed: elapsed, disconnectedZero: aSession.state == .disconnected(0) && aSession.lastExitCode == 0,
+                tokenUnchanged: aDriver.token == SessionToken(sessionID: aInitial.sessionID, generation: aInitial.generation), ownedPIDAbsent: aSession.ownedProcessID == nil,
+                oldProcessGone: gone(aInitial.process.pid), bUnchanged: try identity(b, bDriver) == bInitial)
+        }
+        try sample(0)
+        while ProcessInfo.processInfo.systemUptime - observationStart < AppRealSessionsProtocol.observationSeconds {
+            try await Task.sleep(for: .milliseconds(50)); try sample(ProcessInfo.processInfo.systemUptime - observationStart)
+        }
+        try check("sessions-finite-two-second-no-automatic-reconnect-observation", observation.complete)
+        try disconnectedCurrent(); try await click("terminal.reconnect")
+        let reconnectDeadline = ProcessInfo.processInfo.systemUptime + 90
+        while a.state != .connected || aSession.state != .connected {
+            try bCurrent()
+            guard a.authentication == nil, a.trust.isEmpty else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if case .failed(let reason) = a.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < reconnectDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let aNew = try identity(a, aDriver), aNewKeepalive = try keepalive(a)
+        let sameAObjects = objectsRetained() && aSession === aDriver.session && aView === aDriver.terminal
+        try check("sessions-native-manual-reconnect-same-objects-new-owned-generation", AppRealSessionsProtocol.reconnected(aInitial, aNew,
+            sameObjects: sameAObjects, oldObservedGone: oldObservedGone) && aNew.process.pid != bInitial.process.pid)
+        try await ack(.aReconnected, a, aDriver, expected: aNew, otherCurrent: bCurrent)
+        try check("sessions-manual-new-generation-fresh-shell-ack", true)
+        let historyReconnected = try await history(); try bCurrent()
+        try check("sessions-history-still-searchable-after-reconnect", historyReconnected.totalMatches == 1 && (try identity(a, aDriver)) == aNew)
+        let persistedAfter = try await model.repository.securityMetadata().hosts.first { $0.id == a.hostID }
+        try check("sessions-persisted-keepalive-config-maps-all-three-generations-only", aNewKeepalive == expectedKeepalive &&
+            persistedAfter?.keepaliveInterval == persisted.keepaliveInterval && persistedAfter?.keepaliveCountMax == persisted.keepaliveCountMax)
+        try await click("tab.close." + b.id.uuidString)
+        try await wait { self.model.sessions.tabs.count == 1 && bDriver.state == .closed && bSession.ownedProcessID == nil && gone(bInitial.process.pid) }
+        try check("sessions-close-b-leaves-reconnected-a-unchanged", model.sessions.tabs.first === a && aDriver.state == .connected && (try identity(a, aDriver)) == aNew)
+        try await click("tab.close." + a.id.uuidString)
+        try await wait { self.model.sessions.tabs.isEmpty && aDriver.state == .closed && bDriver.state == .closed && aSession.ownedProcessID == nil && bSession.ownedProcessID == nil && gone(aNew.process.pid) && gone(bInitial.process.pid) }
+        let allClosed = aDriver.state == .closed && bDriver.state == .closed && aSession.ownedProcessID == nil && bSession.ownedProcessID == nil
+        let allGone = gone(aNew.process.pid) && gone(bInitial.process.pid) && (aInitial.process.pid == aNew.process.pid || gone(aInitial.process.pid))
+        let attempts = await facts.connectionAttempts, services = await facts.returnedProductionServices, credentialCalls = await credentials.forbiddenCalls
+        let noFilesOrCredentials = attempts == 0 && services == 0 && credentialCalls == 0 && !model.files.visible
+        try check("sessions-both-native-tabs-closed-owned-processes-gone", allClosed && allGone && model.sessions.tabs.isEmpty)
+        try check("sessions-no-sftp-or-credential-calls", noFilesOrCredentials)
+        guard let observedExit else { throw AppRealIntegrationFailure.failedCheck }
+        return SessionsEvidence(aInitial: aInitial, bInitial: bInitial, aReconnected: aNew, distinctInitialObjects: distinctObjects,
+            sameAObjectsAfterReconnect: sameAObjects, reuseSelections: selections, naturalExitCode: observedExit,
+            oldAProcessObservedGone: oldObservedGone, canReconnectAfterNaturalExit: reconnectableAfterNaturalExit, historyAfterDisconnect: historyDisconnected,
+            historyAfterReconnect: historyReconnected, noAutomaticReconnect: observation,
+            persistedKeepaliveInterval: persisted.keepaliveInterval, persistedKeepaliveCountMax: persisted.keepaliveCountMax,
+            aInitialKeepalive: aInitialKeepalive, bKeepalive: bKeepalive, aReconnectedKeepalive: aNewKeepalive,
+            allDriversClosed: allClosed, allOwnedProcessesGone: allGone, noSFTPOrCredentials: noFilesOrCredentials)
     }
     private func fileOperations() async throws -> FileOperationsEvidence {
         let scope = try AppRealFileScope(runID: input.contract.runID), dataset = try store.prepareFileOperations(scope)
@@ -704,7 +905,7 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),

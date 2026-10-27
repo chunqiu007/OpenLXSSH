@@ -56,8 +56,9 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel }
+    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect }
 }
 struct AppRealTransferScope: Sendable {
     static let sourceBytes: UInt64 = 16 * 1024 * 1024
@@ -142,6 +143,62 @@ frame('restored','ok')
         let encoded = Data(source.utf8).base64EncodedString()
         let command = "/usr/bin/python3 -c 'import base64;exec(compile(base64.b64decode(\"" + encoded + "\"),\"<fixed-native-terminal-probe>\",\"exec\"))' " + nonce + "; r=$?; printf '\\101\\1241|" + nonce + "|returned|%s|END\\n' \"$r\"\r"
         guard command.utf8.count < 4096 else { throw AppRealIntegrationFailure.contract }; return Data(command.utf8)
+    }
+}
+struct AppRealSessionsProtocol: Sendable {
+    enum Role: String, CaseIterable, Sendable { case aInitial = "a-first", bInitial = "b-first", aReconnected = "a-reconnected" }
+    struct ProcessIdentity: Codable, Equatable, Sendable {
+        let pid: Int32, parentPID: Int32
+        let startSeconds: UInt64, startMicroseconds: UInt64
+        var isValid: Bool { pid > 0 && parentPID > 0 && startSeconds > 0 && startMicroseconds < 1_000_000 }
+    }
+    struct Identity: Codable, Equatable, Sendable {
+        let tabID: UUID, sessionID: UUID, generation: UInt64
+        let process: ProcessIdentity
+        var isValid: Bool { generation > 0 && process.isValid }
+    }
+    struct Observation: Codable, Sendable {
+        private(set) var samples = 0
+        private(set) var elapsedSeconds: Double = 0
+        mutating func sample(elapsed: Double, disconnectedZero: Bool, tokenUnchanged: Bool, ownedPIDAbsent: Bool,
+                             oldProcessGone: Bool, bUnchanged: Bool) throws {
+            guard elapsed.isFinite, elapsed >= 0, elapsed <= 10, samples < 256,
+                  (samples == 0 ? elapsed == 0 : elapsed > elapsedSeconds),
+                  disconnectedZero && tokenUnchanged && ownedPIDAbsent && oldProcessGone && bUnchanged else { throw AppRealIntegrationFailure.failedCheck }
+            samples += 1; elapsedSeconds = elapsed
+        }
+        var complete: Bool { samples >= 2 && elapsedSeconds >= AppRealSessionsProtocol.observationSeconds && elapsedSeconds <= 10 }
+    }
+    static let maximumOutputBytes = 65536
+    static let observationSeconds: Double = 2
+    static let keepaliveInterval = 7, keepaliveCountMax = 2
+    let nonce: String
+    init(nonce: String) throws {
+        guard AppRealIntegrationContract.hex(nonce, count: 32) else { throw AppRealIntegrationFailure.contract }
+        self.nonce = nonce
+    }
+    var historyMarker: String { "OPENLX-SESS-HISTORY-" + nonce }
+    func ackCommand(_ role: Role) -> Data { Data(("printf '\\101\\1231|" + nonce + "|" + role.rawValue + "|ok|END\\n'\r").utf8) }
+    var naturalExitCommand: Data { Data(("printf '\\117PENLX-SESS-HISTORY-" + nonce + "\\n'; exit 0\r").utf8) }
+    func acknowledged(_ text: String, role: Role) throws -> Bool {
+        guard text.utf8.count <= Self.maximumOutputBytes else { throw AppRealIntegrationFailure.failedCheck }
+        let compact = text.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+        let prefix = "AS1|" + nonce + "|" + role.rawValue + "|"
+        guard let start = compact.range(of: prefix) else { return false }
+        guard compact.range(of: prefix, range: start.upperBound..<compact.endIndex) == nil else { throw AppRealIntegrationFailure.failedCheck }
+        guard let end = compact.range(of: "|END", range: start.upperBound..<compact.endIndex) else { return false }
+        guard compact[start.upperBound..<end.lowerBound] == "ok" else { throw AppRealIntegrationFailure.failedCheck }
+        return true
+    }
+    static func independent(_ a: Identity, _ b: Identity, distinctObjects: Bool) -> Bool {
+        a.isValid && b.isValid && distinctObjects && a.tabID != b.tabID && a.sessionID != b.sessionID && a.process.pid != b.process.pid
+    }
+    static func reconnected(_ old: Identity, _ new: Identity, sameObjects: Bool, oldObservedGone: Bool) -> Bool {
+        old.isValid && new.isValid && sameObjects && oldObservedGone && old.tabID == new.tabID && old.sessionID == new.sessionID
+            && old.generation < UInt64.max && new.generation == old.generation + 1 && old.process != new.process
+    }
+    static func naturalDisconnect(disconnectedZero: Bool, lastExitCode: Int32?, ownedPID: Int32?, canReconnect: Bool, oldGone: Bool) -> Bool {
+        disconnectedZero && lastExitCode == 0 && ownedPID == nil && canReconnect && oldGone
     }
 }
 struct AppRealFileScope: Sendable {
