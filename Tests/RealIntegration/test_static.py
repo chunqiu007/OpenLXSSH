@@ -424,6 +424,43 @@ exec(compile(program,'fixed-root-reader','exec'))
         self.assertIn('persistenceVerified = false', report)
         for forbidden in ('password:', 'secret:', 'prompt:', 'answer:', 'secretHash:'):
             self.assertNotIn(forbidden, report)
+    def test_public_credential_lifecycle_is_live_gated_exact_and_recovery_first(self):
+        consumer = (HERE / 'Consumer/CredentialStorePublicConsumer.swift').read_text()
+        self.assertLess(consumer.index('try persist("prepared")'), consumer.index('CredentialStore(testNamespace: namespace)'))
+        self.assertLess(consumer.index('try persist("save-attempted")'), consumer.index('currentStore.save('))
+        self.assertIn('authorization: .granted', consumer)
+        self.assertIn('if state.mayAttemptExactDelete && connectionCleanupDrained {', consumer)
+        self.assertIn('store.deleteExact(reference)', consumer)
+        self.assertIn('try await store.close()', consumer)
+        self.assertIn('state.recordClose(restored: false)', consumer)
+        for forbidden in ('SecItem', 'SecKeychainSetDefault', 'SecKeychainSetSearchList', '.replace(', 'SecAccessCreate', 'AXUIElement', 'NSAppleScript'):
+            self.assertNotIn(forbidden, consumer.split('@MainActor enum', 1)[1])
+        owner = (HERE / 'Consumer/CredentialStorePublicOwner.swift').read_text()
+        self.assertIn('await store.read(reference)', owner)
+        self.assertIn('session.connect(configuration, savedPassword: authorization)', owner)
+        for forbidden in ('fixturePasswordForExplicitSave', 'configureProbeSavedPassword', 'eligible:', 'terminal.text', 'sendInput('):
+            self.assertNotIn(forbidden, owner)
+        recovery = (HERE / 'Consumer/CredentialStorePublicRecovery.swift').read_text()
+        self.assertIn('PrivateInput.writeExclusive', recovery)
+        self.assertIn('fsync(self.runFD) == 0', recovery)
+        self.assertIn('fsync(self.parentFD) == 0', recovery)
+        self.assertIn('CredentialStorePublicDurability.commit', recovery)
+        self.assertIn('validateIdentity()', recovery)
+        self.assertNotIn('FileManager.default.remove', recovery)
+        options = (HERE / 'Sources/RealIntegrationCore/CredentialStorePublicContract.swift').read_text()
+        self.assertIn('local && ready && keychain', options)
+        self.assertIn('--authorized-test-keychain', options)
+        state = (HERE / 'Sources/RealIntegrationCore/CredentialStorePublicState.swift').read_text()
+        self.assertIn('automaticRecoveryDeletionAllowed = false', state)
+        self.assertIn('physicalKeychainIsolation = false', state)
+        builder = (HERE / 'build_host.py').read_text()
+        self.assertIn("builder.c_module('SecurityPOSIX'", builder)
+        self.assertIn("('OpenLXSSHSecurity', ROOT / 'Packages/OpenLXSSHSecurity/Sources/OpenLXSSHSecurity'", builder)
+        # Offline graph must stay dependency-free: pure state tests never open a store.
+        self.assertNotIn('OpenLXSSHSecurity', (HERE / 'Package.swift').read_text())
+        tests = (HERE / 'Tests/RealIntegrationCoreTests/CredentialStorePublicTests.swift').read_text()
+        self.assertNotIn('try CredentialStore(', tests)
+        self.assertNotIn('import OpenLXSSHSecurity', tests)
 
 
 if __name__ == '__main__':

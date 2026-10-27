@@ -247,6 +247,7 @@ def build(sign):
         builder.snapshot(TRANSPORT / 'Package.resolved')
         builder.snapshot(FILES / 'Package.swift')
         builder.snapshot(ROOT / 'Packages/OpenLXSSHTrust/Package.swift')
+        builder.snapshot(ROOT / 'Packages/OpenLXSSHSecurity/Package.swift')
         builder.snapshot(HERE / 'build_host.py'); builder.snapshot(HERE / 'Package.swift')
         # Read/hashes only: never invoke native builders or mutate native caches.
         manifest = json.loads((NATIVE / 'manifest.json').read_bytes())
@@ -273,6 +274,7 @@ def build(sign):
         cobjects = builder.c_module('COpenLXSSHAskpass', TRANSPORT / 'Sources/COpenLXSSHAskpass', probe=True)
         cobjects += builder.c_module('COpenLXSSHFiles', FILES / 'Sources/COpenLXSSHFiles', native=native / 'include')
         cobjects += builder.c_module('RealIntegrationPOSIX', HERE / 'Sources/RealIntegrationPOSIX')
+        cobjects += builder.c_module('SecurityPOSIX', ROOT / 'Packages/OpenLXSSHSecurity/Sources/SecurityPOSIX')
         swift_objects = []
         for name, directory, version, package, extra in [
             ('OpenLXSSHTrust', ROOT / 'Packages/OpenLXSSHTrust/Sources/OpenLXSSHTrust', '6', 'openlxsshtrust', []),
@@ -280,6 +282,7 @@ def build(sign):
             ('OpenLXSSHAskpass', TRANSPORT / 'Sources/OpenLXSSHAskpass', '5', 'openlxsshtransport', []),
             ('OpenLXSSHTransport', TRANSPORT / 'Sources/OpenLXSSHTransport', '5', 'openlxsshtransport', ['-DTRANSPORT_HOST_PROBE']),
             ('OpenLXSSHFiles', FILES / 'Sources/OpenLXSSHFiles', '6', 'openlxsshfiles', ['-Xcc', '-I' + str(native / 'include')]),
+            ('OpenLXSSHSecurity', ROOT / 'Packages/OpenLXSSHSecurity/Sources/OpenLXSSHSecurity', '6', 'openlxsshsecurity', []),
             ('RealIntegrationCore', HERE / 'Sources/RealIntegrationCore', '6', 'realintegration', ['-warnings-as-errors']),
         ]:
             sources = builder.sources(directory) + (generated if name == 'SwiftTerm' else [])
@@ -288,7 +291,7 @@ def build(sign):
         consumer_object = builder.swift_compile('OpenLXSSHRealIntegration', builder.sources(HERE / 'Consumer'), package='realintegration',
             extra=['-warnings-as-errors', '-Xcc', '-I' + str(native / 'include')])
         undefined = builder.run('consumer-public-api-symbols', ['/usr/bin/xcrun', 'nm', '-u', consumer_object])
-        if b'DirectSSHSession' not in undefined or b'LibSSH2FileService' not in undefined or any(x in undefined for x in (b'startProbe', b'probeStore', b'configureProbe')):
+        if b'DirectSSHSession' not in undefined or b'LibSSH2FileService' not in undefined or b'CredentialStore' not in undefined or any(x in undefined for x in (b'startProbe', b'probeStore', b'configureProbe')):
             raise Refusal('consumerNotPublicProductionAPI')
         helper = builder.link('openlxssh-askpass', [helper_object, swift_objects[2], *[p for p in cobjects if p.name.startswith('COpenLXSSHAskpass-')]])
         consumer = builder.link('OpenLXSSHRealIntegration', [consumer_object, *swift_objects, *cobjects], archives)

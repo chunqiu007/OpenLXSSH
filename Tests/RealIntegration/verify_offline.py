@@ -53,7 +53,11 @@ def main():
             (['--saved-password-public', '--help'], 0),
             (['--saved-password-public', 'validate', '--contract', '/not/a/file/saved-password-public.json'], 0),
             (['--saved-password-public', '--live', '--contract', '/not/a/file/saved-password-public.json'], 2),
-            (['--saved-password-public', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/saved-password-public.json'], 2)]:
+            (['--saved-password-public', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/saved-password-public.json'], 2),
+            (['--credential-store-public', '--help'], 0),
+            (['--credential-store-public', 'validate', '--contract', '/not/a/file/credential-store-public.json'], 0),
+            (['--credential-store-public', '--live', '--authorized-local-fixture', '--engine-ready', '--contract', '/not/a/file/credential-store-public.json'], 2),
+            (['--credential-store-public', '--live', '--authorized-local-fixture', '--engine-ready', '--authorized-test-keychain', '--contract', '/not/a/file/credential-store-public.json'], 2)]:
             output = subprocess.run([str(preflight), *arguments], cwd=HERE, env=env, capture_output=True, timeout=10)
             checks.append({'command': [str(preflight), *arguments], 'cwd': str(HERE), 'exitCode': output.returncode, 'expectedExitCode': expected})
             if output.returncode != expected:

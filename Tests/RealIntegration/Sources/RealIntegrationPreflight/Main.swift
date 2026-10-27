@@ -5,6 +5,13 @@ import RealIntegrationCore
     static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--credential-store-public" {
+                let options = try CredentialStorePublicOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(CredentialStorePublicOptions.help) }
+                else if options.action == .validate { print("Credential public syntax valid; no files, Keychain or connection.") }
+                else { throw SmokeError.signedAppRequired }
+                return
+            }
             if arguments.first == "--saved-password-public" {
                 let options = try SavedPasswordPublicOptions.parse(Array(arguments.dropFirst()))
                 if options.action == .help { print(SavedPasswordPublicOptions.help) }

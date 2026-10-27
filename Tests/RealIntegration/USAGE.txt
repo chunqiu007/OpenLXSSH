@@ -1,5 +1,63 @@
 OpenLXSSH real integration consumer — test-only host15 preparation
 
+PUBLIC CREDENTIAL STORE — SOURCE/OFFLINE ONLY; REAL KEYCHAIN ACTIONS NOT RELEASED
+
+Independent --credential-store-public entry. This buildpoint must NOT invoke live
+or instantiate CredentialStore/SecItem. Default/help/validate and pure state tests
+do not import or open the security store. Static build compiles existing Security
+sources only; signing is existing Development identity use, not a credential test.
+Normal Goal/build success do NOT authorize save/read/delete. Primary must separately
+review permission for CURRENT DEFAULT FILE KEYCHAIN + disposable namespace/reference.
+It is NOT independent physical Keychain isolation or App UI save/forget acceptance.
+
+Own credential-store-case-<12hex>/credential-store-public.json under this .build,
+0700 directory/file0600/currentUID/noACL/singlelink/no symlink. Exact keys:
+ schema1,taskID:PUBLIC-CREDENTIAL-STORE-A,testCase:save-read-provider-forget,
+ keychainScope:current-default-file-keychain-test-namespace,savingAuthorized:true,
+ service:passwordonly,host:127.0.0.1,port:22222,user:fixture,
+ credentialDirectory,expectedFingerprint,baseImage,imageID,containerID,project,
+ networkID,context,endpoint (all exact reviewed fixture generation/management trust).
+No user-selectable namespace/reference/Keychain path, production service/ACL/profile,
+search-list/default, systemdialog or recovery-delete option. Fresh UUIDs generated
+inside one own run. Future explicit runtime additionally requires all THREE flags:
+ --live --authorized-local-fixture --engine-ready --authorized-test-keychain
+The extra flag prevents accidents; it is NOT itself the missing human authorization.
+
+Before store construction/save: exclusively create run0700 and append/fsync file0600
+nonsecret prepared receipt +fsync directory. Persist save-attempted before save(.granted).
+Receipts contain only own runID/namespace/reference/state/static status, no password
+or hash, account/keychain/user data. Only EXPLICIT .saved(reference) establishes
+ownership. Duplicate NEVER replace/read/delete. Failed/unconfirmed save is not owned.
+A kill may leave prepared only: there is NO automatic recovery/adopt/delete; retain
+exact receipts and have primary review. Do not enumerate/broad-delete any Keychain.
+
+One public store.read(exactReference) supplies one public SavedPasswordAuthorization
+provider. Actual production gate remains untouched; passwordOnly/once/currenttoken/
+cancellation before and after awaits, connected1/manual0 and closed+nilPID/provider
+drain required. No fixture-file fallback after save or manual UI to bypass denial.
+After closure, exact delete once, read must be .missing, then explicit store.close()
+must successfully restore process legacyinteraction state. RetryRequired/missing-not-
+verified/interactionPolicyRestoreFailed are NONSUCCESS; retain exact recovery info.
+An in-process known .saved may still attempt exact owned cleanup if a later receipt
+write fails; operation remains failed. Never infer ownership from a prior prepared
+record or delete an unknown duplicate. No cleanup retry/recursive sweep is automatic.
+
+Public CredentialStore(testNamespace:) selects current default legacy FILE Keychain,
+service org.openlxssh.credentials.test.<UUID>, exact kind+reference account. It does
+not change default/searchlist or configure ACL. Production queries Synchronizable=false,
+UseDataProtectionKeychain=false; no accessgroup/biometric/ThisDeviceOnly claims.
+Shared coordinator suppresses/verifies legacy process interaction while leased and
+serializes SecItem. Locked/denied/unavailable/UI-required errors fail closed, no
+unlock/ACL change/Allow/AlwaysAllow/SystemSettings acceptance. If any system consent
+prompt unexpectedly appears, STOP and report for primary/human coordination; agent
+must NEVER click/answer it. This source does not automate dialogs or legal consent.
+Build has Hardened Runtime/no entitlements, NOT sandbox acceptance. Same-process
+success would not prove cross-relaunch ACL availability or formal macOS26 AUTH02.
+Public SecItem calls are not cancellable/deadlined individually; external process
+limit may kill and leave prepared/owned recovery receipts, which must remain exact.
+Existing OSbuild24H32/OpenSSH9.9p2 gate remains only host15 scope, not whitelist expansion.
+All actual Keychain/save/read/provider/delete/restore lifecycle remains UNVERIFIED.
+
 PUBLIC SAVED-PASSWORD MEMORY AUTHORIZATION — source/offline buildpoint ONLY
 
 Independent --saved-password-public tests transport's existing public authorization
