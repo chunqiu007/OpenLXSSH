@@ -180,15 +180,14 @@ enum SignedConsumer {
             while !done {
                 try tick(stop, deadline: min(deadline, budget.deadline))
                 let previousEvents = budget.events
-                let action = try budget.inspect(session.terminal.text, now: ProcessInfo.processInfo.systemUptime)
-                report.probeProcessACK = budget.remotePID != nil
-                report.postAuth?.remotePID = budget.remotePID
+                let action: ProbeAction
+                do { action = try budget.inspect(session.terminal.text, now: ProcessInfo.processInfo.systemUptime) }
+                catch { report.recordProbe(budget); throw error }
+                report.recordProbe(budget)
                 if budget.events > previousEvents {
                     try report.postAuth?.mark(.firstProbeFrame, now: ProcessInfo.processInfo.systemUptime)
                     try report.postAuth?.mark(.lastProbeFrame, now: ProcessInfo.processInfo.systemUptime)
                 }
-                report.probeEvents = budget.events
-                report.remoteCleanup = budget.cleanupAcknowledged
                 switch action {
                 case .none: break
                 case .source:
@@ -209,8 +208,10 @@ enum SignedConsumer {
                     try report.postAuth?.mark(.resizeApplied, now: ProcessInfo.processInfo.systemUptime)
                     try enqueue(Data("S\r".utf8), stage: .resizeEnqueue, event: .resizeApplied, stop: stop, deadline: min(deadline, budget.deadline))
                     report.postAuth?.stage = .waitingProbe
+                case .vimStart:
+                    try enqueue(ProbePlan.vimStart, stage: .vimStartEnqueue, event: .vimStartEnqueued, stop: stop, deadline: min(deadline, budget.deadline))
+                    report.postAuth?.stage = .waitingProbe
                 case .vimKeys:
-                    report.remoteSizeMatched = true
                     try enqueue(ProbePlan.vimKeys, stage: .vimEnqueue, event: .vimEnqueued, stop: stop, deadline: min(deadline, budget.deadline))
                     report.postAuth?.stage = .waitingProbe
                 case .complete:

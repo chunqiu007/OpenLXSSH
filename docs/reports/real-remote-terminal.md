@@ -1,6 +1,6 @@
 # 远端 PTY/Vim 探针：源码与预检检查点
 
-日期2026-10-27，Task REAL-OUTER-PTY-TUI-PREP-A / TERMINAL-POSTAUTH-DIAG-LIVE-A。**两次真实consumer均在认证后、测试ACK之前断开；新短ACK案确证生产状态failed(launchFailed)/exit255，原loader尚未发送。没有PTY/Vim通过结论。** 系统SSH的-T成功/-tt失败，而容器两UID均能分配PTY，根因仍待更窄的sshd会话诊断，不猜改能力或PAM。
+日期2026-10-27，Task REAL-OUTER-PTY-TUI-PREP-A / TERMINAL-SIZE-VIM-SYNC-R2-LIVE-A。**原认证后255、Vim就绪与切屏竞争失败均保留；测试环境AUDIT_WRITE修正、tiny coreEx握手与size确认同步后，唯一新案严格12帧/真实Vim文档SHA/termios恢复/资源清理通过主管验收。** 仅host15公开生产API有限分项，不是全部TUI/人工/目标系统验收。下文先保留历史，再记录最终实际通过证据。
 
 原先named-volume预检在relay/consumer前即暂停，不算一次consumerattempt；修后单案如下保留真实失败。
 
@@ -107,4 +107,32 @@ closed/PID释放/FD回baseline=true；自有SSH41010、consumer40915和relay4082
 
 原报告/命令/精确后验：`Tests/RemoteTerminalAcceptance/.build/audit-fix-live-a/`。主管独立核原typed报告、阶段/8帧计数、原失败字段和三个实际本地PID不存在：`DerivedData/Verification/primary-terminal-audit-fix-c453eefe-2617-4b36-aed7-e6cd38a102c4/`。这确认环境修复恢复shell/输入/CtrlC的分项进展，但不是完整终端/TUI验收。
 
-整体Goal NOT COMPLETE。
+## Vim闭集新案与实际tiny能力
+
+四文件最小诊断保留12成功帧/strictorder/文档SHA/cleanup+returned门：remote异常只发闭集stage/kind/errno，unexpectedframe只allowlist；size在实际validframe立即记录，inspect随后抛错也保存进度，不回改旧report。主会话读完整diff并独立14puretests（含原128checks）exit0，证据 `DerivedData/Verification/primary-terminal-vim-diagnostic-172e25cd-242f-4d7a-ac74-4c7a4ea8bf01/`。
+
+增量builder只复用已审de94/8依赖对象、compileCore/Offline/consumer，31cmd全0，新probe实际嵌入binary；新82d87 App mainSHA `8708b98b14818d2cd233084e366ad2dd1e2721011752bf42ccd924114c4c2c46`、helper `5a48aeed1be6d0841f2afca2915dbe8216b48ddd2993bec2f3a33745ef6b6b54`、probe `d92188a5125a1b5cb588eafd7e03da34db33c3ec367c495cbadbe78db5f0354b`。主管独立10inputs/8objects/31cmd/probeBase64与SHA实际在binary/strict通过：`DerivedData/Verification/primary-terminal-vim-signed-b616644e-9052-4ea5-9fe1-2c4054d6377c/`。
+
+fresh单案collect/relay/consumer各1次，consumer仍exit1但取得精确诊断：remoteProbeFailure={stage:vim-ready,kind:refused,errno:none}，unexpectedProbeFrame=failed，events8/size=true，sessionconnected/stopfalse/无255；确认不是成功帧名称不匹配。VimSHA/done/returned仍未过。原报告与后验 `Tests/RemoteTerminalAcceptance/.build/vim-diag-live-f0a74889-cda2-4bfa-b441-46b915f5eccb/`；主管独立原typed值/本地三PID不存在见 `DerivedData/Verification/primary-vim-ready-live-6a544ff3-2ddc-46ae-b7b7-228287acc6d2/`。remote5272/start8800812、nonce634ea9b7307143f09dfcaa882a71350e已释放/knownroot不存在/Vim空，relay62124/consumer62200/SSH62286均结束/4-4-0-0/FD与端口释放。外层首次遗漏固定trust.lock导致本地清理安全拒绝，核定owner/mode后仅knownfiles恢复，未重跑consumer。
+
+随后固定新CID内UID10000仅一次 `/usr/bin/vim.tiny --version`，10s/16KiB上限，实际exit0/3.061s/3448B，公开版本Vim9.1/Tiny version without GUI/**-eval**。当前ready命令 `call writefile(...)` 依赖实际不具备的表达式/函数求值能力，确认测试握手兼容性错误；未观察E319/E117实际码，不编造。没有第二execute/临时文件/安装或镜像变更。
+
+下一修复仅用核心Ex写入已持有readyFD：启动前非空sentinel，Vim `write! /proc/self/fd/N` 真截断为空后父核同inode判ready；原真实编辑/保存摘要/12帧不降低。当前source/offline准备中，替代方案尚未真实验证，不能宣布Vim问题已解决。
+
+## tiny就绪R1与尺寸同步R2：完整实际成功
+
+R1仅改测试ready握手为固定非空sentinel→fsync/armed→核心Ex `write! /proc/self/fd/N`→父核同held/namedinode且size0/pread空。纯18项含原128门通过；固定CIDUID10000小Ex once exit0/3.090s、ready22→0/sameinode/documentstillEmpty/knowncleanup与tmpabsence通过，无raw屏幕、无image/包变更。新5e8 App的probe f74a3e2e…已实际嵌入、31cmd/10snapshot8object/strict主管核过，证据 `DerivedData/Verification/primary-vim-tiny-ready-r1-3486b000-259f-40e0-99b9-1d91333db940/`。
+
+R1正式新案未通过：strict7帧后直接看到vim-ready但size尚未消费，未投Vimkeys/无文档SHA。原`vim-tiny-r1-live-077851f5-70fd-4f52-9e96-377367580843`失败保留。probe emit(size)后立即进入Vim，验证器从渲染快照读取，存在帧被切屏抹去的测试同步竞争；不通过固定sleep或跳size凑过。
+
+R2新增双向同步：只有validator严格消费size31×93后才返回一次 `.vimStart`，Main发送固定非秘密V\r；remote size后必须在12s内收到精确V\n才createDocument/PopenVim。成功帧仍原12；错序/错误/重复/未见size不得发启动动作，同次多动作仍拒绝。原128断言原位保留，加35共163core、19pure主管独立通过：`DerivedData/Verification/primary-size-vim-sync-r2-6c1cb1c3-a07b-43e0-9c80-ba7e33eb6e0c/`。
+
+新89033 App：`Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/OpenLXSSHRemoteTerminal.app`；mainSHA256 `ba6d985a5afd8bbe99144fa93e3f83fea365d6201683e56e94f8c9e6719cbfb6`、helper `b7d48e6a209c256c54b603247f5ed406b536daacd6e9525d6f9d59330e426f4e`、probe `a21f1e2931b873d75274da3e86b8723513d6ee7bc852dff1a9ca93e2a47f4391`。仅复用8父依赖对象/增量Core-Offline-consumer，31cmd均0；10snapshots/actualprobeBase64+SHA在签名binary/strict主管核验 `DerivedData/Verification/primary-size-vim-r2-signed-e7b99930-c8e1-4c71-94b4-57a2bac4e9b0/`。
+
+**R2唯一freshcase实际consumer exit0，无failure，全部12帧成功。** connected1/auth0、shortACK/probePID/inputSHA/CtrlC/size/实际Vim编辑保存文档SHA/termios原恢复断言/remoteCleanup/done/returned0/returnedToOuter均通过；typed事件vimStartEnqueued早于vimEnqueued早于probeComplete，未降低任何门。无额外重跑、source/bundle未变。
+
+remoteACKPID6973/start未采到如实null，pidfd确认absent，nonce4a86c4ca0f5441fd9a85d7eaaefaa123 knownroot不存在、terminalfolders/Vim空，无手动remote signal/delete；relay65925/consumer66025/SSH66065实际结束，4-4-0-0/portsfree/FDreturn/localrunrootgone。
+
+原report/命令/后验：`Tests/RemoteTerminalAcceptance/.build/size-vim-sync-r2-live-204dbfa4-a310-45bb-b500-4efce1a8af21/`。主管独立原12帧/所有成功字段/事件时序/实际三PID不存在与远端后验核验：`DerivedData/Verification/primary-terminal-r2-pass-0228a9da-aaca-412d-9193-13df51b29b3c/`。
+
+有限host15公开DirectSSHSession+SwiftTerm外层PTY/Vim分项通过，不扩为人工IME、嵌套认证、全部TUI工具、macOS26、200次/24h或产品PERF。整体Goal NOT COMPLETE。

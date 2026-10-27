@@ -157,11 +157,40 @@ exec(compile(source,'<openlxssh-fixed-terminal-probe>','exec'),namespace)
         guard value.utf8.count < 4096 else { throw TerminalCheckError.contract }
         return Data(value.utf8)
     }
+    public static let vimStart = Data("V\r".utf8)
     public static let vimKeys = Data("iVIM ASCII 中文 e\u{301}\u{1b}:wq\r".utf8)
 }
 
 public enum ProbeAction: Equatable, Sendable {
-    case none, source, sample, interrupt, resize, vimKeys, complete
+    case none, source, sample, interrupt, resize, vimStart, vimKeys, complete
+}
+
+public enum ProbeFrameName: String, Codable, Sendable {
+    case loadReady = "load-ready", hello, inputReady = "input-ready", input
+    case interruptReady = "interrupt-ready", interrupt, resizeReady = "resize-ready", size
+    case vimReady = "vim-ready", vim, done, returned, failed, unrecognized
+}
+public enum RemoteFailureStage: String, Codable, Sendable {
+    case unknown, preflight, input, interrupt, resize, documentCreate = "document-create"
+    case vimLaunch = "vim-launch", vimReady = "vim-ready", vimExit = "vim-exit", vimDocument = "vim-document"
+    case terminalRestore = "terminal-restore", cleanup
+}
+public enum RemoteFailureKind: String, Codable, Sendable {
+    case refused, deadline, osError = "os-error", processTimeout = "process-timeout", processExit = "process-exit", sourceError = "source-error"
+}
+public enum RemoteFailureErrno: String, Codable, Sendable {
+    case none, enoent, eacces, eperm, enotdir, eloop, ebadf, eio, enospc, other
+}
+/// Only closed classifications cross the remote boundary; never exception text or paths.
+public struct RemoteProbeFailure: Encodable, Equatable, Sendable {
+    public let stage: RemoteFailureStage
+    public let kind: RemoteFailureKind
+    public let errno: RemoteFailureErrno
+    init?(fields: [String]) {
+        guard fields.count == 3, let stage = RemoteFailureStage(rawValue: fields[0]),
+              let kind = RemoteFailureKind(rawValue: fields[1]), let errno = RemoteFailureErrno(rawValue: fields[2]) else { return nil }
+        self.stage = stage; self.kind = kind; self.errno = errno
+    }
 }
 
 public struct ProbeBudget: Sendable {
@@ -170,6 +199,9 @@ public struct ProbeBudget: Sendable {
     public private(set) var events = 0
     public private(set) var remotePID: Int?
     public private(set) var cleanupAcknowledged = false
+    public private(set) var remoteSizeMatched = false
+    public private(set) var remoteFailure: RemoteProbeFailure?
+    public private(set) var unexpectedFrame: ProbeFrameName?
     private var next = 0
     private let sourceCount: Int
     private let sourceSHA256: String
@@ -192,14 +224,19 @@ public struct ProbeBudget: Sendable {
         while let range = text.range(of: prefix, range: cursor..<text.endIndex) {
             guard let end = text.range(of: "|END", range: range.upperBound..<text.endIndex) else { break }
             let frame = String(text[range.upperBound..<end.lowerBound])
-            guard frame.utf8.count <= 256 else { throw TerminalCheckError.unexpectedFrame }
+            guard frame.utf8.count <= 256 else { unexpectedFrame = .unrecognized; throw TerminalCheckError.unexpectedFrame }
             cursor = end.upperBound
             if consumed.contains(frame) { continue } // Retained screen/history, not a replayed action.
             let parts = frame.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count == 2, parts[0] != "failed", next < expected.count, parts[0] == expected[next] else { throw TerminalCheckError.unexpectedFrame }
-            let values = parts[1].split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            // Values are comma-separated to keep a strict two-field envelope.
-            let fields = values[0].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            unexpectedFrame = ProbeFrameName(rawValue: parts.first ?? "") ?? .unrecognized
+            guard parts.count == 2 else { throw TerminalCheckError.unexpectedFrame }
+            let fields = parts[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            if parts[0] == "failed" {
+                guard let failure = RemoteProbeFailure(fields: fields) else { throw TerminalCheckError.unexpectedFrame }
+                remoteFailure = failure
+                throw TerminalCheckError.remoteFailure // Failure never consumes a success frame or authorizes input.
+            }
+            guard next < expected.count, parts[0] == expected[next] else { throw TerminalCheckError.unexpectedFrame }
             var candidate: ProbeAction = .none
             switch parts[0] {
             case "load-ready": guard fields == [String(sourceCount), sourceSHA256] else { throw TerminalCheckError.integrity }; candidate = .source
@@ -211,7 +248,7 @@ public struct ProbeBudget: Sendable {
             case "interrupt-ready": guard fields == [""] else { throw TerminalCheckError.unexpectedFrame }; candidate = .interrupt
             case "interrupt": guard fields == ["1"] else { throw TerminalCheckError.unexpectedFrame }
             case "resize-ready": guard fields == [""] else { throw TerminalCheckError.unexpectedFrame }; candidate = .resize
-            case "size": guard fields == ["31", "93"] else { throw TerminalCheckError.integrity }
+            case "size": guard fields == ["31", "93"] else { throw TerminalCheckError.integrity }; candidate = .vimStart
             case "vim-ready": guard fields == [""] else { throw TerminalCheckError.unexpectedFrame }; candidate = .vimKeys
             case "vim": guard fields == [String(ProbePlan.document.count), Syntax.hash(ProbePlan.document)] else { throw TerminalCheckError.integrity }
             case "done": guard fields == ["1"] else { throw TerminalCheckError.cleanup }; cleanupAcknowledged = true
@@ -222,7 +259,9 @@ public struct ProbeBudget: Sendable {
                 guard action == .none else { throw TerminalCheckError.unexpectedFrame }
                 action = candidate
             }
+            if parts[0] == "size" { remoteSizeMatched = true }
             consumed.insert(frame); next += 1; events += 1
+            unexpectedFrame = nil
         }
         return action
     }
@@ -231,7 +270,7 @@ public struct ProbeBudget: Sendable {
 
 public enum PostAuthStage: String, Codable, Sendable {
     case initialized, connecting, shortACKEnqueue, waitingShortACK, loaderEnqueue, waitingProbe
-    case sourceEnqueue, sampleEnqueue, interruptEnqueue, resizeEnqueue, vimEnqueue, probeComplete, closing, closed
+    case sourceEnqueue, sampleEnqueue, interruptEnqueue, resizeEnqueue, vimStartEnqueue, vimEnqueue, probeComplete, closing, closed
 }
 public enum ObservedSessionState: String, Codable, Sendable {
     case idle, preparing, awaitingTrust, authenticating, connectionPending, connected, disconnected, failed, closing, closed
@@ -245,7 +284,7 @@ public enum ObservedInputError: String, Codable, Sendable {
 public enum PostAuthEvent: String, Codable, Sendable {
     case connectRequested, connected, firstInputAttempt, firstInputReturned, shortACKEnqueued, shortACKReceived
     case loaderAttempt, loaderEnqueued, firstProbeFrame, lastProbeFrame, sourceEnqueued, sampleEnqueued
-    case interruptEnqueued, resizeApplied, vimEnqueued, probeComplete, sessionEnded, cleanupStarted, cleanupEnded
+    case interruptEnqueued, resizeApplied, vimStartEnqueued, vimEnqueued, probeComplete, sessionEnded, cleanupStarted, cleanupEnded
 }
 public struct SessionObservation: Encodable, Equatable, Sendable {
     public let state: ObservedSessionState
@@ -376,6 +415,8 @@ public struct TerminalReport: Encodable, Sendable {
     public var inputByteHashMatched = false
     public var interruptObserved = false
     public var remoteSizeMatched = false
+    public var remoteProbeFailure: RemoteProbeFailure?
+    public var unexpectedProbeFrame: ProbeFrameName?
     public var vimBytesHashMatched = false
     public var probeEvents = 0
     public var remoteCleanup = false
@@ -386,4 +427,13 @@ public struct TerminalReport: Encodable, Sendable {
     public var fdReturnedToBaseline = false
     public var failure: TerminalCheckError?
     public init() {}
+    public mutating func recordProbe(_ budget: ProbeBudget) {
+        probeProcessACK = budget.remotePID != nil
+        postAuth?.remotePID = budget.remotePID
+        probeEvents = budget.events
+        remoteCleanup = budget.cleanupAcknowledged
+        remoteSizeMatched = budget.remoteSizeMatched
+        remoteProbeFailure = budget.remoteFailure
+        unexpectedProbeFrame = budget.unexpectedFrame
+    }
 }

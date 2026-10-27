@@ -23,7 +23,7 @@ import RemoteTerminalCore
             (frame("hello", "10000,321"), .none), (frame("input-ready", String(ProbePlan.input.count)), .sample),
             (frame("input", String(ProbePlan.input.count) + "," + Syntax.hash(ProbePlan.input)), .none),
             (frame("interrupt-ready"), .interrupt), (frame("interrupt", "1"), .none), (frame("resize-ready"), .resize),
-            (frame("size", "31,93"), .none), (frame("vim-ready"), .vimKeys),
+            (frame("size", "31,93"), .vimStart), (frame("vim-ready"), .vimKeys),
             (frame("vim", String(ProbePlan.document.count) + "," + Syntax.hash(ProbePlan.document)), .none), (frame("done", "1"), .none), (frame("returned", "0"), .complete)]
         var screen = "ordinary shell text without test acknowledgements"
         for (index, stage) in stages.enumerated() {
@@ -168,6 +168,50 @@ import RemoteTerminalCore
         try check(ObservedSessionState(rawValue: "secret arbitrary state") == nil)
         try check(ObservedSessionFailure(rawValue: "unknown failure details") == nil)
         try check(ObservedInputError(rawValue: "raw error string") == nil)
-        print("RemoteTerminal offline core checks passed: \(checks); no files/generation/Docker/socket/live.")
+        guard checks == 128 else { throw TerminalCheckError.integrity }
+        print("RemoteTerminal original 128-check baseline passed; no gates removed.")
+        func beforeSize() throws -> ProbeBudget {
+            var value = try ProbeBudget(nonce: id, sourceCount: 10, sourceSHA256: String(repeating: "c", count: 64), start: 100)
+            for stage in stages.prefix(7) { _ = try value.inspect(stage.0, now: 101) }
+            return value
+        }
+        try check(ProbePlan.vimStart == Data("V\r".utf8))
+        var start = try beforeSize()
+        try check(start.events == 7 && !start.remoteSizeMatched)
+        try check(start.inspect("ordinary rendered text", now: 102) == .none)
+        try check(!start.remoteSizeMatched && start.events == 7)
+        try check(start.inspect(frame("size", "31,93"), now: 103) == .vimStart)
+        try check(start.events == 8 && start.remoteSizeMatched)
+        for retained in [frame("size", "31,93"), stages.prefix(8).map(\.0).joined(), frame("size", "31,93") + frame("size", "31,93")] {
+            try check(start.inspect(retained, now: 104) == .none)
+            try check(start.events == 8 && start.remoteSizeMatched)
+        }
+        try check(start.inspect(frame("vim-ready"), now: 105) == .vimKeys)
+        try check(start.events == 9)
+        try check(start.inspect(frame("size", "31,93") + frame("vim-ready"), now: 106) == .none)
+        try rejects { try start.requireComplete() }
+        for bad in [frame("size", "31,94"), frame("size", "0,93"), frame("size", "31,93,extra"), frame("vim-ready")] {
+            var value = try beforeSize()
+            try rejects { _ = try value.inspect(bad, now: 102) }
+            try check(value.events == 7 && !value.remoteSizeMatched)
+        }
+        var noSizeOrder = try ProbeBudget(nonce: id, sourceCount: 10, sourceSHA256: String(repeating: "c", count: 64), start: 100)
+        try rejects { _ = try noSizeOrder.inspect(frame("size", "31,93"), now: 101) }
+        try check(!noSizeOrder.remoteSizeMatched && noSizeOrder.events == 0)
+        var partial = try beforeSize()
+        try check(partial.inspect("RT1|" + id + "|size|31,93|EN", now: 102) == .none)
+        try check(!partial.remoteSizeMatched && partial.events == 7)
+        try check(partial.inspect(frame("size", "31,93"), now: 103) == .vimStart)
+        var duplicate = try beforeSize()
+        try check(duplicate.inspect(frame("size", "31,93") + frame("size", "31,93"), now: 102) == .vimStart)
+        try check(duplicate.events == 8)
+        var coalesced = try beforeSize()
+        try rejects { _ = try coalesced.inspect(frame("size", "31,93") + frame("vim-ready"), now: 102) }
+        try check(coalesced.events == 8 && coalesced.remoteSizeMatched) // No combined start/keys action is returned.
+        var precedingAction = try ProbeBudget(nonce: id, sourceCount: 10, sourceSHA256: String(repeating: "c", count: 64), start: 100)
+        for stage in stages.prefix(6) { _ = try precedingAction.inspect(stage.0, now: 101) }
+        try rejects { _ = try precedingAction.inspect(frame("resize-ready") + frame("size", "31,93"), now: 102) }
+        try check(precedingAction.events == 7 && !precedingAction.remoteSizeMatched) // Conflicting action cannot fabricate size progress.
+        print("RemoteTerminal offline core checks passed: \(checks); original128 retained; no files/generation/Docker/socket/live.")
     }
 }

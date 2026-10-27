@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fixed non-secret remote PTY probe. Not installed or executed by offline builds."""
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ HOME = Path('/fixture/home')
 SAMPLE = 'ASCII / 中文 / e\u0301'.encode('utf-8')
 VIM_SAMPLE = 'VIM ASCII 中文 e\u0301\n'.encode('utf-8')
 RESIZE = (31, 93)
+READY_SENTINEL = b'OPENLXSSH-VIM-PENDING\n'
 
 
 class Refused(Exception):
@@ -29,6 +31,36 @@ class Refused(Exception):
 
 class Deadline(Exception):
     pass
+
+
+FAILURE_STAGES = frozenset(('unknown', 'preflight', 'input', 'interrupt', 'resize', 'document-create',
+                            'vim-launch', 'vim-ready', 'vim-exit', 'vim-document', 'terminal-restore', 'cleanup'))
+FAILURE_KINDS = frozenset(('refused', 'deadline', 'os-error', 'process-timeout', 'process-exit', 'source-error'))
+FAILURE_ERRNOS = {errno.ENOENT: 'enoent', errno.EACCES: 'eacces', errno.EPERM: 'eperm', errno.ENOTDIR: 'enotdir',
+                  errno.ELOOP: 'eloop', errno.EBADF: 'ebadf', errno.EIO: 'eio', errno.ENOSPC: 'enospc'}
+
+
+class ProbeFailure(Exception):
+    def __init__(self, fields):
+        self.fields = fields  # Closed classifications only, never the original exception.
+
+
+def failure_fields(stage, error):
+    stage = stage if stage in FAILURE_STAGES else 'unknown'
+    kind = 'source-error'
+    code = 'none'
+    if isinstance(error, Refused):
+        kind = 'refused'
+    elif isinstance(error, Deadline):
+        kind = 'deadline'
+    elif isinstance(error, subprocess.TimeoutExpired):
+        kind = 'process-timeout'
+    elif isinstance(error, subprocess.CalledProcessError):
+        kind = 'process-exit'
+    elif isinstance(error, OSError):
+        kind = 'os-error'
+        code = FAILURE_ERRNOS.get(error.errno, 'other')
+    return stage, kind, code
 
 
 def nonce_ok(value):
@@ -40,6 +72,9 @@ def emit(nonce, event, *values):
         raise Refused()
     text = ','.join(str(value) for value in values)
     if not re.fullmatch(r'[A-Za-z0-9,.-]*', text):
+        raise Refused()
+    if event == 'failed' and (len(values) != 3 or values[0] not in FAILURE_STAGES or values[1] not in FAILURE_KINDS
+                              or values[2] not in set(FAILURE_ERRNOS.values()) | {'none', 'other'}):
         raise Refused()
     sys.stdout.write('\r\nRT1|' + nonce + '|' + event + '|' + text + '|END\r\n')
     sys.stdout.flush()
@@ -61,6 +96,7 @@ class OwnedDocument:
         self.parent_fd = os.open(self.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         self.directory_fd = None
         self.files = {}
+        self.ready_armed = False
         self.directory_identity = None
         self.created = False
         try:
@@ -97,6 +133,27 @@ class OwnedDocument:
             info = os.stat(name, dir_fd=self.directory_fd, follow_symlinks=False)
             if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != identity:
                 raise Refused()
+
+    def arm_vim_ready(self):
+        self.verify()
+        fd = self.files['vim-ready'][0]
+        if self.ready_armed or os.fstat(fd).st_size != 0 or os.pread(fd, 1, 0) != b'':
+            raise Refused()
+        if os.pwrite(fd, READY_SENTINEL, 0) != len(READY_SENTINEL):
+            raise Refused()
+        os.fsync(fd)
+        self.verify()
+        if os.fstat(fd).st_size != len(READY_SENTINEL) or os.pread(fd, len(READY_SENTINEL) + 1, 0) != READY_SENTINEL:
+            raise Refused()
+        self.ready_armed = True
+        return fd
+
+    def vim_ready(self):
+        self.verify()  # Verify named/held inode identity before inspecting the ACK.
+        if not self.ready_armed:
+            raise Refused()  # An initially empty file is never readiness proof.
+        fd = self.files['vim-ready'][0]
+        return os.fstat(fd).st_size == 0 and os.pread(fd, 1, 0) == b''
 
     def contents(self):
         self.verify()
@@ -166,6 +223,12 @@ def bounded_read(fd, count, seconds):
     return bytes(data)
 
 
+def wait_vim_start():
+    # The consumer must validate size before Vim can clear its rendered frame.
+    if bounded_read(0, 2, 12) != b'V\n':
+        raise Refused()
+
+
 def run(nonce):
     if not nonce_ok(nonce) or os.getuid() != 10000 or not os.isatty(0) or os.environ.get('SSH_TTY') is None:
         raise Refused()
@@ -175,6 +238,8 @@ def run(nonce):
     child = None
     interrupted = False
     cleaned = False
+    stage = 'preflight'
+    failure = None
     def abort(*_args):
         raise Deadline()
     def interrupt(*_args):
@@ -186,6 +251,7 @@ def run(nonce):
         prior[signal.SIGINT] = signal.signal(signal.SIGINT, interrupt)
         signal.alarm(110)
         emit(nonce, 'hello', 10000, os.getpid())  # ACK comes from this actual remote process, not shell echo.
+        stage = 'input'
         try:
             tty.setraw(0, termios.TCSANOW)
             emit(nonce, 'input-ready', len(SAMPLE))
@@ -195,6 +261,7 @@ def run(nonce):
             emit(nonce, 'input', len(data), hashlib.sha256(data).hexdigest())
         finally:
             termios.tcsetattr(0, termios.TCSANOW, initial)
+        stage = 'interrupt'
         if interrupted:
             raise Refused()  # No pre-ready control character can satisfy the signal test.
         child = subprocess.Popen(['/usr/bin/sleep', '30'], stdin=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -207,6 +274,7 @@ def run(nonce):
         child.wait(timeout=1)
         child = None
         emit(nonce, 'interrupt', 1)
+        stage = 'resize'
         emit(nonce, 'resize-ready')
         if bounded_read(0, 2, 12) != b'S\n':
             raise Refused()
@@ -223,49 +291,64 @@ def run(nonce):
         if size.stdout.split() != [b'31', b'93']:
             raise Refused()
         emit(nonce, 'size', rows, cols)
+        wait_vim_start()
+        stage = 'document-create'
         document = OwnedDocument(nonce)
-        ready_fd = document.files['vim-ready'][0]
-        ready_command = "call writefile(['READY'], '/proc/self/fd/" + str(ready_fd) + "')"
+        stage = 'vim-launch'
+        ready_fd = document.arm_vim_ready()
+        ready_command = 'write! /proc/self/fd/' + str(ready_fd)  # Core Ex works without +eval; writes the initial empty buffer.
         child = subprocess.Popen(['/usr/bin/vim.tiny', '-Nu', 'NONE', '-U', 'NONE', '-i', 'NONE', '-n', '--noplugin',
                                   '-c', 'set nobackup nowritebackup noswapfile backupcopy=yes encoding=utf-8 fileencoding=utf-8',
                                   '-c', ready_command, '--', document.document_path], pass_fds=(ready_fd,))
+        stage = 'vim-ready'
         end = time.monotonic() + 12
         while time.monotonic() < end and child.poll() is None:
-            document.verify()
-            if os.pread(ready_fd, 16, 0) == b'READY\n':
+            if document.vim_ready():
                 break
             time.sleep(0.02)
-        if child.poll() is not None or os.pread(ready_fd, 16, 0) != b'READY\n':
+        if child.poll() is not None or not document.vim_ready():
             raise Refused()
         emit(nonce, 'vim-ready')  # Not based on arbitrary Vim screen/prompt matching.
+        stage = 'vim-exit'
         if child.wait(timeout=15) != 0:
             raise Refused()
         child = None
+        stage = 'vim-document'
         data = document.contents()
         if data != VIM_SAMPLE:
             raise Refused()
         emit(nonce, 'vim', len(data), hashlib.sha256(data).hexdigest())
+        stage = 'terminal-restore'
         termios.tcsetattr(0, termios.TCSANOW, initial)
         if termios.tcgetattr(0) != initial:
             raise Refused()
+        stage = 'cleanup'
         cleaned = document.close()
         document = None
         if not cleaned:
             raise Refused()
+    except BaseException as error:
+        failure = failure_fields(stage, error)
     finally:
         try:
-            reap(child)
-        finally:
             try:
-                if document is not None:
-                    cleaned = document.close()
+                reap(child)
             finally:
                 try:
-                    termios.tcsetattr(0, termios.TCSANOW, initial)
+                    if document is not None:
+                        cleaned = document.close()
                 finally:
-                    signal.alarm(0)
-                    for number, handler in prior.items():
-                        signal.signal(number, handler)
+                    try:
+                        termios.tcsetattr(0, termios.TCSANOW, initial)
+                    finally:
+                        signal.alarm(0)
+                        for number, handler in prior.items():
+                            signal.signal(number, handler)
+        except BaseException as error:
+            if failure is None:
+                failure = failure_fields('cleanup', error)
+    if failure is not None:
+        raise ProbeFailure(failure) from None
     emit(nonce, 'done', 1 if cleaned else 0)
 
 
@@ -274,9 +357,10 @@ def main(argv=None):
     value = args[0] if len(args) == 1 else ''
     try:
         run(value)
-    except BaseException:
+    except BaseException as error:
         if nonce_ok(value):
-            emit(value, 'failed', 1)
+            fields = error.fields if isinstance(error, ProbeFailure) else failure_fields('preflight', error)
+            emit(value, 'failed', *fields)
         return 1
     return 0
 
