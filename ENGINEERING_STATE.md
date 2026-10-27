@@ -24,6 +24,8 @@
 10. App真实f851上传28checks、window9baf23checks/7checkpoint与Quit3a93122checks/6checkpoint均已主管独立通过。Quit两次真正terminateContinue/Cancel/nativeexit0/forceddrainfalse、preexit完整fsync/hooks1-1，取消retained1声明保留、fixedCID finalabsent/FD-inode-SHA精确清，7opens6closes/shutdown1事实；已本地2142a32。窗口484d67a/上传03d3693保留，均有限HostProbe/mac15，不等整个AC22/24正式目标验收。
 11. Vim完整R2实际已过：validsize→V确认后才启动Vim，唯一freshcase strict12、输入SHA/CtrlC/size/Vim文档SHA/termios恢复/done/returned0、资源无残留，主管独立核原JSON/事件/三PID过。tiny -eval导致原writefile错误、R1渲染size竞争等失败全保留；source163core/19pure/31cmd10snapshot8dep/newprobeembed/strict已审，已本地b2eebf3。该有限外层PTY/Vim分项不扩IME/Nest/全部TUI/mac26。root当前无测试占用。
 
+12. 真实并发核心已验但整案PARTIAL：双password-kbd PID同时OTP-Apending/不同session与challenge，关闭A后旧.cancel stale/AOTPread0，B三轮完成。A取消后的server challenge超TTL仍留，consumerexit1/cleanupIncomplete保持；后exactFD/inode39/0600/size145/真实过期396s仅unlinkA+fsync恢复，原服务ID/FP/start/资源不变，不算自动清理通过。root当前空，见 `docs/reports/real-concurrent-auth.md`。
+
 详见 `docs/reports/real-remote-terminal.md` 与 `docs/reports/app-real-transfer-survival.md`。主管已读原结果、独立核时序/三PID与冻结输入/严格签名。
 
 ## 已验收的本地实现基线
@@ -70,8 +72,8 @@
 | --- | --- |
 | APP-REAL-QUIT-LIVE-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 五源HOST_PROBE钩子主管源审/123test49hash14cmd/sign，真实3a93122checks6checkpoint/hook1-1/nativeexit0/noforceddrain/资源与精确retained恢复均主管独立验收；已本地2142a32，source/runtime冻结 |
 | TERMINAL-SIZE-VIM-SYNC-R2 / agent_9b78446f-cc66-499c-bdff-efc846e3db1c | 89033mainba6d/helperb7d/probea21、163core19pure31cmd10snapshot8dep/strict主管过；新204dbfa4真实strict12/VimSHA/termios/done-returned/closedFD/无残留主管独立通过；已本地b2eebf3，冻结 |
-| REAL-CONCURRENT-AUTH-PREP-A / agent_369d5187-6c93-46dc-919a-2d30ffa4faf6 | 唯一新Tests/ConcurrentAuthAcceptance source/offline，two同password-kbd DirectSSHSession同进程真并发，双PIDalive+双OTP-Apending后closeA/迟到.cancel typed.stale、AOTPread0/B严格3round完成，原预算/私有秘密边界复用。先pure slice无builder/Docker/live，后主管审 |
-| NEST-PUBLICKEY-PREP-A / agent_80d0c8b6-66f0-49b5-879b-24d9625ea419 | newNestedSSHAcceptance source/offlineonly：remoteUID10000新distinctkey(不copyApp/rootkey)，root仅精确publicauthorizedkeys临时append/有据原位restore，现homeknownhosts strict1272222，outerTerminal用户等价固定手动命令/真实innerACK-control-return。先最小slice/pure审点，无Docker/keygen/SSH/build，其他writer并发onlyConcurrentAuthAcceptance；passwordOTP/企业人工不涵盖 |
+| REAL-CONCURRENT-AUTH / agent_369d5187-6c93-46dc-919a-2d30ffa4faf6（已冻结） | 新signed62d4 d82/95eb、13复用objects/29cmd/inert与typedoffline主管核过。唯一真实f000案双PID同时OTP-Apending→关闭A/旧.cancel stale/AOTPread0→B3OTP+outerauth1核心成立；原consumer1/cleanupIncomplete因A过TTLserver材料仍留，按exactFD/inode39/expiry仅管理恢复，旧raw不改。已提交13a21da，自动fixture清理缺口保留，无active资源 |
+| NEST-INTEGRATED-PREP-A / agent_80d0c8b6-66f0-49b5-879b-24d9625ea419 | NestedSSHAcceptance已审pure/rootFD/receipt/proc31+keyledger19=50offline主管过，未真实keygen/authfile更改。现组合fixedcontainer root有限管理对象持FD/flock、UID10000新distinctkey→publicappend→Appouter真正内层ssh执行已过innerprobe→双层关闭后globalidle精确restore/keycleanup，复用89033 readonlyobjects/newconsumerwrapper；source/offline先交完整审点，无Docker/build/sign/runtime。passwordOTP/企业人工不涵盖 |
 
 | PUBLIC-CREDENTIAL-REVIEW-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 三原缺陷主会话/原reviewer定向复审resolved；主管独立8pure及完整65Swift17Python29CLI/368快照12复用对象18命令/strict/inert0/0/2通过，仅离线准备，已本地提交6a65bb1。新f201 driver3526b308…；source/build冻结，禁止真实store/Keychain/SecItem/Docker/live。报告 `docs/reports/public-credential-store-preparation.md` |
 | KEYONLY-RECREATE-PORT-R1 / agent_fce7a218-7787-48e4-bee6-96d709d2b320 | 六环境源主会话审/39静态28relay35MINA离线过，端口预检R1追加时序断言主会话39/28过；真实action失败后exactstart恢复Healthy/PTY0/卷网络other3不变，旧incomplete保留，R1 action未重跑。已本地59c898c，source/runtime冻结 |
@@ -98,7 +100,7 @@
 - 实测宿主macOS15.8.1/24H32/arm64，Xcode26.3/17C529、SDK26.2/Swift6.2.4。正式App arm64/min26，HostProbe/独立消费者min15不能冒目标runtime。最新本地磁盘观察约42GiB可用，瞬时值不能沿用为下一安装许可。
 - Docker Desktop4.97.0/build244584官方验签；DMG SHA256 94e4ccec4a035b7dcdf67cfff0520d4b46ee873ae04b155abc0d22b333cc90ad；Agent无sudo/accept-license。外部GUI后LicenseTermsVersion2/2CPU4096MiB/40GiB/AutoStartfalse，Engine实物一致。context desktop-linux固定unix:///Users/liuwenshuo/.docker/run/docker.sock，不建全局特权socket链接。
 - Ubuntu固定24.04 digest18b33ff…，rootimage7f633d33…；project openlxssh-fixture-61ed25328c13，四原CID不重启/换key。MINA2.20.0/commit2221febd…、image18c77956…/独立原CID。internal/noegress/readonly/no-new-privileges/capdropALL+原七项/资源受限/namedvolume无hostbind；HostConfig.PortBindings不冒称实际可达，有限opaque relay仅批准回环端口。详情 `docs/reports/env-authorized-installation.md`。
-- 分支 `development/p1-prototypes`；最新本地HEAD **b2eebf3**（完整真实PTY/Vim12），前 **2142a32**（真正Quit/完整preexit）、**484d67a**（关窗ContinueCancel）、**03d3693**（上传）等。不宣称产品通过。当前ConcurrentAuthAcceptance/NestedSSHAcceptance两新独立写域与状态/验收表未提交；不得覆盖writer。remote为空、未push。
+- 分支 `development/p1-prototypes`；最新本地HEAD **13a21da**（真实并发核心与cleanup失败/精确恢复），前 **feb25b0**（状态/验收）、**b2eebf3**（完整PTY/Vim12）、**2142a32**（真正Quit）等。不宣称产品通过。当前NestedSSHAcceptance唯一新写域与状态/验收表未提交；不得覆盖writer。remote为空、未push。
 - 最近完整内部候选仍 `DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，来源8b6396199db273493a438679df0020fa6ef7c3a4/dirty=false/version0.1.0 build1。arm64/min26/Development strict/runtime通过，Gatekeeper false/spctl3，未公证/上传/安装运行。ZIP7418092B/SHA256 fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e；tree499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066；manifest4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f。不能声称包含后续测试基础设施或报告。
 - 正式min26长期driver `Tests/StabilityAcceptance/.build/driver-71e5e2da-b345-4c4b-ab54-53b8d128209d/wrapper/OpenLXSSHStability.app`，driver66843ddc286375de474e9823ea7353cd7d77265b5e1a8bf1cbf8a009cf7f625a/helper31d0ee0ee9d357d7edd0bfaf129a9ae4b38334fd8955184f6afc049d685a0590；未运行200/24h，不降平台门。
 
@@ -116,4 +118,4 @@
 - 外部仍缺：macOS26真实运行；正式driver200次/五会话真实连续24h；DeveloperID Application/Installer当前0（仅Development1）、对应最终产物Apple上传批准；双机安装、人工IME/Finder/像素、企业允许环境。不能以缩数据/改时钟/HostProbe/多次短测替代。
 - 不创建Cron/OffPeak/常驻，不改电源/保护/宿主SSH，不因普通失败停止全部工作。仅必要信息/权限/无替代外部条件才BLOCKED；整体未完成时不得称COMPLETE。
 
-下一具体审点：369交双真实会话同步pending/取消A/迟到.cancel stale/B继续三OTP的source/pure最小slice；80d交仅distinct远端key/publicauthorizedkeys有据restore的安全嵌套prep，不读取原私钥/不盲送内层密码。两者onlysource/offline、root目前空，先审再build/分配单runtime。已有上传/window/Quit/外层PTY-Vim分项不重做；凭据真实Keychain、人工IME/内层密码OTP、正式mac26/长测/发布门不降低。
+下一具体审点：80d交已审root/keyledger与真正outerterminal内层ssh组合的完整source/offlinewrapper/管理控制/依赖精确复用buildrecipe，先审才build及one真实案。采用开始/结束强globalidle排他，不自动送内层密码/OTP，不复制App/root私钥。并发核心已有真实时序证据但fixture取消材料自动清理缺口与原PARTIAL保留，不为凑绿降低原assert；当前无残留/无网络占用。已有上传/window/Quit/外层PTYVim不重做；Keychain真实持久化/IME/mac26/长测/发布门不降低。
