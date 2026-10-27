@@ -1,95 +1,106 @@
 # OpenLXSSH — 工程状态
 
-更新：2026-10-27（Asia/Shanghai）。本文件是当前检查点；历史过程和失败证据见各任务报告及本地 Git，不从旧历史推定当前状态。
+更新：2026-10-27（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
-## 当前目标、授权与结论
+## 当前目标、范围与授权
 
-- 同一 Goal：Apple Silicon/macOS26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；已授权的隔离环境运行就绪，当前CONTINUE真实集成验证。** 基础SSH/SFTP、MINA多提示/审批取消和远端完整文件campaign已取得实际证据；完整认证、网络异常、目标系统、长期与发布仍须实测，不虚构运行时Goal状态变更。
-- 范围：四类直连认证/MFA、多个终端标签、手动嵌套 SSH、直连 SFTP、主机/密钥/凭据管理、独立传输与窗口/退出保护。排除自动 ProxyJump、经跳板图形 SFTP、转发、自动重连和恢复。基线见 `docs/requirements.md`。
-- 主管负责派工、独立审查与验收；主要编码委派 software-engineer。用户允许验收后仅相关文件的本地提交，无 remote/push 授权。
-- 新增 VM/容器、运行隔离服务须具体批准；不启用宿主 sshd、不连生产、不向模型提供公司秘密。公证上传须指定产物、Apple 目的地和用途的授权。没有因 Goal 恢复或子 Agent 消息获得新增授权。
+- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 CONTINUE，定位真实 SSH 在认证后、PTY 会话 ACK 前结束。** 不虚构运行环境 Goal 状态变更。
+- 范围：四类直连 SSH/MFA、多标签、用户手动嵌套 SSH、直连 SFTP、主机/密钥/凭据管理、独立传输与窗口/退出保护。排除自动 ProxyJump、经跳板图形 SFTP、转发、自动重连/恢复。基线见 `docs/requirements.md`。
+- Primary 是唯一主管，主要编码交 software-engineer；工程师 DONE 不等主管验收。用户授权验收后的相关本地 Git 提交，没有 remote push、发布、生产连接或 Apple 公证上传授权。
+- 用户已明确批准官方 Docker Desktop、固定 Ubuntu ARM64/必要依赖、四认证及多提示隔离服务。宿主端口仅 127.0.0.1:22221～22225，不 LAN、不真实凭据/生产挂载、不宿主 sshd、不生产连接、不 Apple 上传。Agent 不代接受法律协议或输入系统凭据。不再重复“等待 Docker 授权”。
+- 许可与引擎条件已实际核验解除；公证需展示具体产物/Apple 目的地/用途后另获批准。公开 CredentialStore 持久化消费者当前仅 source/offline，未放行真实默认 file-based Keychain save/read/delete；测试事故开关不构成额外授权。
 
-## 当前实际状态
+## 目前最重要的新事实
 
-当前host15独立production consumer已真实私钥SSH成功（trusted outer-auth1、关闭ownedPID释放，12.85s），以及密码/私钥SFTP微型往返成功与typed错误凭据拒绝。MINA单消息双prompt/echo、零提示接受/拒绝、8s审批接受/拒绝及等待取消已有真实核心证据，主管独立双prompt与pending取消跨decisiondue归零抽验通过。远端完整2GiB/1000小文件及Unicode共1002 payload四manifest实际原名/大小/SHA一致、双向25%取消保原件、权限/链接/当前服务提交能力和资源清理已核并提交15012d3。不是正式mac26/AppGUI或完整AUTH/FILE验收；报告分别见 `docs/reports/real-ssh-sftp-smoke.md`、`docs/reports/real-mina-kbi.md`、`docs/reports/real-sftp-file-acceptance.md`。SFTP首轮5s测试operation握手timeout事实保留，test-only改20后实际复验通过，产品源码未因此更改。
+1. 原生 App 第二个真实上传案，在关闭 SSH/隐藏面板动作之前 SSH 已 failed/PID 不存在，而独立 SFTP 仍 running/720896 bytes。两个上传案均未通过，不能说关闭触发故障或跨关闭已验证。
+2. 系统 `/usr/bin/ssh` 同参数/同固定远端 printf，仅 `-T`/`-tt` 不同：无 PTY exit0/6.305s/52B ACK 精确匹配；强制 PTY exit255/15.792s/stdout0/stderr0。不是外层 timeout，不等认证拒绝。
+3. 同 exact 容器 UID0 和 UID10000 各一次 `pty.openpty()` 均成功，FD4→4；不能归因为“所有 PTY 无法分配”，不据 capability 名称猜加权限。
+4. 新短 ACK 诊断真实单案：outer connected t12.455643，73B 非秘密命令 t12.473894 入队，t21.722916 结束，真实 `.failed(.launchFailed)`/lastExitCode255，stop=false。shellACK=false/probeEvents0/**原 loader 从未发送**。入队也不证明远端执行。
+5. root 测试 runtime 已释放，自己的 SSH41010/consumer40915/relay40824 均不存在；relay4/4/0/0 wait0，FD回baseline，exact nonce driver/Vim/目录未观察到，未远端 kill/delete，keyonly仍 Healthy。没有 PTY/Ctrl+C/resize/Vim 通过结论。
 
-本轮正式Transport对抗测试确证并修复两处生产Mach边界：接收未设置 `MACH_RCV_VOUCHER` 导致既有拒绝检查不可达；发送超时pseudo-return LOCAL send-once未被destroy回收。主管读完整diff与前后证据、聚焦只读复核，并独立Release35tests/readpass6/event4/postexit10/28对抗/28postexit及raw/rights矩阵通过。实际生产差异仅两处最小修复及约束注释，见 `docs/reports/p7-transport-adversarial.md`。最终 `AskpassMach.c` SHA256：`34ee7ffbad3c2f75e60a08c308ae1e7021ae82293826b84bd327c3caa20fbb32`。
+详见 `docs/reports/real-remote-terminal.md` 与 `docs/reports/app-real-transfer-survival.md`。主管已读原结果、独立核时序/三PID与冻结输入/严格签名。
 
-五view压力已独立105tests/原生有限场景通过并提交ba4a2ec（不是SSH/PTY压力）。最终C对应App工程师105tests/Release/signed12/8/15/5和退出17/17通过；主管独立匹配九项产物hash/元数据/清理报告并再签名安全12/8/15/5通过。真实min26稳定性driver已新UUID离线重建并主管独立verify，未运行。旧候选不含本轮修复，不作当前证据；相关修复已提交d331188，主管文档检查点8b63961干净源码新内部候选fdb05b4d已生成并独立manifest/归档/签名核验，非正式发布。
+## 已验收的本地实现基线
 
-## 已验收的本地里程碑
+以下仅各自范围通过，不替代真实网络、macOS26 或整体产品验收。
 
-| Task / 范围 | 主管结论与主要证据 | 实现/报告 |
-| --- | --- | --- |
-| P0 环境、依赖、Git、隔离环境与签名调查 | 调查通过，不替代产品验收；未新增运行环境 | `docs/reports/p0-*` |
-| P1 本地 PTY、配置/信任、Keychain、认证桥 | PTY14、信任22、Mach/readpass本地控制面；DP Keychain -34018保留，明确选择 file-based Keychain，非静默 fallback | `Experiments/P1-*`、P1 ADR/报告 |
-| P2 本地终端 | 16 tests/真实原生窗口；SwiftTerm稳定1.20尾输出丢失独立复现，固定1.99.1 preview；人工IME/远端TUI未验 | P2 ADR/报告 |
-| P4 Core 与 Security | Core后续ACL48、Security31及私钥认证材料8/四组合离线libssh2解析签验；真实隔离Keychain CRUD/锁/解锁/default与searchlist不变 | `Packages/OpenLXSSHCore`、`OpenLXSSHSecurity`；P4/P7报告 |
-| P5 Trust 与 Transport | Trust Release46；最终Transport已主管独立Release35+readpass6/event4/postexit10/对抗28+postexit28/rawrights通过，voucher/timeout修复已提交d331188 | 对应正式包、`docs/reports/p7-transport-adversarial.md` |
-| P6 Files 与 Manager | 根枚举/源变化/根自拷修复；service operation lease/shutdown；rootFD/targeted close；主管定向Release34、工程师完整107 | `Packages/OpenLXSSHFiles`、`docs/reports/p6-files-core.md` |
-| P5 App SSH/ACL/JournalFD/并发 R2 | 主管68tests、GUI15/8/7/17/17、signed8/8/15/5通过；提交7ed142e | `docs/reports/p5-native-session-ui.md` |
-| P6A App文件面板/末次凭据撤销 R1 | 主管89tests/signed，原P2定向resolved；提交90084e4；无真实SFTP | `docs/reports/p6a-native-files-ui.md` |
-| P6B1 上传下载/任务/关闭 R1 | 主管103tests、GUI15/8/7/17/17/14/18/17、signed12/8/15/5；late-risk/history两P2复验resolved，提交40853f3 | `docs/reports/p6b1-native-transfers.md` |
-| P7 本地文件压力 | 真2GiB/1000往返原名与SHA、25%取消、FD3/9/3、owned0/6/0、精确UUID清理；非远端/PERF | `docs/reports/p7-local-file-stress.md`；提交0e0bf7d |
-| P7 稳定性driver准备/构建 | offline34+6+12原证据；最终C新driver-71e5e2da全对象min26/链接/Development静态签名已主管独立record核验；未执行driver/200/24h | `docs/reports/p7-stability-driver-preparation.md` |
-| P7 有限Instruments | TimeProfiler/Leaks trace成功，Allocations exit20无trace；Leaks空表不等零泄漏，leaks-atExit仅短时0；源/原包不变 | `docs/reports/p7-local-instruments.md` |
-| P7 秘密/内容检查 | 历史344 tracked/index+显式出口；最终15文件delta/候选32文件29文本未见新增秘密/敏感材料；非二进制内部/全历史/运行时证明 | `docs/reports/p7-secret-artifact-check.md` |
-| P7 五view本地输出 | 主管105tests、原生76检查/22轮/每view814108 bytes，closed/disposed5、weak0、warm/closedFD16；有限HostProbe，非真实SSH，提交ba4a2ec | `docs/reports/p7-app-output-stress.md` |
-| P8 打包器/内部候选 | 主管101fixtures、真实来源/许可/manifest/ZIP验证。最新既有候选见下节，不是正式发行 | `docs/reports/p8-packaging-preparation.md` |
+| 范围 | 已审结论/证据 |
+| --- | --- |
+| P0 工具、依赖、Git、隔离与签名调查 | `docs/reports/p0-*`，不从调查推定产品可用 |
+| P1 PTY/信任/Keychain/认证桥 | 本地PTY14/信任22/Mach与readpass；DP Keychain -34018保留，明确选择file-based而非静默fallback；P1报告/ADR |
+| P2 本地终端 | 主管16tests/原生窗口；稳定SwiftTerm1.20尾输出失败独立复现，固定1.99.1 preview；人工IME/远端TUI未验 |
+| P4 Core/Security | Core ACL48、Security31/四密钥材料解析签验、隔离Keychain CRUD/锁解锁/default/searchlist不变；正式包/P4/P7报告 |
+| P5 Trust/Transport | Trust Release46；最终Transport Release35/readpass6/event4/postexit10/对抗28/postexit28/rawrights，提交d331188 |
+| P6 Files/Manager | service lease/shutdown/rootFD/源变化/根枚举与自拷修复；主管定向Release34/工程师完整107；`docs/reports/p6-files-core.md` |
+| P5 App/R2 | 主管68tests/原生15/8/7/17/17与签名8/8/15/5，提交7ed142e；真实连接另表 |
+| P6A/B1 App | 89/103tests/原生与签名分项；末次凭据撤销、late-risk/history等修复，提交90084e4/40853f3；非真实SFTP矩阵 |
+| 本地文件压力 | 真2GiB/1000往返、取消/FD/精确清理，提交0e0bf7d；非远端 |
+| Transport Mach生产修复 | `MACH_RCV_VOUCHER`使voucher拒绝可达；send超时pseudo-return LOCAL send-once精确释放。最终AskpassMach.c SHA256 34ee7ffbad3c2f75e60a08c308ae1e7021ae82293826b84bd327c3caa20fbb32，提交d331188 |
+| 五真实view有限压力 | 105tests/原生76检查/22轮/每view814108B、closed/disposed5/weak0/FD16，提交ba4a2ec；不是SSH/PTY长测 |
+| Instruments/秘密检查 | TimeProfiler/Leaks有trace，Allocations exit20无trace；短时leaks0不等零泄漏；历史344及后续限定出口检查有边界，见P7报告 |
+| 稳定性driver/打包器 | 正式min26 driver-71e5e2da离线11对象/链接/Development签名已核；打包101fixtures/内部候选核验；未运行200/24h或正式发布 |
 
-## 当前任务与文件所有权
+## 已验收的真实隔离分项
 
-| Task ID / 执行者 | 当前范围与状态 | 下一验收点 |
-| --- | --- | --- |
-| P7-TRANSPORT-ADVERSARIAL-REGRESSION / agent_d3fd3a31-8181-40f9-b239-33a910854d24 | 两处生产C最小修复及host-only矩阵已主管独立完整Release验收；工程师Debug/Release/正式min26双配置通过；提交d331188，现停写/停build | 新candidatefdb05b4d已包含最终C，无当前工作 |
-| P7-APP-VOUCHER-AFFECTED-REGRESSION / agent_68d3d86f-9ad4-43cc-af1e-d0df030e6887 | 最终34ee7f…回归105/Release/signed12/8/15/5/退出17+17通过，主管核hash/报告并独立signed通过；已释放构建树 | 候选已生成，无当前工作 |
-| P7-STABILITY-DRIVER-VOUCHER-REBUILD / agent_091f9d0e-836e-4b72-9773-05cf540931ad | driver-71e5e2da新UUID离线11对象min26、链接/Development严格签名通过；主管独立record verify exit0，未运行driver | 报告及精确hash见 `docs/reports/p7-stability-driver-preparation.md`；无当前build |
-| AUTH-REAL-MULTIPROMPT-PINNED-EVIDENCE / agent_87507387-f248-48e2-bcba-807bd602fef8 | 固定MINA2.20.0/commit2221febd…源码与许可研究已交付；后续真实构建/运行和六场景证据已由独立任务补齐 | 来源见`docs/reports/auth-multiprompt-backend-evidence.md`，实测见`docs/reports/real-mina-kbi.md`；原研究任务无当前写入 |
-| REAL-SFTP-DISKFULL-LIVE-A / agent_80f0dacc-5fe4-42ec-ac4b-3ac1155adba0 | 十源/R1主管源审和14Python30Swift/207input29cmd/sign通过；唯一case a8fc7a19…真实protocolFailure/write4+helpererrno28/满盘0联合、先release、原64KiB metadata/SHA不变、engine temp/本地data清理、6opens6closes/handles0/socket0/noOOMdelta，主管核原result/finalpostflight通过 | relay13846 TERMwait0/1-1-0-0、shm64MiB恢复全空、exacthelpers/PID无残留；source冻结，报告`docs/reports/real-sftp-disk-full.md`，不重跑 |
-| SFTP-TERMINAL-ZERO-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 真实ordinal4空header/count0和固定PAM源码联合后仅testconsumer补精确尾轮，主管完整源审/独立37Swift14Python17CLI、344input36cmd/strict通过，App18b6主程序5893e87f… | source冻结，等待App释放rootruntime后先key-kbd edplain/password-kbd最小组，再key-kbd另外三密钥；必须actualSFTP+79IO，不用empty推定成功 |
-| REAL-HANDSHAKE-TIMEOUT-LIVE-A / agent_80f0dacc-5fe4-42ec-ac4b-3ac1155adba0 | 八源/driver0d98b2cb…主管独立离线50+5及原live核验；唯一fixed12722221 peer真实accepted1/无读写，rawtimeout/handshake/-10002/2.0159s，callbacks0/SFTP0/nooutercancel、peerFD0/总FD4→4、Trust清理/进程退出通过 | runtime已释放给Apptransfer，不覆盖TCP SYN/外网真实server；采样TrustFD1如实保留，退出后根不存在 |
-| REAL-AUTH-FAILURE-LIVE-A / 已验收 | drivere56dad32…真实wrongphrase在正控后authentication/authenticate、已知key mismatch实际handshake.changed/untrusted/旧record不变，另显式replacement后actualSFTP恢复；实际errorcode均nil | source冻结、runtime已释放，relay4/4/0/0wait0、trust/session/keygen/privateabsent；报告`docs/reports/real-auth-failures.md` |
-| APP-TRANSFER-DIAGNOSTIC-R1 / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 首16MiB真实ae16phase exit1/failedCheck，18checks到newjobs-empty，transfer=null/无closehide进度证据；SSH/Fileawaitclose但shutdown归账1，不能判通过。主管从原base64核精确temp750896B/finalpayloadabsent并按FD/inode/SHA清temp+空root，原失败保留 | 仅四文件source/offline补封闭stage/≤8metadata snapshots，不改断言/P6；本地markedstore/source/key仍保留待精确恢复。报告`docs/reports/app-real-transfer-survival.md`，当前无runtime |
-| SFTP-OTP-NEGATIVE-LIVE-A / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 新负例源44Swift15Python/348input/sign主管核，真实bad一次24.809s和expired一次90.728s均typed.authentication/authenticate/nilcode、3读3reply/SFTP0/fileops0；C提前取后真实wall+mono过期65.805s再答，主管核两原result时序passed | relay24194 TERMwait0/2-2-0-0，exacttoken/PID/sessiongone，source198未变，runtime已释放；报告`docs/reports/real-otp-negative.md` |
-| SAVED-PASSWORD-PUBLIC-LIVE-A / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 独立50Swift16Python25CLI/352input/sign源审后两case真实通过：原gate显式授权providercall/read/return1/manual0与无授权manual1/provider0，outerconnected1/closePIDnil；主管读原reports/预算/资源通过 | host15/24H32+精确sshversion/signature限定，非Keychain持久化；relay29856 TERMwait0/8-8-0-0、exacttokens/PIDgone，报告`docs/reports/real-saved-password-public.md` |
-| TERMINAL-CONNECTION-DIAG-A / agent_d121dcfb-d2ed-4b51-91b0-89ba0b6571ce | namedvolume R1主管83Core8Python/strict/parentobjects核验后首真实consumer exit1/connection、connected1/PID31127但probe0/shellACKfalse，authrequests0/closedPIDgone/FD回baseline；relay31020 TERMwait0/4-4-0-0，远端drivers/folders未观察 | 无stdin/CtrlC/size/Vim通过声明，不remote重跑；仅只读/本地非秘密PTY最小复现与typedstage诊断，产品/服务器不改，runtime交Appdiag |
-| 主管 | 已收到用户本人授权继续，管理Docker官方安装/磁盘/签名与许可边界、文档与独立验收；此前已验本地里程碑不重做 | 安装不代接受订阅协议或系统凭据，真实SSH/SFTP分小里程碑推进，mac26/发布/人工仍待 |
+均 host15 的公开生产 API 消费者或明确 HostProbe，不冒充 macOS26/完整GUI验收。原失败不覆盖。
 
-当前Terminal首次live失败后的本地非秘密最小诊断在独立新子树进行，public-password两案已验收冻结、只读收敛Keychain持久化边界（无动作）；Appdiag四源/新签名产物296eed8a…已主管118tests/49source14cmd/sign独立核验，由2c唯一占rootruntime执行新diagnosticcase。首Appae16已精确远端/本地恢复，原失败报告保留；Terminal失败0ACK不冒PTY通过。共享产品Packages/OSgate/环境不改，五容器原CID保留。
+| 分项 | 实际结果与报告 |
+| --- | --- |
+| 系统OpenSSH四类正向 | keyonly有/无口令Ed25519/RSA、passwordonly、key-kbd三轮、password-kbd三轮；trusted outer-auth、关闭/PID释放，主管独立pw-kbd抽验。`docs/reports/real-openssh-four-auth.md` |
+| MINA多提示/审批 | 同消息双prompt/echo、zero接受拒绝、真实8s审批接受拒绝/等待取消；主管双prompt与取消跨decisiondue抽验。auth-only非SFTP，`docs/reports/real-mina-kbi.md` |
+| SFTP正向 | 密码/四密钥单方法及四密钥+KBI/密码+KBI：actual authenticated SFTP/79B往返/摘要/清理。真实PAM第四空尾轮先失败→shape→固定源码→测试契约R1，五MFA复验通过；产品不改。`docs/reports/real-sftp-combined-auth.md` |
+| 大/多文件 | 完整2GiB/1000及Unicode共1002payload/四manifest原名大小SHA一致；双向25%取消保原件、权限/三链接拒绝、当前service probe/安全提交；12046opens/closes/end0/socket0。提交15012d3，`docs/reports/real-sftp-file-acceptance.md` |
+| 真实断连 | 首案receipt缺失PARTIAL不补造；R1后主管fresh case 25%→精确TERM receipt→transport/write/-43→新显式SFTP binding核原SHA/精确清理闭环。`docs/reports/real-sftp-disconnect.md` |
+| 真实ENOSPC | 独立/dev/shm64MiB/≤60MiB填充，write4+真实errno28/avail0/noOOMdelta联合，先释放/原64KiB metadataSHA不变/临时清理/6opens6closes/end0；tmpfs恢复全空。`docs/reports/real-sftp-disk-full.md` |
+| 认证与信任负例 | 错密码/未注册key；正确phrase正控后wrongphrase typed.authentication；同握手knownkey mismatch拒绝/旧记录不变，另显式replacement后新SFTP恢复。`docs/reports/real-auth-failures.md`；不声称真实server rotate |
+| 错误/真实到期OTP | C一次数字变更拒绝；提前读C，真实wall+monotonic等65.805s过期后原值一次拒绝；3读3reply/SFTP0/close/sessiongone。`docs/reports/real-otp-negative.md` |
+| 握手timeout | fixed loopback silent peer accept1/不读写，真实timeout/handshake/-10002/2.0159s，callbacks0/SFTP0/FD4→4/socket0/close。非TCP SYN或外网。`docs/reports/real-handshake-timeout.md` |
+| 公开SavedPasswordAuthorization | 原生产24H32 gate下显式授权provider读返1/manual0；无授权manual1/provider0，均outerconnected1/close。内存provider非Keychain持久化。`docs/reports/real-saved-password-public.md` |
+| App真实按需读取 | defaultscan5先失败保留；独立newUUID/testscan15后实际SSH、按需SFTP/list2、原生标签关闭/窗口重开不恢复/credentialcalls0。正式scan5/connect10不改。`docs/reports/app-real-ssh-sftp.md` |
 
-## 关键技术决定与限制
+## 当前任务、文件所有权及审查
 
-- SwiftTerm1.99.1 preview固定`2f573f73...`，不是稳定2.x；GRDB7.11.1固定`b83108...`，系统SQLite。libssh2 1.11.1 + OpenSSL3.5.9 LTS静态arm64，原生160输出/7notice hash与工具链记录；正式App不依赖Homebrew运行库。
-- 显式 file-based Keychain：namespace、同步false、默认creator ACL、串行lease；非ThisDeviceOnly/屏幕锁等价。私钥/DB/trust/config等App专属store拒任何extended ACL且查询失败关闭，不清用户ACL。
-- 唯一SwiftTerm LocalProcess拥有PTY/reader/reaper。普通输出与认证控制面分离，不扫描内层提示注入秘密。Mach冻结audit sender，严格identifier/同Team/owner/代次；未知挑战人工。
-- 固定LocalCommand helper事件只证明外层认证，不证明shellReady。saved password仅严格passwordOnly/显式授权/已核OS-build/signature gate；当前只24H32，macOS26自动使用仍需实测，不能盲扩白名单，AUTH02完整验收未达成。
-- 文件先唯一同目录temp后commit；本地FD/noFollow/RENAME_EXCL，远端lstat不等原子noFollow、覆盖非CAS风险明确确认。noReplace能力须当前服务真实probe授权与证据，不造成功token。
-- 当前非Sandbox构建决策见 `docs/adr/v1-runtime-permissions.md`；Hardened Runtime、空entitlements与严格helper身份。不是宣布Sandbox永远不可行，不改变任何系统保护。
+| Task ID / 执行者 | 状态与下一验收点 |
+| --- | --- |
+| APP-TRANSFER-DIAGNOSTIC-R1 / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 四源冻结；主管118tests/49输入/14命令/签名独立通过。ae16与062f两案均失败，远端已知temp/空root与本地11files+5空dirs/root均按FD/inode/字节账本恢复，raw失败报告不改。暂不重跑；需先解决共同postauth问题 |
+| TERMINAL-POSTAUTH-DIAG-LIVE-A / agent_d121dcfb-d2ed-4b51-91b0-89ba0b6571ce | 九源冻结；新de94静态Core128/Python10/27命令/9快照/8父对象/strict主管通过。唯一短ACK实测failed(launchFailed)/255/loader未发，资源已释放，停止连接/构建 |
+| PUBLIC-CREDENTIAL-REVIEW-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 独占Tests/RealIntegration，仅source/offline修P1 stop跨await副作用/密码返回窗口、P2新run父目录fsync、P2预算error白名单映射。原57Swift17Python29CLI保留，三红source回归已落，新pure await/fsync/map tests及增量新签名审点未交。禁止真实store/Keychain/SecItem/Docker/live |
+| FIXTURE-PTY-DEBUG-PREP-A / agent_80f0dacc-5fe4-42ec-ac4b-3ac1155adba0 | system-T/-tt及两UIDopenpty已结束/证据已核。仅Tests/PTYDebugAcceptance新子树准备≤100行容器内Linux客户端直连原127.0.0.1:2222的有界阶段诊断，绕开opaque relay；-i/临时server方案未实施已取消。无新端口、不重启原daemon、不改cap/PAM/生产。必须主管先审源/offline，尚未runtime |
+| RELAY-POSTAUTH-TIMEOUT-REVIEW-A / agent_53e824ce-ce3e-4eeb-bcc5-92fe9ec80b25 | 四文件只读完成；未发现认证后10s定时器或PTY特判。8sreadiness不延用，pump600s idle/全局寿命不同；底层EOF/IO reason未导出为可观测性限制，未确证relay缺陷 |
+| 主管 | 维护状态/验收、读实际差异/原结果、独立复验、按精确文件列表本地提交；不把任何分项或cleanup成功当整体通过 |
 
-## 产物、提交与证据
+并发写域互不重叠。产品Packages、锁文件、认证gate与原五容器配置当前不改。默认不重建无变化的正式候选/已过大文件或OTP到期案。
 
-- 实际分支`development/p1-prototypes`，最新已审本地检查点`b28841e`（OpenSSH四flow与断连源码/原首案事实），前一`ed92ac9`（真实基础SSH/SFTP与MINA六场景），完整远端文件提交`15012d3`。候选来源仍`8b6396199db273493a438679df0020fa6ef7c3a4`，dirty=false生成，不声称包含后续测试基础设施/报告。全部本地提交、remote为空；R1后fresh断连完整闭环为之后主管实测记录，待下一文档提交。
-- 最新完整内部候选：`DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，version0.1.0/build1、源8b63961/dirty=false，包含最终已审C SHA34ee7f…；Development严格签名/runtime、arm64/min26、系统runtime闭包/真实依赖许可、App/ZIP/manifest独立核验通过。`spctl` exit3/Gatekeeper false，未公证/上传/安装/运行min26。
-- ZIP 7,418,092 bytes，SHA256 `fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e`；App规范树摘要`499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066`；manifest SHA256`4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f`。
-- 旧9fed318/0608cf64与P6A候选均保留历史不覆盖，不含本轮修复，不再用作当前候选。主程序/helper中压力/adversary专用symbol匹配0；最终内容秘密delta未见确证新增秘密/敏感材料，范围局限见对应报告。
-- 历史里程碑提交和完整文件清单见`git log`及各报告，均仅本地相关文件提交。验证在`DerivedData/Verification`、各包/测试`.build`（忽略），报告不存秘密或完整终端输出。
+## 关键架构/安全约束
 
-## 外部条件与整体阻塞
+- SwiftTerm1.99.1 preview固定2f573f73…（非稳定2.x），GRDB7.11.1固定b83108…；libssh2 1.11.1 + OpenSSL3.5.9 LTS静态arm64，原生160输出/7notice核验，无Homebrew运行库。
+- SwiftTerm LocalProcess是同一PTY/reader/reaper唯一owner；普通输出与认证控制面分离，不按Password文字注入秘密。Mach冻结audit sender/每消息UID/identifier/同Team/owned ssh PPID-birth/session-generation。
+- DirectSSHSession.connected仅可信outer-auth事件，不证明shell-ready。Saved password仅passwordOnly/显式授权/每代一次/精确OS-build+Apple ssh签名版本gate；当前仅24H32/OpenSSH9.9p2 LibreSSL3.3.6，不扩称mac26自动使用已验。
+- public CredentialStore默认file-based Keychain；testNamespace只隔离service/account，不是独立物理Keychain。同步false/DPfalse/串行lease，close恢复legacy interaction。秘密不入源码/参数/日志，不承诺Swift副本完全擦除。
+- App专属DB/key/trust/config/journal/store任意extended ACL或查询失败拒绝，不清用户ACL。filesec必须return0/MODE populated/ACL absent，不能靠NULL/旧errno认安全。
+- 文件先unique同目录temp再安全commit；本地FD/noFollow/RENAME_EXCL。远端逐component lstat不等原子noFollow/overwrite非CAS风险明确；noReplace必须当前service实际probe确认，不造token、不先删原目标。
+- TransferManager应用级拥有service/job，不依附terminal/panel；关闭必须await真实worker/service，不只snapshot.isClosed。失败精确恢复只能处理本轮已知身份资源，不广扫删/kill。
+- 非Sandbox/Hardened Runtime/空entitlements决策见 `docs/adr/v1-runtime-permissions.md`；不改系统保护。
 
-- 当前已核宿主macOS15.8.1/24H32、arm64；Xcode26.3/SDK26.2/Swift6.2.4。正式min26仅编译，HostProbe min15不冒充目标runtime。
-- 用户本人最新明确批准按 `docs/release/acceptance-prerequisites.md`：官方Docker Desktop安装、必要Ubuntu ARM64镜像/依赖下载构建、四认证及多提示服务，端口仅127.0.0.1:22221～22225，不LAN、不真实凭据/生产数据挂载、不宿主远程登录、不生产连接、不Apple公证上传；需要许可/系统授权由用户亲自处理。此前未作答等待记录已被这次真实授权取代，不再重复询问环境授权。
-- 安装前重新核对：宿主仍macOS15.8.1/24H32 arm64，当前磁盘可用73,277,263,872bytes（68.24GiB），满足方案40GiB以上预留；Docker App/CLI/现有settings均未发现，22221～22225无监听（lsof无匹配exit1非检查失败）。先官方来源与签名核验，再安装；默认2CPU/4GiB，硬盘上限及自动启动/许可情况按实物核对，不盲写未文档化设置。
-- Docker安装时序记录：官方4.97.0/build244584 ARM64安装于`/Applications/Docker.app`，DMG SHA256 `94e4ccec4a035b7dcdf67cfff0520d4b46ee873ae04b155abc0d22b333cc90ad`；hdiutil/严格Appleanchor+DockerTeam9BNSXJN65R通过，无sudo/--accept-license。首次许可页期间主会话曾停止0container引擎；后来外部GUI持久配置许可版本2/2CPU4096MiB/40960MiB磁盘/AutoStartfalse且Engine实物一致，已解除该等待。Agent未写许可/资源键。
-- 官方Ubuntu24.04ARM64固定ref `docker.io/library/ubuntu:24.04@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d` 已真实build为image `sha256:7f633d33bf5af2fbee137385eba3e036ef7bbbcf18fe423d99b25be12d12a363`，受限no-network探针确认PAM链接Python3.12/包/路径/权限且未auth，主管hash/实际image/23tests复核通过。
-- 实际Engine29.9.2/Buildx0.38.1/Compose5.6.1两项兼容缺陷已按实证修复：selected inspect不支持format改严格有界文本；Compose构建context失败改wrapper内部固定builtin buildx。随后project `openlxssh-fixture-61ed25328c13` 四容器首次upHealthy，精确internal/namedvolumes/资源/caps/noegress通过；但纯internal不实际发布127ports，未将配置PortBindings冒充可达。当前采用有限测试转接保留网络隔离，来源/失败/无外网证据均本地.logs，不上传。
-- Apple Development现有1，DeveloperID Application/Installer均0（仅计数）；无公证上传批准。证书/profile/登录由用户安全准备，Agent不代答系统授权。
-- 已真实验证host15系统OpenSSH四flow正向（keyonly有/无口令Ed25519/RSA、passwordonly、key-kbd Ed25519无口令三轮、password-kbd三轮），MINA双prompt/zero/8s审批拒绝取消核心及完整远端2GiB/1000往返/25%取消/权限链接/当前服务提交能力。断连首案receipt缺失/PARTIAL保留，R1后主管新case完整真实25%→精确TERMreceipt→transportwrite-43→新SFTP binding核原SHA和精确cleanup闭环通过。仍缺错误口令/错误过期OTP/保存凭据gate、SFTP组合认证、hostkey变化/手动嵌套/TUI、磁盘满、正式App真实整合、200创建关闭/五会话连续24h及目标平台/发布。不能用mock/缩数据/短测/改时钟/拼接补缺。
-- macOS26实机/双机安装、中文IME/像素、人工Finder/selector与公司允许环境验收待外部操作。详情与必须提供的记录见 `docs/acceptance.md` 和外部前提文档。
+## 当前环境、Git及产物
 
-## 下一项具体动作
+- 实测宿主macOS15.8.1/24H32/arm64，Xcode26.3/17C529、SDK26.2/Swift6.2.4。正式App arm64/min26，HostProbe/独立消费者min15不能冒目标runtime。最新本地磁盘观察约42GiB可用，瞬时值不能沿用为下一安装许可。
+- Docker Desktop4.97.0/build244584官方验签；DMG SHA256 94e4ccec4a035b7dcdf67cfff0520d4b46ee873ae04b155abc0d22b333cc90ad；Agent无sudo/accept-license。外部GUI后LicenseTermsVersion2/2CPU4096MiB/40GiB/AutoStartfalse，Engine实物一致。context desktop-linux固定unix:///Users/liuwenshuo/.docker/run/docker.sock，不建全局特权socket链接。
+- Ubuntu固定24.04 digest18b33ff…，rootimage7f633d33…；project openlxssh-fixture-61ed25328c13，四原CID不重启/换key。MINA2.20.0/commit2221febd…、image18c77956…/独立原CID。internal/noegress/readonly/no-new-privileges/capdropALL+原七项/资源受限/namedvolume无hostbind；HostConfig.PortBindings不冒称实际可达，有限opaque relay仅批准回环端口。详情 `docs/reports/env-authorized-installation.md`。
+- 分支 `development/p1-prototypes`；最新已确认本地HEAD **18761e6**（终端九源与真实短ACK失败报告），前一 **18ee766**（App四源及两次传输失败诊断），之前7c925fa。两项仅诊断范围验收/失败证据检查点，不宣称产品通过。尚未提交public CredentialStore新源及入口/build/tests，当前仍在R1；工程师写域不得reset/覆盖。remote为空、未push。
+- 最近完整内部候选仍 `DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，来源8b6396199db273493a438679df0020fa6ef7c3a4/dirty=false/version0.1.0 build1。arm64/min26/Development strict/runtime通过，Gatekeeper false/spctl3，未公证/上传/安装运行。ZIP7418092B/SHA256 fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e；tree499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066；manifest4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f。不能声称包含后续测试基础设施或报告。
+- 正式min26长期driver `Tests/StabilityAcceptance/.build/driver-71e5e2da-b345-4c4b-ab54-53b8d128209d/wrapper/OpenLXSSHStability.app`，driver66843ddc286375de474e9823ea7353cd7d77265b5e1a8bf1cbf8a009cf7f625a/helper31d0ee0ee9d357d7edd0bfaf129a9ae4b38334fd8955184f6afc049d685a0590；未运行200/24h，不降平台门。
 
-此前本地修复/候选/审计成果保留，用户本人最新明确授权环境已记录，官方Docker安装/验签、官方Ubuntu固定摘要、rootcontext/builder修复、MINA源码与导出清理R1、host15真实生产API消费者离线构建均已完成本轮可独立工作。不重复既有产品测试或重打内部候选；正式平台/信任/秘密要求不降低。
+## 最新独立验证证据
 
-**当前已核Engine-ready：** 外部GUI操作后settings LicenseTermsVersion2/2CPU/4096MiB/40960MiB磁盘/AutoStartfalse，Engine实物2CPU约4GiB；主会话未写许可/资源键。R2修后独立22tests、真实selected builder/context及Compose四服务loopback/internal/namedvolumes/权限资源均通过，证据 `DerivedData/Environment/ready-final-307c9ef8-4dc6-456a-8a77-00a71cd4284b/`。没有再要求用户重复授权或许可。
+- 短ACK单案原typed报告一致性/时序/三PID实际不存在：`DerivedData/Verification/primary-terminal-postauth-live-14a17ac5-93bd-469e-9124-092d0861ba34/`。结果为失败证据核验通过，非PTY验收通过。
+- App49source/既有118tests0fail、Terminal9输入/8父对象、双App主/helper hash和deep strict签名复核：`DerivedData/Verification/primary-app-terminal-frozen-a24c034b-da4a-4254-907e-4f311351baec/`。首次复核脚本误用辅助文件名断言失败，修为实物Contents/Helpers/openlxssh-askpass后通过，无产品改动。主管随后独立再跑Terminal核心128与Python10均exit0，无文件/代次/Docker/socket/live；新日志 `DerivedData/Verification/primary-terminal-offline-checkpoint-7f690b18-1299-467b-80dc-7faaee6f9679/`。
+- system-T/-tt：`DerivedData/Verification/postauth-system-ssh-control-b9a22fc3-c911-422e-86fe-c2673e46d3c8/`；两UID分配：`DerivedData/Verification/fixture-pty-metadata-507dc766-f62f-43db-98eb-9cdbfe485afe/`。不重复这些探针。
 
-下一项实际工作：2c唯一执行已审Apptransfer-survives-close新case，16MiB真实inflight时native关SSH/hidepanel，同job/service/gen无重连完成后SHA和精确cleanup；若失败/过早完成保留不冒通过。125onlysource/offline准备public savedPassword显式内存provider单次授权/无授权人工回退，禁Keychain与OSgateoverride；RemoteTerminal onlysource/offline真实outerPTY/CtrlC/resize/Vim，不触innersecret或伪人工NEST。OTP错/真实到期与握手timeout本轮已源/离线/实结果验收并本地提交，剩余真实有任务window/Quit保护、并发/保存到Keychain/完整交互另收敛。正式mac26/200/24h/DeveloperID公证/双机企业人工仍未满足。
+## 剩余必要工作与外部条件
+
+- 本机可继续：最小定位/修复postauth PTY路径；真实App传输跨close/hide、活动传输window/Quit完整矩阵；远端输入/Ctrl+C/resize/TUI、手动嵌套边界、并发认证/取消late-result；public CredentialStore R1源审及真实持久化的适当授权与条件。未知提示继续人工，不通过终端扫描送秘密。
+- 外部仍缺：macOS26真实运行；正式driver200次/五会话真实连续24h；DeveloperID Application/Installer当前0（仅Development1）、对应最终产物Apple上传批准；双机安装、人工IME/Finder/像素、企业允许环境。不能以缩数据/改时钟/HostProbe/多次短测替代。
+- 不创建Cron/OffPeak/常驻，不改电源/保护/宿主SSH，不因普通失败停止全部工作。仅必要信息/权限/无替代外部条件才BLOCKED；整体未完成时不得称COMPLETE。
+
+下一具体审点：80f只交最小容器内Linux SSH直连原daemon客户端诊断及离线自有Popen回收/输出白名单，主管先审后决定一次有限运行（临时sshd-i/新监听方案均未实施）；125交stop/durability/error-map纯测试红绿与增量签名审点。App/Terminal源码冻结，已保存18ee766/18761e6检查点，不重跑无新信息的旧案。

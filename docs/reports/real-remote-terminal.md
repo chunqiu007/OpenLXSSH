@@ -75,6 +75,6 @@ closed/PID释放/FD回baseline=true；自有SSH41010、consumer40915和relay4082
 
 原报告和命令：`Tests/RemoteTerminalAcceptance/.build/postauth-live-a/{consumer-result.raw.json,live-result.json,relay-events.log,final-postverify.json}`。主管独立核原报告一致性、时序、三PID实际不存在，确认send返回到退出9.249022s；证据 `DerivedData/Verification/primary-terminal-postauth-live-14a17ac5-93bd-469e-9124-092d0861ba34/`。冻结源码/对象与双App严格签名再核见 `DerivedData/Verification/primary-app-terminal-frozen-a24c034b-da4a-4254-907e-4f311351baec/`。没有重跑原case或更改生产/服务cap。
 
-当前仅准备不新增端口、不重启原daemon的有界单会话sshd诊断，必须先审脚本及离线清理；尚未运行。没有真实PTY、Ctrl+C、resize或Vim通过，不能因packet/终端原型证据补齐。
+当前仅准备容器内Linux SSH直连原127.0.0.1:2222的有界客户端阶段诊断，绕开opaque relay，不新增端口、不重启或修改原daemon；临时sshd-i/监听方案未实施已取消，必须先审脚本及离线清理。没有真实PTY、Ctrl+C、resize或Vim通过，不能因packet/终端原型证据补齐。
 
 整体Goal NOT COMPLETE。
