@@ -378,6 +378,14 @@ class DockerTarget:
         item = objects[0]
         labels = item['Config'].get('Labels') or {}
         host = item['HostConfig']
+        import fixture
+        try:
+            if target.service in ROOT_PORTS:
+                fixture.validate_capabilities(host, target.service)
+            elif host.get('CapAdd') not in (None, []) or host.get('CapDrop') != ['ALL']:
+                raise fixture.FixtureError('MINA must retain zero added capabilities')
+        except fixture.FixtureError:
+            raise RelayError('frozen service capability set differs') from None
         networks = item['NetworkSettings']['Networks']
         if (item['Id'] != target.container_id or item['Image'] != target.image_id
                 or labels.get('com.docker.compose.project') != target.project

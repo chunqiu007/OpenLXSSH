@@ -285,6 +285,277 @@ class StaticTests(unittest.TestCase):
                                  '--tag', driver.IMAGE, '--file', str(ROOT / 'Dockerfile'), str(ROOT)])
             verify.assert_called_once_with(state, driver.IMAGE)
 
+    def test_keyonly_recreate_requires_separate_manager_release_before_state_or_docker(self):
+        driver = module('fixture')
+        for arguments in (['recreate-keyonly'], ['recreate-keyonly', '--authorized-run'],
+                          ['recreate-keyonly', '--manager-authorized-keyonly-recreate'],
+                          ['recreate-keyonly', '--authorized-run', '--manager-authorized-keyonly-recreate',
+                           '--service', 'passwordonly'],
+                          ['up', '--authorized-run', '--manager-authorized-keyonly-recreate']):
+            with self.subTest(arguments=arguments), mock.patch.object(sys, 'argv', ['fixture.py'] + arguments), \
+                    mock.patch.object(sys, 'stderr', io.StringIO()), \
+                    mock.patch.object(driver, 'load_state', side_effect=AssertionError('state read')), \
+                    mock.patch.object(driver, 'docker_cli', side_effect=AssertionError('Docker called')):
+                with self.assertRaises(SystemExit) as raised:
+                    driver.main()
+                self.assertEqual(raised.exception.code, 2)
+        with mock.patch.object(sys, 'argv', ['fixture.py', 'recreate-keyonly', '--authorized-run',
+                                           '--manager-authorized-keyonly-recreate']), \
+                mock.patch.object(driver, 'run_keyonly_recreate') as run, \
+                mock.patch.object(driver, 'load_state', side_effect=AssertionError('unbounded state path')):
+            self.assertEqual(driver.main(), 0)
+            run.assert_called_once_with()
+
+    def test_existing_up_service_option_is_not_reinterpreted_as_single_service(self):
+        driver = module('fixture')
+        state = {'project': 'openlxssh-fixture-abcdef012345'}
+        with mock.patch.object(sys, 'argv', ['fixture.py', 'up', '--authorized-run', '--service', 'keyonly']), \
+                mock.patch.object(driver, 'load_state', return_value=state), \
+                mock.patch.object(driver, 'require_local_engine'), mock.patch.object(driver, 'validate_ownership'), \
+                mock.patch.object(driver, 'verify_image'), mock.patch.object(driver, 'compose') as compose:
+            self.assertEqual(driver.main(), 0)
+        compose.assert_called_once_with(state, ['up', '-d', '--no-build', '--pull', 'never', '--wait',
+                                               '--wait-timeout', '120'])
+
+    def recreate_objects(self, driver, *, after=False):
+        # Public, synthetic metadata only; no runtime, Docker, credentials or corpus.
+        project = 'openlxssh-fixture-61ed25328c13'
+        image = 'sha256:7f633d33bf5af2fbee137385eba3e036ef7bbbcf18fe423d99b25be12d12a363'
+        caps = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SYS_CHROOT', 'KILL']
+        volume_keys = ('key-data', 'password-data', 'key-kbd-data', 'password-kbd-data')
+        result = []
+        for index, (service, volume_key) in enumerate(zip(driver.SERVICES, volume_keys), 1):
+            identifier = ('e' if after and service == 'keyonly' else str(index)) * 64
+            volume = project + '_' + volume_key
+            added = caps + (['AUDIT_WRITE'] if after and service == 'keyonly' else [])
+            result.append({'Id': identifier, 'Image': image, 'Name': '/' + project + '-' + service + '-1',
+                'Config': {'Image': image if after and service == 'keyonly' else driver.IMAGE,
+                    'Entrypoint': ['python3', '/opt/openlxssh-fixture/server.py'],
+                    'Cmd': ['serve', '--authorized-run', '--mode', service],
+                    'Labels': {driver.LABEL: driver.LABEL_VALUE, 'com.docker.compose.project': project,
+                               'com.docker.compose.service': service}},
+                'State': {'Running': True, 'Health': {'Status': 'healthy'},
+                          'StartedAt': 'synthetic-new-start' if after and service == 'keyonly' else 'synthetic-start'},
+                'HostConfig': {'CapAdd': ['CAP_' + name for name in added], 'CapDrop': ['ALL'],
+                    'ReadonlyRootfs': True, 'Privileged': False, 'Init': True,
+                    'SecurityOpt': ['no-new-privileges:true'], 'LogConfig': {'Type': 'none', 'Config': {}},
+                    'Memory': 402653184, 'MemorySwap': 402653184, 'NanoCpus': 500000000, 'PidsLimit': 128,
+                    'Ulimits': [{'Name': 'nofile', 'Soft': 1024, 'Hard': 1024}],
+                    'Tmpfs': {'/run': 'rw,nosuid,nodev,noexec,size=96m,mode=0755',
+                              '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777'},
+                    'NetworkMode': project + '_fixture', 'Binds': [volume + ':/fixture:rw'],
+                    'RestartPolicy': {'Name': 'no', 'MaximumRetryCount': 0},
+                    'PortBindings': {'2222/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(22220 + index)}]}},
+                'NetworkSettings': {'Networks': {project + '_fixture': {'NetworkID': 'a' * 64}}},
+                'Mounts': [{'Type': 'volume', 'Name': volume, 'Destination': '/fixture', 'Driver': 'local',
+                            'Source': '/var/lib/docker/volumes/' + volume + '/_data', 'Mode': 'rw', 'RW': True}]})
+        return result
+
+    def recreate_docker(self, driver, before, after, calls):
+        project = 'openlxssh-fixture-61ed25328c13'
+        volume = {'Name': project + '_key-data', 'Driver': 'local', 'Scope': 'local', 'Options': None,
+                  'CreatedAt': 'synthetic-volume-creation', 'Mountpoint': '/synthetic/docker/volume',
+                  'Labels': {driver.LABEL: driver.LABEL_VALUE, 'com.docker.compose.project': project,
+                             'com.docker.compose.volume': 'key-data'}}
+        current = {'objects': before}
+        def resources(_state, kind):
+            if kind == 'container': return [item['Id'] for item in current['objects']]
+            if kind == 'network': return ['a' * 12]
+            return [project + '_' + suffix for suffix in
+                    ('key-data', 'password-data', 'key-kbd-data', 'password-kbd-data')]
+        def docker(argv, **_kwargs):
+            calls.append(argv)
+            if argv[:2] == ['image', 'inspect']:
+                return json.dumps([{'Id': before[0]['Image'], 'Architecture': 'arm64',
+                    'Config': {'Labels': {driver.LABEL: driver.LABEL_VALUE,
+                                         'org.openlxssh.fixture.base': 'synthetic-reviewed-base'}}}]).encode()
+            if argv[0] == 'inspect': return json.dumps(current['objects']).encode()
+            if argv[:2] == ['network', 'inspect']:
+                return json.dumps([{'Id': 'a' * 64, 'Name': project + '_fixture', 'Internal': True,
+                    'Driver': 'bridge', 'Labels': {driver.LABEL: driver.LABEL_VALUE,
+                    'com.docker.compose.project': project},
+                    'Containers': {item['Id']: {} for item in current['objects']}}]).encode()
+            if argv[:2] == ['volume', 'inspect']: return json.dumps([volume]).encode()
+            if argv[0] == 'exec':
+                if argv[4:] == ['/usr/bin/python3', '-c', driver.PUBLIC_IDLE_COUNTS]:
+                    self.assertIn(argv[3], [item['Id'] for item in current['objects']])
+                    return b'{"user_processes":0,"sshd_children":0}'
+                self.assertEqual(argv[1:4], ['--user', '0:0', current['objects'][0]['Id']])
+                self.assertEqual(argv[4:], ['/usr/bin/python3', '-c', driver.PUBLIC_KEYONLY_FINGERPRINT])
+                return ('SHA256:' + ('B' if current['objects'] is after else 'A') * 43 + '\n').encode()
+            raise AssertionError('unapproved command: ' + repr(argv))
+        def compose(_state, argv):
+            calls.append(['compose'] + argv)
+            self.assertEqual(argv[0], '--file')
+            pin = json.loads(Path(argv[1]).read_text())
+            self.assertEqual(pin, {'services': {'keyonly': {'image': before[0]['Image']}}})
+            self.assertEqual(argv[2:], ['up', '-d', '--no-deps', '--force-recreate', '--no-build', '--pull',
+                                       'never', '--wait', '--wait-timeout', '120', 'keyonly'])
+            current['objects'] = after
+        return resources, docker, compose, volume
+
+    def test_keyonly_recreate_pins_image_no_deps_and_records_only_public_identity(self):
+        driver = module('fixture')
+        before, after = self.recreate_objects(driver), self.recreate_objects(driver, after=True)
+        calls = []
+        resources, docker, compose, _volume = self.recreate_docker(driver, before, after, calls)
+        state = {'project': 'openlxssh-fixture-61ed25328c13', 'image': 'synthetic-reviewed-base'}
+        probes = [mock.Mock() for _ in range(5)]
+        def released_compose(state, argv):
+            for probe in probes: probe.close.assert_called_once_with()
+            return compose(state, argv)
+        with tempfile.TemporaryDirectory(prefix='openlxssh-recreate-static-') as raw, \
+                mock.patch.object(driver, 'RUNTIME', Path(raw).resolve()), \
+                mock.patch.object(driver, 'resources', side_effect=resources), \
+                mock.patch.object(driver, 'docker', side_effect=docker), \
+                mock.patch.object(driver, 'compose', side_effect=released_compose) as launch, \
+                mock.patch.object(driver.socket, 'socket', side_effect=probes) as sockets, \
+                mock.patch.object(sys, 'stdout', io.StringIO()) as output:
+            driver.recreate_keyonly(state)
+            launch.assert_called_once()
+            self.assertEqual(sockets.call_count, 5)
+            for probe, port in zip(probes, range(22221, 22226)):
+                probe.bind.assert_called_once_with(('127.0.0.1', port))
+                probe.close.assert_called_once_with()
+                probe.listen.assert_not_called()
+            directory, = (Path(raw) / 'keyonly').glob('recreate-*')
+            preflight = json.loads((directory / 'preflight.json').read_text())
+            result = json.loads((directory / 'result.json').read_text())
+            self.assertEqual(preflight['before']['keyonly']['container_id'], '1' * 64)
+            self.assertEqual(preflight['old_fingerprint'], 'SHA256:' + 'A' * 43)
+            self.assertEqual(preflight['data_volume']['Name'], state['project'] + '_key-data')
+            self.assertEqual(result['status'], 'recreated')
+            self.assertEqual(result['after']['keyonly']['container_id'], 'e' * 64)
+            self.assertEqual(result['new_fingerprint'], 'SHA256:' + 'B' * 43)
+            self.assertEqual(result['data_volume'], preflight['data_volume'])
+            for service in driver.SERVICES[1:]:
+                self.assertEqual(result['after'][service], preflight['before'][service])
+            for path in directory.iterdir(): self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertIn(str(directory / 'preflight.json'), output.getvalue())
+            self.assertIn(str(directory / 'result.json'), output.getvalue())
+            recorded = '\n'.join(path.read_text() for path in directory.iterdir())
+            for forbidden in ('PRIVATE KEY', 'password.txt', 'key-passphrase', 'credentials-'):
+                self.assertNotIn(forbidden, recorded)
+        self.assertEqual([command[0] for command in calls].count('compose'), 1)
+        self.assertFalse(any(word in ('down', 'rm', 'build', 'pull', 'generate', 'export')
+                             for command in calls if command[0] != 'compose' for word in command))
+
+    def test_keyonly_recreate_rejects_foreign_identity_privileges_and_mounts_before_compose(self):
+        import copy
+        driver = module('fixture')
+        baseline = self.recreate_objects(driver)
+        changes = [(('Image',), 'sha256:' + 'f' * 64), (('Id',), 'short'),
+                   (('Config', 'Labels', 'com.docker.compose.project'), 'foreign'),
+                   (('Config', 'Labels', 'com.docker.compose.service'), 'passwordonly'),
+                   (('Config', 'Image'), 'unreviewed:tag'), (('Config', 'Cmd'), ['other']),
+                   (('State', 'Running'), False), (('State', 'Health', 'Status'), 'unhealthy'),
+                   (('HostConfig', 'CapAdd'), ['CAP_SYS_ADMIN']),
+                   (('HostConfig', 'CapAdd'), baseline[0]['HostConfig']['CapAdd'] + ['CAP_AUDIT_WRITE']),
+                   (('HostConfig', 'SecurityOpt'), []), (('HostConfig', 'ReadonlyRootfs'), False),
+                   (('HostConfig', 'Privileged'), True), (('HostConfig', 'Memory'), 999),
+                   (('HostConfig', 'Binds'), ['/host:/fixture:rw']),
+                   (('Mounts',), [{'Type': 'bind', 'Destination': '/fixture'}]),
+                   (('NetworkSettings', 'Networks'), {'host': {'NetworkID': 'a' * 64}})]
+        for path, value in changes:
+            before = copy.deepcopy(baseline)
+            node = before[0]
+            for part in path[:-1]: node = node[part]
+            node[path[-1]] = value
+            calls = []
+            resources, docker, _compose, _volume = self.recreate_docker(driver, before, baseline, calls)
+            with self.subTest(field=path, value=value), \
+                    mock.patch.object(driver, 'resources', side_effect=resources), \
+                    mock.patch.object(driver, 'docker', side_effect=docker), \
+                    mock.patch.object(driver, 'compose', side_effect=AssertionError('mutation before validation')), \
+                    mock.patch.object(driver, 'private_dir', side_effect=AssertionError('write before validation')):
+                with self.assertRaises(driver.FixtureError):
+                    driver.recreate_keyonly({'project': 'openlxssh-fixture-61ed25328c13', 'image': 'synthetic-reviewed-base'})
+        with mock.patch.object(driver, 'docker', side_effect=AssertionError('foreign project queried')):
+            with self.assertRaises(driver.FixtureError):
+                driver.recreate_keyonly({'project': 'openlxssh-fixture-abcdef012345'})
+
+    def test_keyonly_recreate_failure_records_incomplete_without_retry_or_cleanup(self):
+        driver = module('fixture')
+        before, after = self.recreate_objects(driver), self.recreate_objects(driver, after=True)
+        for failure in ('compose', 'other-restarted', 'volume-replaced'):
+            calls = []
+            resources, docker, launch, volume = self.recreate_docker(driver, before, after, calls)
+            def compose(state, argv):
+                launch(state, argv)
+                if failure == 'compose': raise driver.FixtureError('synthetic compose failure')
+                if failure == 'other-restarted': after[1]['State']['StartedAt'] = 'restarted'
+                if failure == 'volume-replaced': volume['CreatedAt'] = 'replaced'
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix='openlxssh-recreate-failed-') as raw, \
+                    mock.patch.object(driver, 'RUNTIME', Path(raw).resolve()), \
+                    mock.patch.object(driver, 'resources', side_effect=resources), \
+                    mock.patch.object(driver, 'docker', side_effect=docker), \
+                    mock.patch.object(driver, 'compose', side_effect=compose) as run, \
+                    mock.patch.object(driver.socket, 'socket'), \
+                    mock.patch.object(sys, 'stdout', io.StringIO()):
+                with self.assertRaises(driver.FixtureError):
+                    driver.recreate_keyonly({'project': 'openlxssh-fixture-61ed25328c13', 'image': 'synthetic-reviewed-base'})
+                run.assert_called_once()
+                path, = (Path(raw) / 'keyonly').glob('recreate-*/result.json')
+                record = json.loads(path.read_text())
+                self.assertEqual(record['status'], 'incomplete')
+                self.assertEqual(record['failed_stage'], 'compose' if failure == 'compose' else 'postcheck')
+                self.assertEqual(record['error_class'], 'FixtureError')
+                self.assertNotIn('synthetic compose failure', path.read_text())
+            after[1]['State']['StartedAt'] = 'synthetic-start'
+
+    def test_keyonly_recreate_idle_gate_refuses_listener_or_owned_sessions_before_mutation(self):
+        driver = module('fixture')
+        compile(driver.PUBLIC_KEYONLY_FINGERPRINT, '<public-fingerprint>', 'exec')
+        compile(driver.PUBLIC_IDLE_COUNTS, '<public-idle-counts>', 'exec')
+        for counts in ({'user_processes': 0, 'sshd_children': 1},
+                       {'user_processes': 1, 'sshd_children': 0}, {},
+                       {'user_processes': False, 'sshd_children': 0}):
+            with self.subTest(counts=counts), self.assertRaises(driver.FixtureError):
+                driver.validate_idle_counts(counts)
+        objects = {item['Config']['Labels']['com.docker.compose.service']: item
+                   for item in self.recreate_objects(driver)}
+        for stage in ('port', 'session'):
+            with self.subTest(stage=stage), mock.patch.object(driver.socket, 'socket') as sockets, \
+                    mock.patch.object(driver, 'docker', return_value=b'{"user_processes":1,"sshd_children":0}') as docker:
+                if stage == 'port': sockets.return_value.bind.side_effect = OSError('occupied')
+                with self.assertRaises(driver.FixtureError):
+                    with driver.keyonly_recreate_idle(objects): self.fail('idle gate accepted active resource')
+                self.assertTrue(sockets.return_value.close.called)
+                if stage == 'port': docker.assert_not_called()
+
+    def test_keyonly_recreate_entire_path_is_bounded_endpoint_pinned_and_restored(self):
+        import relay
+        driver = module('fixture')
+        original = driver.docker_cli
+        project = 'openlxssh-fixture-61ed25328c13'
+        endpoint = 'unix:///tmp/static-docker.sock'
+        calls = []
+        def metadata(command, environment, deadline, cancelled):
+            calls.append((command, environment, deadline, cancelled))
+            if command[-2:] == ['context', 'show']: return b'desktop-linux\n'
+            if command[-3:] == ['context', 'inspect', 'desktop-linux']:
+                return json.dumps([{'Name': 'desktop-linux', 'Endpoints': {'docker': {'Host': endpoint}}}]).encode()
+            self.assertEqual(command[:3], ['/usr/bin/true', '--host', endpoint])
+            return b'[]'
+        def recreate(_state): driver.docker(['inspect', '1' * 64], capture=True)
+        with mock.patch.object(driver, 'load_state', return_value={'project': project, 'image': 'synthetic-base'}), \
+                mock.patch.object(driver, 'recreate_keyonly', side_effect=recreate), \
+                mock.patch.object(driver.shutil, 'which', return_value='/usr/bin/true'), \
+                mock.patch.object(relay, '_bounded_stdout', side_effect=metadata), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            driver.run_keyonly_recreate()
+        self.assertIs(driver.docker_cli, original)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len({call[2] for call in calls}), 1)
+        self.assertTrue(all(call[3] is calls[0][3] for call in calls))
+        self.assertTrue(all(not key.startswith('DOCKER_') for key in calls[-1][1]))
+        with mock.patch.object(driver, 'load_state', return_value={'project': project, 'image': 'synthetic-base'}), \
+                mock.patch.object(driver.shutil, 'which', return_value='/usr/bin/true'), \
+                mock.patch.object(relay, '_bounded_stdout', side_effect=relay.RelayError('expired')), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(driver.FixtureError): driver.run_keyonly_recreate()
+        self.assertIs(driver.docker_cli, original)
+
     def test_runtime_permissions_exclusive_and_symlink_boundary(self):
         driver = module('fixture')
         with tempfile.TemporaryDirectory(prefix='openlxssh-fixture-static-') as raw:
@@ -671,6 +942,9 @@ exec(compile(code,'<exact-private-reader>','exec'),{'__name__':'__main__'})
             self.assertTrue(item['read_only'])
             self.assertEqual(item['platform'], 'linux/arm64')
             self.assertEqual(item['cap_drop'], ['ALL'])
+            expected_caps = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SYS_CHROOT', 'KILL']
+            if service == 'keyonly': expected_caps.append('AUDIT_WRITE')
+            self.assertEqual(item['cap_add'], expected_caps)
             self.assertNotIn('SYS_ADMIN', item['cap_add'])
             self.assertNotIn('NET_ADMIN', item['cap_add'])
             self.assertEqual(item['security_opt'], ['no-new-privileges:true'])

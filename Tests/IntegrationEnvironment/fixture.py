@@ -10,6 +10,7 @@ import re
 import secrets
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -27,7 +28,10 @@ DIGEST_RE = re.compile(r'^docker\.io/library/ubuntu:24\.04@sha256:[0-9a-f]{64}$'
 PROJECT_RE = re.compile(r'^openlxssh-fixture-[0-9a-f]{12}$')
 SESSION_RE = re.compile(r'^[0-9a-f]{24}$')
 ACTIONS = ('build', 'up', 'stop', 'remove', 'collect', 'scenario', 'rotate-host',
-           'challenge', 'data', 'disconnect', 'start', 'inspect', 'relay')
+           'challenge', 'data', 'disconnect', 'start', 'inspect', 'relay', 'recreate-keyonly')
+BASE_CAPABILITIES = ('CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SYS_CHROOT', 'KILL')
+KEYONLY_RECREATE_PROJECT = 'openlxssh-fixture-61ed25328c13'
+KEYONLY_RECREATE_IMAGE = 'sha256:7f633d33bf5af2fbee137385eba3e036ef7bbbcf18fe423d99b25be12d12a363'
 LOCAL_CONTEXTS = ('default', 'desktop-linux')
 VERIFIED_CONTEXT = None
 VERIFIED_ENDPOINT = None
@@ -277,6 +281,290 @@ def verify_image(state, reference):
     if (labels.get(LABEL) != LABEL_VALUE or labels.get('org.openlxssh.fixture.base') != state['image']
             or item.get('Architecture') != 'arm64'):
         raise FixtureError('built image does not match the reviewed base/platform')
+    return item
+
+
+def validate_capabilities(host, service, *, legacy_keyonly=False):
+    if service not in SERVICES:
+        raise FixtureError('unknown root fixture service')
+    expected = set(BASE_CAPABILITIES)
+    if service == 'keyonly' and not legacy_keyonly:
+        expected.add('AUDIT_WRITE')
+    values = host.get('CapAdd')
+    if (not isinstance(values, list) or any(not isinstance(value, str) for value in values)
+            or host.get('CapDrop') != ['ALL']):
+        raise FixtureError('fixture capability metadata refused')
+    normalized = [value[4:] if value.startswith('CAP_') else value for value in values]
+    if len(normalized) != len(expected) or set(normalized) != expected:
+        raise FixtureError('fixture requires the exact service capability set')
+
+
+# Only public host-key material, never server export/metadata.json or client keys.
+PUBLIC_KEYONLY_FINGERPRINT = r'''
+import base64,hashlib,os,re,stat
+folder=os.open('/run/openlxssh-fixture',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+    fd=os.open('host_known_hosts',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=folder)
+    try:
+        before=os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid!=0 or before.st_nlink!=1
+                or stat.S_IMODE(before.st_mode)!=0o600 or not 0<before.st_size<1024):
+            raise SystemExit(65)
+        data=os.read(fd,1024)
+        after=os.fstat(fd)
+        identity=lambda info:(info.st_dev,info.st_ino,info.st_uid,info.st_mode,info.st_nlink,
+                              info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        if identity(before)!=identity(after) or len(data)!=before.st_size: raise SystemExit(65)
+    finally: os.close(fd)
+finally: os.close(folder)
+match=re.fullmatch(rb'\[127\.0\.0\.1\]:22221 ssh-ed25519 ([A-Za-z0-9+/=]+)\n',data)
+if match is None: raise SystemExit(65)
+blob=base64.b64decode(match[1],validate=True)
+if len(blob)!=51 or blob[:19]!=b'\0\0\0\x0bssh-ed25519\0\0\0 ': raise SystemExit(65)
+print('SHA256:'+base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('='))
+'''
+
+
+def keyonly_fingerprint(identifier):
+    raw = docker(['exec', '--user', '0:0', identifier, '/usr/bin/python3', '-c',
+                  PUBLIC_KEYONLY_FINGERPRINT], capture=True)
+    if not re.fullmatch(rb'SHA256:[A-Za-z0-9+/]{43}\n', raw):
+        raise FixtureError('public keyonly fingerprint refused')
+    return raw.decode().strip()
+
+
+def keyonly_recreate_snapshot(state, *, before):
+    identifiers = resources(state, 'container')
+    volumes = resources(state, 'volume')
+    networks = resources(state, 'network')
+    volume_keys = ('key-data', 'password-data', 'key-kbd-data', 'password-kbd-data')
+    if (len(identifiers) != 4 or len(networks) != 1
+            or set(volumes) != {state['project'] + '_' + key for key in volume_keys}):
+        raise FixtureError('recreate requires the existing four-service project')
+    objects = json.loads(docker(['inspect'] + identifiers, capture=True))
+    if len(objects) != 4:
+        raise FixtureError('incomplete recreate container batch')
+    found = {}
+    network_ids = set()
+    for item in objects:
+        labels = item['Config'].get('Labels') or {}
+        service = labels.get('com.docker.compose.service')
+        identifier = item['Id']
+        if (service not in SERVICES or service in found or not re.fullmatch(r'[0-9a-f]{64}', identifier)
+                or sum(identifier.startswith(short) for short in identifiers
+                       if re.fullmatch(r'[0-9a-f]{12,64}', short)) != 1
+                or item['Image'] != KEYONLY_RECREATE_IMAGE
+                or item['Config'].get('Image') not in (IMAGE, KEYONLY_RECREATE_IMAGE)
+                or item['Config'].get('Entrypoint') != ['python3', '/opt/openlxssh-fixture/server.py']
+                or item['Config'].get('Cmd') != ['serve', '--authorized-run', '--mode', service]
+                or labels.get(LABEL) != LABEL_VALUE or labels.get('com.docker.compose.project') != state['project']
+                or item['Name'] != '/' + state['project'] + '-' + service + '-1'
+                or item['State']['Running'] is not True or item['State'].get('Health', {}).get('Status') != 'healthy'):
+            raise FixtureError('recreate container identity/state refused')
+        host = item['HostConfig']
+        validate_capabilities(host, service, legacy_keyonly=before)
+        index = SERVICES.index(service)
+        volume_name = state['project'] + '_' + volume_keys[index]
+        network_name = state['project'] + '_fixture'
+        expected = {'ReadonlyRootfs': True, 'Privileged': False, 'Init': True,
+                    'Memory': 402653184, 'MemorySwap': 402653184, 'NanoCpus': 500000000, 'PidsLimit': 128,
+                    'Ulimits': [{'Name': 'nofile', 'Soft': 1024, 'Hard': 1024}],
+                    'Tmpfs': {'/run': 'rw,nosuid,nodev,noexec,size=96m,mode=0755',
+                              '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777'},
+                    'LogConfig': {'Type': 'none', 'Config': {}}, 'NetworkMode': network_name,
+                    'Binds': [volume_name + ':/fixture:rw'],
+                    'RestartPolicy': {'Name': 'no', 'MaximumRetryCount': 0},
+                    'PortBindings': {'2222/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(22221 + index)}]}}
+        if (any(host.get(key) != value for key, value in expected.items())
+                or host.get('SecurityOpt') not in (['no-new-privileges:true'], ['no-new-privileges'])
+                or any(host.get(key) for key in ('Devices', 'DeviceRequests', 'VolumesFrom', 'PidMode',
+                                                'UTSMode', 'UsernsMode', 'PublishAllPorts'))
+                or host.get('IpcMode', 'private') != 'private'):
+            raise FixtureError('recreate container confinement refused')
+        mounts = item['Mounts']
+        if (len(mounts) != 1 or mounts[0].get('Type') != 'volume' or mounts[0].get('Name') != volume_name
+                or mounts[0].get('Destination') != '/fixture' or mounts[0].get('Driver') != 'local'
+                or mounts[0].get('RW') is not True):
+            raise FixtureError('recreate must retain the existing named data volume')
+        attached = item['NetworkSettings']['Networks']
+        if set(attached) != {network_name} or not re.fullmatch(r'[0-9a-f]{64}', attached[network_name]['NetworkID']):
+            raise FixtureError('recreate internal network identity refused')
+        network_ids.add(attached[network_name]['NetworkID'])
+        found[service] = item
+    if (len(network_ids) != 1 or len({item['Id'] for item in objects}) != 4
+            or any(sum(item['Id'].startswith(short) for item in objects) != 1 for short in identifiers)):
+        raise FixtureError('ambiguous recreate container/network identities')
+    network_id, = network_ids
+    if not network_id.startswith(networks[0]):
+        raise FixtureError('recreate network ownership mismatch')
+    network, = json.loads(docker(['network', 'inspect', network_id], capture=True))
+    if (network['Id'] != network_id or network['Name'] != state['project'] + '_fixture'
+            or network['Internal'] is not True or network['Driver'] != 'bridge'
+            or network['Labels'].get(LABEL) != LABEL_VALUE
+            or network['Labels'].get('com.docker.compose.project') != state['project']
+            or set(network['Containers']) != {item['Id'] for item in objects}):
+        raise FixtureError('recreate requires the unchanged owned internal bridge')
+    volume, = json.loads(docker(['volume', 'inspect', state['project'] + '_key-data'], capture=True))
+    if (volume.get('Name') != state['project'] + '_key-data' or volume.get('Driver') != 'local'
+            or volume.get('Scope') != 'local' or volume.get('Options') not in (None, {})
+            or volume['Labels'].get(LABEL) != LABEL_VALUE
+            or volume['Labels'].get('com.docker.compose.project') != state['project']
+            or volume['Labels'].get('com.docker.compose.volume') != 'key-data'):
+        raise FixtureError('recreate named volume ownership/driver refused')
+    return found, network_id, volume
+
+
+def recreate_identities(objects):
+    return {service: {'container_id': item['Id'], 'image_id': item['Image'],
+                      'started_at': item['State']['StartedAt'],
+                      'data_volume': item['Mounts'][0]['Name'],
+                      'cap_add': sorted(value[4:] if value.startswith('CAP_') else value
+                                        for value in item['HostConfig']['CapAdd'])}
+            for service, item in objects.items()}
+
+
+# Exact-container /proc metadata only: counts, no argv, session output or secrets.
+PUBLIC_IDLE_COUNTS = r'''
+import json,os,re
+from pathlib import Path
+master=int(Path('/run/openlxssh-fixture/sshd.pid').read_text())
+if Path('/proc',str(master),'comm').read_text().strip()!='sshd': raise SystemExit(65)
+counts={'user_processes':0,'sshd_children':0}
+for folder in Path('/proc').iterdir():
+    if not re.fullmatch(r'[0-9]+',folder.name): continue
+    try:
+        status=(folder/'status').read_text()
+        name=(folder/'comm').read_text().strip()
+    except FileNotFoundError: continue
+    uid=re.search(r'^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$',status,re.M)
+    if uid is None: raise SystemExit(65)
+    if 10000 in map(int,uid.groups()): counts['user_processes']+=1
+    if name=='sshd' and int(folder.name)!=master: counts['sshd_children']+=1
+print(json.dumps(counts))
+'''
+
+
+def validate_idle_counts(counts):
+    if (not isinstance(counts, dict) or set(counts) != {'user_processes', 'sshd_children'}
+            or any(type(value) is not int or value != 0 for value in counts.values())):
+        raise FixtureError('recreate requires no active fixture sessions/test processes')
+
+
+@contextlib.contextmanager
+def keyonly_recreate_idle(objects):
+    # Reserve only the five approved fixed loopbacks, WITHOUT listen/connect.
+    # An active relay/listener refuses the action. Reservations cover preflight
+    # only; release every socket before Compose requests its published ports.
+    with contextlib.ExitStack() as cleanup:
+        for port in range(22221, 22226):
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cleanup.callback(probe.close)
+            try:
+                probe.bind(('127.0.0.1', port))
+            except OSError:
+                raise FixtureError('stop the exact managed relay/listener before keyonly recreate') from None
+        counts = {}
+        for service in SERVICES:
+            raw = docker(['exec', '--user', '0:0', objects[service]['Id'], '/usr/bin/python3', '-c',
+                          PUBLIC_IDLE_COUNTS], capture=True)
+            counts[service] = json.loads(raw)
+            validate_idle_counts(counts[service])
+        yield counts
+
+
+def recreate_keyonly(state):
+    # Deliberately a one-campaign action, never a general service selector or up alias.
+    if state.get('project') != KEYONLY_RECREATE_PROJECT:
+        raise FixtureError('keyonly recreate is restricted to the reviewed existing project')
+    if verify_image(state, KEYONLY_RECREATE_IMAGE).get('Id') != KEYONLY_RECREATE_IMAGE:
+        raise FixtureError('keyonly recreate image identity differs')
+    old, network_id, volume = keyonly_recreate_snapshot(state, before=True)
+    with keyonly_recreate_idle(old) as idle:
+        pass
+    apply_keyonly_recreate(state, old, network_id, volume, idle)
+
+
+def apply_keyonly_recreate(state, old, network_id, volume, idle):
+    old_fingerprint = keyonly_fingerprint(old['keyonly']['Id'])
+    private_dir(RUNTIME / 'keyonly')
+    directory = RUNTIME / 'keyonly' / ('recreate-' + secrets.token_hex(6))
+    private_dir(directory)
+    preflight = {'project': state['project'], 'image_id': KEYONLY_RECREATE_IMAGE, 'network_id': network_id,
+                 'before': recreate_identities(old), 'old_fingerprint': old_fingerprint, 'data_volume': volume,
+                 'idle_counts': idle, 'preflight_reserved_not_listening_ports': list(range(22221, 22226)),
+                 'ports_released_before_compose': True,
+                 'ephemeral_identity_changes_expected': True, 'old_secrets_preserved': False}
+    private_write(directory / 'preflight.json', json.dumps(preflight, indent=2) + '\n')
+    # The private, fixed overlay prevents tag races without changing shared Compose image/build semantics.
+    pin = directory / 'compose-pin.json'
+    private_write(pin, json.dumps({'services': {'keyonly': {'image': KEYONLY_RECREATE_IMAGE}}}) + '\n')
+    print('Public preflight: ' + str(directory / 'preflight.json') +
+          '; keyonly CID/host key/client keys will change; old secrets are NOT preserved.', flush=True)
+    result = {'status': 'incomplete', 'preflight': str(directory / 'preflight.json')}
+    stage = 'compose'
+    try:
+        compose(state, ['--file', str(pin), 'up', '-d', '--no-deps', '--force-recreate', '--no-build',
+                        '--pull', 'never', '--wait', '--wait-timeout', '120', 'keyonly'])
+        stage = 'postcheck'
+        new, new_network_id, new_volume = keyonly_recreate_snapshot(state, before=False)
+        if new_network_id != network_id or new_volume != volume or new['keyonly']['Mounts'] != old['keyonly']['Mounts']:
+            raise FixtureError('recreate changed the existing network/data volume')
+        for service in SERVICES[1:]:
+            for field in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts'):
+                if new[service][field] != old[service][field]:
+                    raise FixtureError('another fixture service changed during keyonly recreate')
+            if new[service]['State']['StartedAt'] != old[service]['State']['StartedAt']:
+                raise FixtureError('another fixture service restarted during keyonly recreate')
+        new_fingerprint = keyonly_fingerprint(new['keyonly']['Id'])
+        if new['keyonly']['Id'] == old['keyonly']['Id'] or new_fingerprint == old_fingerprint:
+            raise FixtureError('keyonly recreate did not create the expected new identity')
+        result.update(status='recreated', after=recreate_identities(new), new_fingerprint=new_fingerprint,
+                      data_volume=new_volume, network_id=new_network_id)
+    except BaseException as error:
+        result.update(failed_stage=stage, error_class='cancelled' if isinstance(error, (KeyboardInterrupt, SystemExit))
+                      else 'FixtureError' if isinstance(error, FixtureError) else 'operation-error')
+        raise
+    finally:
+        private_write(directory / 'result.json', json.dumps(result, indent=2) + '\n')
+        print('Public recreate result: ' + str(directory / 'result.json'), flush=True)
+
+
+def run_keyonly_recreate():
+    from relay import _bounded_stdout
+    import threading
+    deadline = time.monotonic() + 300.0
+    cancelled = threading.Event()
+    executable = shutil.which('docker', path=os.environ.get('PATH', os.defpath))
+    if executable is None:
+        raise FixtureError('local Docker CLI unavailable')
+    executable = str(Path(executable).resolve(strict=True))
+    original_cli = globals()['docker_cli']
+    prior = {signum: signal.signal(signum, lambda *_args: cancelled.set())
+             for signum in (signal.SIGINT, signal.SIGTERM)}
+    def bounded_cli(argv, input_data=None, capture=False, context=None):
+        if input_data is not None or context not in (None,) + LOCAL_CONTEXTS:
+            raise FixtureError('invalid recreate Docker route/input')
+        environment = docker_environment(context)
+        environment.pop('DOCKER_CONTEXT', None)
+        if argv in (['context', 'show'], ['context', 'inspect', context]):
+            command = [executable] + (['--context', context] if context else []) + argv
+        else:
+            if VERIFIED_ENDPOINT is None:
+                raise FixtureError('recreate endpoint not verified')
+            command = [executable, '--host', local_endpoint(VERIFIED_ENDPOINT)] + argv
+        try:
+            return _bounded_stdout(command, environment, deadline, cancelled)
+        except Exception:
+            raise FixtureError('bounded keyonly recreate failed; inspect public result before any retry') from None
+    globals()['docker_cli'] = bounded_cli
+    try:
+        state = load_state()
+        require_local_engine()
+        recreate_keyonly(state)
+    finally:
+        globals()['docker_cli'] = original_cli
+        for signum, handler in prior.items():
+            signal.signal(signum, handler)
 
 
 def validate_ownership(state):
@@ -589,6 +877,8 @@ def main():
     parser.add_argument('--authorized-run', action='store_true',
                         help='safety acknowledgement only; prior user authorization is still required')
     parser.add_argument('--service', choices=SERVICES)
+    parser.add_argument('--manager-authorized-keyonly-recreate', action='store_true',
+                        help='separate primary source-review/runtime release; only with recreate-keyonly')
     parser.add_argument('--scenario', choices=SCENARIOS)
     parser.add_argument('--delay', type=int, default=8)
     parser.add_argument('--session')
@@ -608,7 +898,15 @@ def main():
         parser.error('max-duration must be 1..90000 seconds')
     if args.action == 'relay' and args.service is not None:
         parser.error('root relay always uses exactly the four fixed services')
+    if args.action == 'recreate-keyonly':
+        if not args.manager_authorized_keyonly_recreate or args.service is not None:
+            parser.error('recreate-keyonly requires separate manager authorization and no service selector')
+    elif args.manager_authorized_keyonly_recreate:
+        parser.error('manager recreate acknowledgement is only valid with recreate-keyonly')
     os.umask(0o077)
+    if args.action == 'recreate-keyonly':
+        run_keyonly_recreate()
+        return 0
     if args.action == 'relay':
         try:
             run_relay(args.max_duration)

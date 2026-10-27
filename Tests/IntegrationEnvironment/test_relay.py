@@ -244,6 +244,9 @@ class OfflineTests(unittest.TestCase):
                                      'com.docker.compose.service': frozen.service,
                                      'org.openlxssh.fixture': frozen.fixture_label_value}},
                            'HostConfig': {'ReadonlyRootfs': True, 'Privileged': False, 'NetworkMode': 'private',
+                                          'CapAdd': ['CAP_' + name for name in
+                                              ('CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID',
+                                               'SYS_CHROOT', 'KILL', 'AUDIT_WRITE')], 'CapDrop': ['ALL'],
                                           'LogConfig': {'Type': 'none'},
                                           'PortBindings': {'2222/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '22221'}]}},
                            'State': {'Running': True, 'Health': {'Status': 'healthy'}},
@@ -298,6 +301,53 @@ class OfflineTests(unittest.TestCase):
             node[path[-1]] = value
             with self.subTest(kind=kind, field=path), self.assertRaises(relay.RelayError):
                 self.validate_objects(objects)
+
+    def test_exact_service_capabilities_reject_missing_extra_and_foreign_privilege(self):
+        import copy
+        original = target
+        for service in fixture.SERVICES:
+            frozen = original(service)
+            objects = self.metadata_objects()
+            item = objects['container'][0]
+            item['Config']['Labels']['com.docker.compose.service'] = service
+            item['HostConfig']['PortBindings']['2222/tcp'][0]['HostPort'] = str(frozen.host_port)
+            if service != 'keyonly': item['HostConfig']['CapAdd'].remove('CAP_AUDIT_WRITE')
+            with self.subTest(service=service), mock.patch(__name__ + '.target', return_value=frozen):
+                self.validate_objects(objects)
+                for capability in list(item['HostConfig']['CapAdd']):
+                    invalid = copy.deepcopy(objects)
+                    invalid['container'][0]['HostConfig']['CapAdd'].remove(capability)
+                    with self.subTest(missing=capability), self.assertRaises(relay.RelayError):
+                        self.validate_objects(invalid)
+                for extra in ('AUDIT_CONTROL', 'AUDIT_READ', 'SYS_ADMIN', 'NET_ADMIN', 'SYS_TTY_CONFIG',
+                              'CHOWN', 'AUDIT_WRITE'):
+                    invalid = copy.deepcopy(objects)
+                    invalid['container'][0]['HostConfig']['CapAdd'].append('CAP_' + extra)
+                    with self.subTest(extra=extra), self.assertRaises(relay.RelayError):
+                        self.validate_objects(invalid)
+                for drop in ([], ['CHOWN'], ['ALL', 'NET_ADMIN']):
+                    invalid = copy.deepcopy(objects)
+                    invalid['container'][0]['HostConfig']['CapDrop'] = drop
+                    with self.subTest(drop=drop), self.assertRaises(relay.RelayError):
+                        self.validate_objects(invalid)
+                # Both Docker spellings are accepted, never a capability subset.
+                plain = copy.deepcopy(objects)
+                plain['container'][0]['HostConfig']['CapAdd'] = [value[4:] for value in item['HostConfig']['CapAdd']]
+                self.validate_objects(plain)
+        mina = replace(original(), project='openlxssh-mina-012345abcdef', service='multiprompt',
+                       fixture_label_value='auth-mina-fixture-a', host_port=22225)
+        objects = self.metadata_objects()
+        objects['container'][0]['Config']['Labels'].update({'com.docker.compose.project': mina.project,
+            'com.docker.compose.service': mina.service, 'org.openlxssh.fixture': mina.fixture_label_value})
+        objects['container'][0]['HostConfig']['CapAdd'] = None
+        objects['container'][0]['HostConfig']['PortBindings']['2222/tcp'][0]['HostPort'] = '22225'
+        objects['image'][0]['Config']['Labels']['org.openlxssh.fixture'] = mina.fixture_label_value
+        objects['network'][0]['Labels'].update({'com.docker.compose.project': mina.project,
+                                               'org.openlxssh.fixture': mina.fixture_label_value})
+        with mock.patch(__name__ + '.target', return_value=mina):
+            self.validate_objects(objects)
+            objects['container'][0]['HostConfig']['CapAdd'] = ['CAP_AUDIT_WRITE']
+            with self.assertRaises(relay.RelayError): self.validate_objects(objects)
 
     def test_parallel_metadata_is_fresh_same_deadline_and_joins_failures(self):
         objects = self.metadata_objects()

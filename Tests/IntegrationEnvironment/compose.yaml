@@ -42,6 +42,8 @@ x-server: &server
 services:
   keyonly:
     <<: *server
+    # Fixed-image A/B isolated AUDIT_WRITE bit29 as the missing PTY audit write.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL, AUDIT_WRITE]
     command: [serve, --authorized-run, --mode, keyonly]
     ports:
       - "127.0.0.1:22221:2222"
