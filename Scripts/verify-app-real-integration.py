@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent offline App-real source/test/build checkpoint. NO live action.
+"""Independent offline native read-only/transfer-phase source/test/build checkpoint. NO live action.
 
 Default/help/validate performs no file/subprocess/network I/O. 'build' copies cached
 SPM material into its own DerivedData UUID, uses automatic resolution OFF, runs App
@@ -38,20 +38,28 @@ def save(path, value):
         json.dump(value, stream, indent=2, sort_keys=True); stream.write('\n')
 
 
-def build():
+def build(reuse_diagnostic=False):
     os.umask(0o077)
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     if BASE.resolve() != BASE or stat.S_IMODE(BASE.stat().st_mode) != 0o700:
         raise ValueError('unsafeIndependentRoot')
-    work = BASE / ('offline-' + str(uuid.uuid4()))
-    work.mkdir(mode=0o700)
-    for name in ('home', 'tmp', 'logs', 'module-cache', 'clang-cache', 'SourcePackages'):
-        (work / name).mkdir(mode=0o700)
+    if reuse_diagnostic:
+        tree = BASE / 'offline-853dd2e8-feff-4491-bc00-cf97bedfbfe4'
+        prior = json.loads((tree / 'result.json').read_bytes())
+        if prior['status'] != 'passed-source-offline-only-no-live': raise ValueError('invalidOwnedReuseBaseline')
+        work = tree / ('diagnostic-' + str(uuid.uuid4()))
+        work.mkdir(mode=0o700)
+        for name in ('home', 'tmp', 'logs', 'module-cache', 'clang-cache'): (work / name).mkdir(mode=0o700)
+    else:
+        work = BASE / ('offline-' + str(uuid.uuid4()))
+        work.mkdir(mode=0o700)
+        for name in ('home', 'tmp', 'logs', 'module-cache', 'clang-cache', 'SourcePackages'): (work / name).mkdir(mode=0o700)
+        tree = work
     print('Independent App-real offline checkpoint: ' + str(work), flush=True)
     env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': str(work / 'home'), 'LANG': 'C', 'LC_ALL': 'C',
            'TMPDIR': str(work / 'tmp') + '/', 'CLANG_MODULE_CACHE_PATH': str(work / 'clang-cache'),
            'SWIFTPM_MODULECACHE_OVERRIDE': str(work / 'module-cache'), 'PYTHONDONTWRITEBYTECODE': '1', 'GIT_OPTIONAL_LOCKS': '0'}
-    record = {'taskID': 'APP-REAL-KEYONLY-PREP-A', 'liveExecuted': False, 'fixtureRead': False, 'dockerInvoked': False,
+    record = {'taskID': 'APP-TRANSFER-DIAGNOSTIC-R1' if reuse_diagnostic else 'APP-REAL-TRANSFER-PREP-A', 'liveExecuted': False, 'fixtureRead': False, 'dockerInvoked': False,
               'resolutionRequested': False, 'status': 'building', 'startedAt': time.time()}
     commands = []
     inputs = [ROOT / 'OpenLXSSH.xcodeproj/project.pbxproj', ROOT / 'OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved',
@@ -86,23 +94,26 @@ def build():
         for relative, expected in manifest['outputs'].items():
             if sha(NATIVE / relative) != expected: raise ValueError('nativeManifestChanged')
         record['nativeOutputsChecked'] = len(manifest['outputs'])
-        for name in ('checkouts', 'repositories', 'artifacts'):
-            shutil.copytree(CACHED / name, work / 'SourcePackages' / name, symlinks=True)
-        # Copy workspace metadata but rewrite ONLY its copied absolute checkout locations if present.
-        workspace = (CACHED / 'workspace-state.json').read_text().replace(str(CACHED), str(work / 'SourcePackages'))
-        (work / 'SourcePackages/workspace-state.json').write_text(workspace)
-        shutil.copyfile(ROOT / 'OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', work / 'Package.resolved.before')
-        plugin = work / 'SourcePackages/checkouts'
+        if not reuse_diagnostic:
+            for name in ('checkouts', 'repositories', 'artifacts'):
+                shutil.copytree(CACHED / name, tree / 'SourcePackages' / name, symlinks=True)
+            workspace = (CACHED / 'workspace-state.json').read_text().replace(str(CACHED), str(tree / 'SourcePackages'))
+            (tree / 'SourcePackages/workspace-state.json').write_text(workspace)
+            shutil.copyfile(ROOT / 'OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', work / 'Package.resolved.before')
+        else:
+            record['reusedPrivateDerivedData'] = str(tree)
+            record['reusedPriorShippingMin26Evidence'] = str(tree / 'result.json')
+        plugin = tree / 'SourcePackages/checkouts'
         run('private-checkout-gate', [sys.executable, '-B', ROOT / 'Scripts/verify-build-plugin.py', plugin])
-        for configuration in ('HostProbe', 'Debug', 'Release'):
+        for configuration in (('HostProbe',) if reuse_diagnostic else ('HostProbe', 'Debug', 'Release')):
             common = ['/usr/bin/xcodebuild', '-project', ROOT / 'OpenLXSSH.xcodeproj', '-scheme', 'OpenLXSSH-HostProbe' if configuration == 'HostProbe' else 'OpenLXSSH',
-                '-configuration', configuration, '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', work / configuration,
-                '-clonedSourcePackagesDirPath', work / 'SourcePackages', '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile',
+                '-configuration', configuration, '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', tree / configuration,
+                '-clonedSourcePackagesDirPath', tree / 'SourcePackages', '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile',
                 '-skipPackageUpdates', '-skipPackagePluginValidation', '-disablePackageRepositoryCache',
                 'CODE_SIGNING_ALLOWED=NO', 'ARCHS=arm64', 'ONLY_ACTIVE_ARCH=YES',
                 'MACOSX_DEPLOYMENT_TARGET=' + ('15.0' if configuration == 'HostProbe' else '26.0')]
             run(configuration + '-build', common + ['build-for-testing' if configuration == 'HostProbe' else 'build'], configuration)
-            app = work / configuration / 'Build/Products' / configuration / 'OpenLXSSH.app'
+            app = tree / configuration / 'Build/Products' / configuration / 'OpenLXSSH.app'
             binary = app / 'Contents/MacOS/OpenLXSSH'
             load = run(configuration + '-vtool', ['/usr/bin/xcrun', 'vtool', '-show-build', binary]).decode()
             if not re.search(r'minos\s+' + ('15.0' if configuration == 'HostProbe' else '26.0'), load): raise ValueError('minimumOSMismatch')
@@ -116,7 +127,7 @@ def build():
         helper_digest = sha(helper)
         if 'minos 15.0' not in run('cached-helper-vtool', ['/usr/bin/xcrun', 'vtool', '-show-build', helper]).decode():
             raise ValueError('helperNotHost15')
-        app = work / 'HostProbe/Build/Products/HostProbe/OpenLXSSH.app'
+        app = tree / 'HostProbe/Build/Products/HostProbe/OpenLXSSH.app'
         (app / 'Contents/Helpers').mkdir(mode=0o700, exist_ok=True)
         shutil.copyfile(helper, app / 'Contents/Helpers/openlxssh-askpass'); (app / 'Contents/Helpers/openlxssh-askpass').chmod(0o700)
         for path in (ROOT / 'Packages/OpenLXSSHTransport/ThirdPartyNotices').iterdir(): shutil.copyfile(path, app / 'Contents/Resources' / path.name)
@@ -164,11 +175,11 @@ def build():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('help', 'validate', 'build'), nargs='?', default='help')
+    parser.add_argument('action', choices=('help', 'validate', 'build', 'diagnostic'), nargs='?', default='help')
     args = parser.parse_args(argv)
     if args.action == 'help': parser.print_help(); return 0
     if args.action == 'validate': print('Offline command recipe syntax only; no filesystem/network work.'); return 0
-    return build()
+    return build(reuse_diagnostic=args.action == 'diagnostic')
 
 
 if __name__ == '__main__':

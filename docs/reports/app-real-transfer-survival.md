@@ -1,6 +1,6 @@
 # 原生真实上传跨标签关闭：首案失败检查点
 
-日期2026-10-27，Task APP-REAL-TRANSFER-PREP-A / LIVE-A。**首个真实16MiB phase失败，不能证明关闭SSH/隐藏面板后传输继续。** 已保留原报告与精确残留账本，正在仅补封闭阶段元数据定位；未放宽生产或测试进度门。
+日期2026-10-27，Task APP-REAL-TRANSFER-PREP-A / LIVE-A / APP-TRANSFER-DIAGNOSTIC-R1。**两个真实16MiB phase均失败，不能证明关闭SSH/隐藏面板后传输继续。** 第二案已定位SSH在动作之前失败，原失败及远端、本地精确恢复证据均保留，相关源码冻结；未放宽生产或测试进度门。
 
 ## 已审实现与准备证据
 
@@ -59,8 +59,33 @@
 
 原probe已清成功，但其临时目录名未serialize，不事后重建或扫描未知项。
 
-## 后续诊断边界
+## 阶段诊断R1与第二个真实新案
 
-只新增封闭stage标签与最多8个纯metadata任务快照，记录具体firstjob/tempcount/preclose/prehide/finalstate/cleanup守卫、实际state/bytes、身份与已知风险路径；无rawerror/terminal/secret/privatekeyhash，不改变断言、伪慢速/伪进度或生产P6代码。原ae16结果不覆盖，不自动重跑。诊断源码/离线审后，由主管决定新案验证。
+窄R1增加封闭stage/guard标签及最多8条纯metadata任务快照，unknown路径不导出，无rawerror/terminal/secret/privatehash；所有原inflight/身份/生产probe门不改。主管读四文件，独立118tests（原116+2）/49sourcehash/14命令及strictDevelopment通过。复用私有853树做受影响HostProbe build/tests/sign，不重建正式Debug/Release，原min26证据另引用。
+
+当前同App路径已是R1主程序SHA256 `296eed8a48b6de619a9e309b4b9fd03719657148161090cf1f9068bf82c22f41`、helper `c70ad333b9fd822d95c4c86f5cc6b2ba50d946f230e4985d89f7c2d48cd51ec8`，不能与首案1bcc…混用。独立证据 `DerivedData/Verification/primary-app-transfer-diagnostic-static-58e12044-56f0-4b09-8d9a-fae507aec24f/`。
+
+新freshgeneration/run `062f5ffa-6ea8-4464-bd03-e4e0538e4625` 唯一诊断实测exit1/25.494s：
+
+- failedStage=preCloseAction、failedGuard=sessionConnected、failureCode=transfer.sessionConnected。
+- 四条快照显示pendingDecision时任务waitingRisk/0bytes，**SSH已经failed且ownedPID不存在**；firstJob及preClose时SFTP真实running/720,896bytes，job/request/service/gen/binding一致、attempt1。
+- 实际未到nativeclose/hide动作，不能说已覆盖关闭；故障在cleanup前出现，不能把cleanup关闭当原因。
+- 初始actualOwnedSSHPID为31847；一条手写消息误报31871，原脚本从JSON取值本来正确，额外ps31847无存活记录保留纠正。
+- App31821/relay31739/SSH31847最终不存在、filesawaitclose1、handles0，但open7/正常close6/shutdown归账1，不能称全部正常CLOSE。
+- relay5/5/0/0 TERMwait0，端口释放；原报告localStoreRemoved=false、transfer=null不改。
+
+原result：`DerivedData/AppRealIntegration/Inputs/run-062f5ffa-6ea8-4464-bd03-e4e0538e4625/app-result.json`，SHA256 `cc98c040155971d5c84c74965ed82ccd63bb55a3cca59f614eb2f8ba49b17f2d`。完整命令/快照/资源与PID纠正：`DerivedData/AppRealIntegration/diagnostic-live-8a79adc5-858a-4dfb-9efc-e2fdda48ccab/`。
+
+主管按原base64账本fixedCID只读核，仅已知temp CA80BB64…/最终payload不存在，temp实存851,968bytes；再次核FD/inode/SHA后只删除该temp及空062f远端根，原失败不追认为成功。证据 `DerivedData/Verification/primary-app-transfer-diag-postcheck-149e38aa-f6c8-4d85-bba7-14a7c794b2c6/`。
+
+本地markedstore原dev16777228/inode114299062、sourceinode114299153及完整固定账本在原App/SSH/relay PID已结束后，逐FD/noACL/owner/mode/单链接/pathidentity/非秘密marker全量预检，只unlink11已知文件+rmdir五空目录/root，canonical路径不存在。未读取私钥或source内容/摘要，未触rawreport/fixturegeneration；原failed reportSHA仍cc98…、localStoreRemoved=false不改，外层恢复另记原live目录的local-recovery-precheck/result.json。
+
+## 认证后退出的下一诊断边界
+
+第二案提供了实质新证据：SSH在动作之前已经失败。另一个真实Terminal探针亦认证后ACK前断开，故优先调查共同post-auth配置/PTY所有权/fixture shell与PAM session链，不把根因先归给loader或本phase动作。
+
+生产调查只读，Terminal已用新短非秘密shellnonceACK单案取得真实failed(launchFailed)/exit255：connected后73bytes入队，9.249s后退出，stop=false/loader未发送。相同系统SSH远端exec的-T成功/-tt失败，容器UID0/10000 openpty均成功；这使调查收敛到PTY相关会话路径，但仍未确证sshd具体失败步骤。详见 `docs/reports/real-remote-terminal.md`。不将Terminal的255回填到本App旧案，不盲重跑App；不能删除sessionConnected守卫、放慢或造进度来凑通过。
+
+主管再次核49冻结源码与既有118tests/0fail、双App主程序/helper摘要及strict签名，证据 `DerivedData/Verification/primary-app-terminal-frozen-a24c034b-da4a-4254-907e-4f311351baec/`。这是可复现诊断检查点，不是上传生命周期验收通过。
 
 AC-22/24仍未整体通过；macOS26/人工Finder/IME/嵌套、窗口/退出活动任务矩阵未被本phase覆盖。整体Goal NOT COMPLETE。

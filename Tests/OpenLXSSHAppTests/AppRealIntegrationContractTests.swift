@@ -17,6 +17,72 @@ final class AppRealIntegrationContractTests: XCTestCase {
     private func decode(_ value: [String: Any]) throws -> AppRealIntegrationContract {
         try AppRealIntegrationContract.decodeStrict(JSONSerialization.data(withJSONObject: value))
     }
+    func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
+        XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
+        for phase in ["read-only", "transfer-survives-close"] {
+            var value = object(); value["phase"] = phase
+            XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
+        }
+        let invalidValues: [Any] = ["quit-all", "arbitrary-command", NSNull(), 1]
+        for invalid in invalidValues {
+            var value = object(); value["phase"] = invalid
+            XCTAssertThrowsError(try decode(value))
+        }
+        var remote = object(); remote["remotePath"] = "/arbitrary"
+        XCTAssertThrowsError(try decode(remote))
+    }
+    func testTransferScopeIsFixedUUIDRootAndBounded16MiB() throws {
+        let scope = try AppRealTransferScope(runID: id)
+        XCTAssertEqual(scope.remoteDirectory, "/fixture/home/openlxssh-app-transfer-" + id)
+        XCTAssertEqual(scope.remotePayload, scope.remoteDirectory + "/payload-16MiB.bin")
+        XCTAssertEqual(AppRealTransferScope.sourceBytes, 16 * 1024 * 1024)
+        XCTAssertEqual(AppRealTransferScope.chunkBytes, 65536)
+        XCTAssertTrue(scope.permitsRemote(Data(scope.remoteDirectory.utf8)))
+        XCTAssertTrue(scope.permitsRemote(Data(scope.remotePayload.utf8)))
+        for path in ["/fixture/home", scope.remoteDirectory + "-other", scope.remoteDirectory + "/unknown", "/etc/passwd"] {
+            XCTAssertFalse(scope.permitsRemote(Data(path.utf8)))
+        }
+        XCTAssertThrowsError(try AppRealTransferScope(runID: "latest"))
+    }
+    func testRealInflightGateRejectsCompletedZeroAndDecisionWaitStates() {
+        XCTAssertTrue(AppRealTransferScope.isRealInflight(state: "running", transferred: 65536, sourceBytes: 16 * 1024 * 1024))
+        for state in ["queued", "waitingRisk", "waitingConflict", "succeeded", "cancelled", "failed"] {
+            XCTAssertFalse(AppRealTransferScope.isRealInflight(state: state, transferred: 65536, sourceBytes: 16 * 1024 * 1024))
+        }
+        for count: UInt64 in [0, 16 * 1024 * 1024, 16 * 1024 * 1024 + 1] {
+            XCTAssertFalse(AppRealTransferScope.isRealInflight(state: "running", transferred: count, sourceBytes: 16 * 1024 * 1024))
+        }
+        XCTAssertFalse(AppRealTransferScope.isRealInflight(state: "running", transferred: 65536, sourceBytes: 32 * 1024 * 1024))
+    }
+    func testTransferDiagnosticsOnlyExportsKnownRawPathsAndClosedStates() throws {
+        let scope = try AppRealTransferScope(runID: id), temp = Data((scope.remoteDirectory + "/.openlxssh-transfer.01234567-89AB-CDEF-0123-456789ABCDEF.part").utf8)
+        let sample = AppRealTransferSnapshot(stage: .pendingDecision, scope: scope, jobID: UUID(), generation: UUID(), sourceServiceID: UUID(), destinationServiceID: UUID(),
+            sourcePath: Data("/unrelated-secret-name".utf8), destinationPath: Data(scope.remotePayload.utf8), state: "untrusted-state-text", transferredBytes: 65536,
+            pendingQuestion: .remotePathRisk, riskPath: Data("/unrelated-risk".utf8), ownedPaths: [Data(scope.remoteDirectory.utf8), temp, Data("/outside".utf8)],
+            sshState: .connected, ownedSSHPIDPresent: true, serverBinding: UUID(), connectionAttempts: 1)
+        let encoded = try JSONEncoder().encode(sample), text = String(decoding: encoded, as: UTF8.self)
+        XCTAssertNil(sample.sourcePathBase64); XCTAssertNil(sample.riskPathBase64)
+        XCTAssertEqual(sample.state, .unknown); XCTAssertEqual(sample.ownedPathsBase64.count, 2); XCTAssertEqual(sample.rejectedPaths, 3)
+        for forbidden in ["unrelated-secret-name", "untrusted-state-text", "unrelated-risk", "password", "privateKey", "terminal", "errorDescription"] { XCTAssertFalse(text.contains(forbidden)) }
+        XCTAssertEqual(try JSONDecoder().decode(AppRealTransferSnapshot.self, from: encoded).stage, .pendingDecision)
+        XCTAssertFalse(scope.permitsDiagnosticPath(Data((scope.remoteDirectory + "/.openlxssh-transfer.latest.part").utf8)))
+        XCTAssertFalse(scope.permitsDiagnosticPath(Data((scope.remoteDirectory + "/other").utf8)))
+    }
+    func testTransferDiagnosticRingKeepsAtMostEightNewestMetadataSnapshots() throws {
+        let scope = try AppRealTransferScope(runID: id)
+        var ring = AppRealTransferDiagnostics()
+        for count in 0..<25 {
+            let sample = AppRealTransferSnapshot(stage: .observeJob, scope: scope, jobID: nil, generation: nil, sourceServiceID: nil, destinationServiceID: nil,
+                sourcePath: nil, destinationPath: nil, state: "running", transferredBytes: UInt64(count), pendingQuestion: .none, riskPath: nil, ownedPaths: [],
+                sshState: .connected, ownedSSHPIDPresent: true, serverBinding: nil, connectionAttempts: 1)
+            ring.record(sample)
+        }
+        ring.enter(.preCloseAction); ring.failed(.preCloseInflight)
+        XCTAssertEqual(ring.snapshots.count, 8); XCTAssertEqual(ring.snapshots.first?.transferredBytes, 17); XCTAssertEqual(ring.snapshots.last?.transferredBytes, 24)
+        XCTAssertEqual(ring.stage, .preCloseAction); XCTAssertEqual(ring.failedGuard, .preCloseInflight)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(ring)) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["stage", "failedGuard", "snapshots"])
+    }
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: false).action, .none)

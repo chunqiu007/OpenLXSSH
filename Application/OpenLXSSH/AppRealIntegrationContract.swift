@@ -53,7 +53,93 @@ enum AppRealIntegrationArguments {
     """
 }
 enum AppRealIntegrationFailure: String, Error {
-    case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup
+    case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
+}
+enum AppRealIntegrationPhase: String, Codable, Sendable { case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close" }
+struct AppRealTransferScope: Sendable {
+    static let sourceBytes: UInt64 = 16 * 1024 * 1024
+    static let chunkBytes = 65_536
+    let runID: String
+    init(runID: String) throws {
+        guard let id = UUID(uuidString: runID), id.uuidString.lowercased() == runID else { throw AppRealIntegrationFailure.contract }
+        self.runID = runID
+    }
+    var directoryName: String { "openlxssh-app-transfer-" + runID }
+    var remoteDirectory: String { "/fixture/home/" + directoryName }
+    var payloadName: String { "payload-16MiB.bin" }
+    var remotePayload: String { remoteDirectory + "/" + payloadName }
+    static func isRealInflight(state: String, transferred: UInt64, sourceBytes: UInt64) -> Bool {
+        state == "running" && sourceBytes == Self.sourceBytes && transferred > 0 && transferred < sourceBytes
+    }
+    func permitsRemote(_ path: Data) -> Bool { path == Data(remoteDirectory.utf8) || path == Data(remotePayload.utf8) }
+}
+enum AppRealTransferStage: String, Codable, Sendable {
+    case source, mkdir, enterOwnedRoot, probePrepare, probeExecute, transferContext, uploadControl, observeJob
+    case pendingDecision, firstJobIdentity, temporaryLedger, preCloseAction, preHideAction, awaitSSHClose
+    case awaitTransfer, finalSucceeded, sameServiceContext, remoteDigest, remoteCleanup, localCleanup, complete
+}
+enum AppRealTransferGuard: String, Codable, Error, Sendable {
+    case mkdirContext, mkdirLedger, emptyOwnedRoot, probeScope, probeResult, serviceBinding, noPreviousJobs
+    case singleJob, pendingRiskMismatch, firstJobIdentity, temporaryCount, preCloseInflight, preCloseIdentity
+    case sessionConnected, closeControl, preHideInflight, preHideIdentity, hideControl, finalJobIdentity
+    case unexpectedFinalDecision, finalSucceeded, sameConnection, sameServiceContext, remoteDigest, ownedCleanupLedger
+}
+enum AppRealDiagnosticJobState: String, Codable, Sendable {
+    case absent, queued, running, waitingConflict, waitingRisk, succeeded, skipped, failed, cancelled, completedWithSkips, unknown
+}
+enum AppRealDiagnosticQuestion: String, Codable, Sendable { case none, remotePathRisk, overwriteRisk, fsyncRisk, deletionRisk, conflict }
+enum AppRealDiagnosticSSHState: String, Codable, Sendable { case absent, preparing, awaitingTrust, authenticating, connectionPending, connected, disconnected, failed, closing, closed, unknown }
+struct AppRealTransferSnapshot: Codable, Sendable {
+    let stage: AppRealTransferStage
+    let phase: AppRealIntegrationPhase
+    let jobID: UUID?, generation: UUID?, sourceServiceID: UUID?, destinationServiceID: UUID?
+    let sourcePathBase64: String?, destinationPathBase64: String?
+    let state: AppRealDiagnosticJobState, transferredBytes: UInt64
+    let pendingQuestion: AppRealDiagnosticQuestion, riskPathBase64: String?
+    let ownedPathsBase64: [String], rejectedPaths: Int
+    let sshState: AppRealDiagnosticSSHState, ownedSSHPIDPresent: Bool
+    let serverBinding: UUID?, connectionAttempts: Int
+    init(stage: AppRealTransferStage, scope: AppRealTransferScope, jobID: UUID?, generation: UUID?, sourceServiceID: UUID?, destinationServiceID: UUID?,
+         sourcePath: Data?, destinationPath: Data?, state: String, transferredBytes: UInt64,
+         pendingQuestion: AppRealDiagnosticQuestion, riskPath: Data?, ownedPaths: [Data], sshState: AppRealDiagnosticSSHState,
+         ownedSSHPIDPresent: Bool, serverBinding: UUID?, connectionAttempts: Int) {
+        self.stage = stage; phase = .transferSurvivesClose; self.jobID = jobID; self.generation = generation
+        self.sourceServiceID = sourceServiceID; self.destinationServiceID = destinationServiceID
+        let localSource = Data(("/" + scope.payloadName).utf8)
+        sourcePathBase64 = sourcePath == localSource ? sourcePath?.base64EncodedString() : nil
+        destinationPathBase64 = destinationPath == Data(scope.remotePayload.utf8) ? destinationPath?.base64EncodedString() : nil
+        self.state = AppRealDiagnosticJobState(rawValue: state) ?? .unknown; self.transferredBytes = transferredBytes
+        self.pendingQuestion = pendingQuestion
+        riskPathBase64 = riskPath.flatMap { scope.permitsDiagnosticPath($0) ? $0.base64EncodedString() : nil }
+        let allowed = Array(Set(ownedPaths.filter { scope.permitsDiagnosticPath($0) })).sorted { $0.lexicographicallyPrecedes($1) }
+        ownedPathsBase64 = allowed.prefix(8).map { $0.base64EncodedString() }
+        rejectedPaths = ownedPaths.count - allowed.count + max(0, allowed.count - 8) + (sourcePath != nil && sourcePath != localSource ? 1 : 0)
+            + (destinationPath != nil && destinationPath != Data(scope.remotePayload.utf8) ? 1 : 0)
+            + (riskPath != nil && riskPathBase64 == nil ? 1 : 0)
+        self.sshState = sshState; self.ownedSSHPIDPresent = ownedSSHPIDPresent; self.serverBinding = serverBinding
+        self.connectionAttempts = connectionAttempts
+    }
+}
+struct AppRealTransferDiagnostics: Encodable, Sendable {
+    private(set) var stage: AppRealTransferStage = .source
+    private(set) var failedGuard: AppRealTransferGuard?
+    private(set) var snapshots: [AppRealTransferSnapshot] = []
+    mutating func enter(_ stage: AppRealTransferStage) { self.stage = stage }
+    mutating func failed(_ guardName: AppRealTransferGuard) { failedGuard = guardName }
+    mutating func record(_ snapshot: AppRealTransferSnapshot) {
+        if snapshots.count == 8 { snapshots.removeFirst() }
+        snapshots.append(snapshot)
+    }
+}
+extension AppRealTransferScope {
+    func permitsDiagnosticPath(_ bytes: Data) -> Bool {
+        if permitsRemote(bytes) { return true }
+        let prefix = Data((remoteDirectory + "/.openlxssh-transfer.").utf8), suffix = Data(".part".utf8)
+        guard bytes.starts(with: prefix), bytes.suffix(suffix.count) == suffix,
+              let text = String(data: bytes.dropFirst(prefix.count).dropLast(suffix.count), encoding: .utf8),
+              let id = UUID(uuidString: text), text == id.uuidString else { return false }
+        return true
+    }
 }
 struct AppRealIntegrationContract: Codable, Sendable {
     static let base = "docker.io/library/ubuntu:24.04@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d"
@@ -64,6 +150,8 @@ struct AppRealIntegrationContract: Codable, Sendable {
     static let fixtureRoot = "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/IntegrationEnvironment"
     static let inputRoot = "/Users/liuwenshuo/Desktop/OpenLXSSH/DerivedData/AppRealIntegration/Inputs"
     let schema: Int
+    let phase: AppRealIntegrationPhase?
+    var selectedPhase: AppRealIntegrationPhase { phase ?? .readOnly }
     let runID: String
     let host: String
     let port: Int
@@ -96,9 +184,10 @@ struct AppRealIntegrationContract: Codable, Sendable {
         return id.uuidString.lowercased()
     }
     static func decodeStrict(_ bytes: Data) throws -> Self {
+        let keys: Set<String> = ["schema", "runID", "host", "port", "user", "service", "generation", "expectedBase", "expectedImage",
+            "expectedProject", "expectedContainer", "expectedFingerprint", "collectedAt", "preparedAt", "provenanceSHA256", "knownHostsSHA256", "generationPublicKeySHA256"]
         guard bytes.count <= 8192, let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              Set(object.keys) == Set(["schema", "runID", "host", "port", "user", "service", "generation", "expectedBase", "expectedImage",
-                "expectedProject", "expectedContainer", "expectedFingerprint", "collectedAt", "preparedAt", "provenanceSHA256", "knownHostsSHA256", "generationPublicKeySHA256"]) else { throw AppRealIntegrationFailure.contract }
+              Set(object.keys) == keys || Set(object.keys) == keys.union(["phase"]), object["phase"] == nil || object["phase"] is String else { throw AppRealIntegrationFailure.contract }
         return try JSONDecoder().decode(Self.self, from: bytes)
     }
     func validate(path: String, now: Double, buildEpoch: Double) throws {
