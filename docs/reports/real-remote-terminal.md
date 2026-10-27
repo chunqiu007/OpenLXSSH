@@ -75,6 +75,24 @@ closed/PID释放/FD回baseline=true；自有SSH41010、consumer40915和relay4082
 
 原报告和命令：`Tests/RemoteTerminalAcceptance/.build/postauth-live-a/{consumer-result.raw.json,live-result.json,relay-events.log,final-postverify.json}`。主管独立核原报告一致性、时序、三PID实际不存在，确认send返回到退出9.249022s；证据 `DerivedData/Verification/primary-terminal-postauth-live-14a17ac5-93bd-469e-9124-092d0861ba34/`。冻结源码/对象与双App严格签名再核见 `DerivedData/Verification/primary-app-terminal-frozen-a24c034b-da4a-4254-907e-4f311351baec/`。没有重跑原case或更改生产/服务cap。
 
-当前仅准备容器内Linux SSH直连原127.0.0.1:2222的有界客户端阶段诊断，绕开opaque relay，不新增端口、不重启或修改原daemon；临时sshd-i/监听方案未实施已取消，必须先审脚本及离线清理。没有真实PTY、Ctrl+C、resize或Vim通过，不能因packet/终端原型证据补齐。
+## 容器内直连原daemon对照
 
-整体Goal NOT COMPLETE。
+`Tests/PTYDebugAcceptance/client_helper.py` 仅固定Linux SSH -vv -tt直连现有127.0.0.1:2222，不经宿主relay、不新增端口/服务。原root私有测试key/带外known_hosts只在容器内读取，不复制导出；固定alias及keepalive5/1与原对照一致。stdout/stderr合计64KiB内存上限、20s执行+5s回收，只输出ACK/计数/摘要和静态阶段集合。主管指出pidfd初始化前异常会漏回收后，最小R1移入try/finally并保留Popen精确回收fallback；8项pure/fake回归主管独立2.158s exit0，含pidfd_open/read异常、TERM忽略→KILL/reap、输出上限与默认无I/O。证据 `DerivedData/Verification/primary-pty-client-r1-3b82fad0-07ad-4ae5-8060-5735edfa676d/`。
+
+唯一容器内对照固定helperSHA256 `3a3653193ea51ee4880effcbbc0c6b295a77151e2fb60ec1c39b81081f96c385`，outer dockerexec45481 exit0/3.313s；**内部SSH实际exit255/0.241257s、stdout0/ACK=false，非外层或helper期限。** stderr7418B只在内存，摘要24c76a3206f1f319a2b27a1e40d8219c3e031c54468e262f56bb736b87627ee8；静态阶段仅sent-pty/exec-sent，103未分类行，不当时序/不猜具体fatal，也不以缺某regex匹配证明服务器未到该阶段。
+
+前后exactCID/image/Healthy、原cap/readonly/internal/无default route相同，configSHA256 `0e1b32cfda7e0f60ae521dbc66a5a9a9f1db6e003f5290db5f857ac710e98616` 不变，pids.current4/max128、R1/S3/Z0均不变。childreaped/pipesclosed/runtimeReleased=true，无新generation/relay/安装/服务修改。原证据 `DerivedData/Verification/fixture-internal-pty-client-3fbf9ac7-610c-4b99-8bc1-989588685d66/`；主管核原结果、source/codehash、前后元数据与outerPID实际不存在：`DerivedData/Verification/primary-internal-pty-client-d2e43ea0-70ac-41b9-9736-cc14bd1e18ed/`。
+
+该结果证明不经宿主relay仍可复现强制PTY失败，不支持PID额度耗尽；仍不能确定原daemon内部错误。只读核server监督器已证sshd stdin/stdout/stderr均DEVNULL，没有未drain日志PIPE，但服务端错误也因此被丢弃。当前只准备一次同隔离容器临时单会话sshd的错误类别诊断，原daemon/auth/cap/PAM不变，仅自有配置/容器回环2223，无宿主新增端口，必须先审脚本及离线自有后代回收后才运行。此前sshd-i/桥方案均未实施。没有真实PTY、Ctrl+C、resize或Vim通过，不能因packet/终端原型证据补齐。
+
+## 临时服务端错误分类
+
+小型 `server_helper.py` 复用原client，仅容器内临时1272223监听，自有/tmp UUID配置只替换Port/ListenAddress/PidFile/LogLevel，原daemon/hostkeys/认证/PAM/caps不改。ready由固定服务端日志触发，不探TCP消耗单连接；两process合计64KiB内存/20s执行+5s回收，subreaper/PPID/start/pidfd限定自有后代，未知文件保留。主管修前审出正常进程消失与pidfd初始化失败会跳清理，R1最小修复后独立server8/client8 exit0；证据 `DerivedData/Verification/primary-server-pty-offline-57dde16a-1d3e-452f-a308-68d121e8c326/`。固定serverSHA256 `b144743be8f2bb57d4b0fadfb45c86e454a837e96d7a80df550ad68cad320e4a`。
+
+唯一临时单案outer exec46947 exit2/3.346s；内部server/client均255，ready=true/ACK=false，实际捕获32534B/0.241845s，raw只内存。服务端固定分类为audit/audit-fatal/login-accounting、errno集合1/30；`audit-fatal`仅匹配 `linux_audit_write_entry failed:`，不凭cap名称猜测。分类为集合，不能把1/30自动逐条配对或从中恢复日志时序。`-ddd`也改变daemon路径，尚不直接等于原daemon根因。
+
+**原helper ownedProcessesReaped=false，原案保持exit2/PARTIAL，不改为清理成功。** workspaceAbsent=true；外层独立后验原daemon20/PPID6/start430/S、confighash不变，pids4→4/Z0→0，debugProcesses/2223listener为空、exactroot不存在，ownexecPIDgone、宿主批准端口无listener。外层无残留不覆盖内部failed字段。
+
+原结果/命令/前后元数据：`DerivedData/Verification/fixture-server-pty-error-43181553-8d78-4a11-bfd9-6ad3746591a3/`；主管独立核auditfatal/原失败/原daemon身份/资源及实际outerPID不存在：`DerivedData/Verification/primary-server-pty-live-12eba838-b5b2-41ba-a8cf-d393c1ba2116/`。
+
+固定上游V_9_6_P1 `loginrec.c`/`audit-linux.c` 只读证据显示login记录后的Linux audit写入失败存在该fatal，普通lastlog/wtmp只读写失败多为logit/debug返回；上游不是Ubuntu完整补丁/编译证明。现证据支持针对audit写入的最小对照方案，尚未加cap或修改原服务；不采用privileged/AUDIT_CONTROL/关闭认证等绕过。临时helper内部标志false的原因另按源码收窄，不重跑旧案。没有真实PTY、Ctrl+C、resize或Vim通过，整体Goal NOT COMPLETE。
