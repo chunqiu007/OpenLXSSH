@@ -56,7 +56,7 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel }
 }
 struct AppRealTransferScope: Sendable {
@@ -75,6 +75,74 @@ struct AppRealTransferScope: Sendable {
         state == "running" && sourceBytes == Self.sourceBytes && transferred > 0 && transferred < sourceBytes
     }
     func permitsRemote(_ path: Data) -> Bool { path == Data(remoteDirectory.utf8) || path == Data(remotePayload.utf8) }
+}
+struct AppRealTerminalProtocol: Sendable {
+    enum Stage: String, Codable, Sendable { case shell, ready, captured, restored, returned, outer }
+    let nonce: String
+    static let sample = "native-paste 中文 e\u{301}\nsecond fixed line"
+    static let maximumOutputBytes = 65536
+    init(nonce: String) throws {
+        guard AppRealIntegrationContract.hex(nonce, count: 32) else { throw AppRealIntegrationFailure.contract }
+        self.nonce = nonce
+    }
+    var marker: String { "OPENLX-SEARCH-" + nonce }
+    var expectedPaste: Data { Data(("\u{1b}[200~" + Self.sample + "\u{1b}[201~").utf8) }
+    var shellCommand: Data { Data(("printf '\\101\\1241|" + nonce + "|shell|ok|END\\n'\r").utf8) }
+    func frameValue(_ text: String, stage: Stage) throws -> String? {
+        guard text.utf8.count <= Self.maximumOutputBytes else { throw AppRealIntegrationFailure.failedCheck }
+        let compact = text.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+        let prefix = "AT1|" + nonce + "|" + stage.rawValue + "|"
+        guard let start = compact.range(of: prefix), let end = compact.range(of: "|END", range: start.upperBound..<compact.endIndex) else { return nil }
+        guard compact.range(of: prefix, range: end.upperBound..<compact.endIndex) == nil else { throw AppRealIntegrationFailure.failedCheck }
+        let value = String(compact[start.upperBound..<end.lowerBound])
+        guard value.utf8.count <= 128 else { throw AppRealIntegrationFailure.failedCheck }; return value
+    }
+    struct Capture: Equatable, Sendable { let bytes: Int; let sha256: String }
+    func parseCapture(_ value: String, expectedHash: String) throws -> Capture {
+        guard value.utf8.count <= 69 else { throw AppRealIntegrationFailure.failedCheck }
+        let fields = value.split(separator: ",", omittingEmptySubsequences: false)
+        guard fields.count == 2, let count = Int(fields[0]), (1..<1024).contains(count), String(count) == fields[0],
+              AppRealIntegrationContract.hex(String(fields[1]), count: 64), AppRealIntegrationContract.hex(expectedHash, count: 64),
+              count == expectedPaste.count, fields[1] == expectedHash else { throw AppRealIntegrationFailure.failedCheck }
+        return Capture(bytes: count, sha256: String(fields[1]))
+    }
+    func captureMatches(_ value: String, expectedHash: String) -> Bool { (try? parseCapture(value, expectedHash: expectedHash)) != nil }
+    func probeCommand() throws -> Data {
+        // Fixed public test program, never a generic command/registry. PTY bytes remain
+        // memory-only and termios/bracket mode are restored even on bounded failure.
+        let source = #"""
+import hashlib,os,select,sys,termios,time,tty
+n=sys.argv[1]
+if len(n)!=32 or any(c not in '0123456789abcdef' for c in n):raise SystemExit(64)
+def frame(k,v):
+ print('\r\nAT1|'+n+'|'+k+'|'+v+'|END\r\n',flush=True)
+original=termios.tcgetattr(0)
+data=bytearray()
+try:
+ tty.setraw(0,termios.TCSANOW)
+ for i in range(24):print('\r\nOPENLX-SEARCH-'+n+' row-%02d'%i,flush=True)
+ os.write(1,b'\x1b[?2004h')
+ frame('ready','ok')
+ deadline=time.monotonic()+45
+ while not data.endswith(b'\x1b[201~'):
+  left=deadline-time.monotonic()
+  if left<=0:raise SystemExit(65)
+  if select.select([0],[],[],min(.1,left))[0]:
+   block=os.read(0,1024-len(data))
+   if not block:raise SystemExit(65)
+   data.extend(block)
+   if len(data)>=1024:raise SystemExit(65)
+ frame('captured',str(len(data))+','+hashlib.sha256(data).hexdigest())
+finally:
+ os.write(1,b'\x1b[?2004l')
+ termios.tcsetattr(0,termios.TCSANOW,original)
+ if termios.tcgetattr(0)!=original:raise SystemExit(66)
+frame('restored','ok')
+"""#
+        let encoded = Data(source.utf8).base64EncodedString()
+        let command = "/usr/bin/python3 -c 'import base64;exec(compile(base64.b64decode(\"" + encoded + "\"),\"<fixed-native-terminal-probe>\",\"exec\"))' " + nonce + "; r=$?; printf '\\101\\1241|" + nonce + "|returned|%s|END\\n' \"$r\"\r"
+        guard command.utf8.count < 4096 else { throw AppRealIntegrationFailure.contract }; return Data(command.utf8)
+    }
 }
 struct AppRealFileScope: Sendable {
     let runID: String

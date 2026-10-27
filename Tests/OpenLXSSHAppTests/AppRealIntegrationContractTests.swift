@@ -19,7 +19,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -176,6 +176,158 @@ final class AppRealIntegrationContractTests: XCTestCase {
         XCTAssertEqual(snapshot.phase, .windowContinueCancel)
         XCTAssertLessThan(data.count, 4096)
         for forbidden in ["password", "privateKey", "terminal", "errorDescription"] { XCTAssertFalse(String(decoding: data, as: UTF8.self).contains(forbidden)) }
+    }
+    func testTerminalProtocolNonceFramesRejectDuplicatesOversizeAndWrongIntegrity() throws {
+        let plan = try AppRealTerminalProtocol(nonce: String(repeating: "a", count: 32))
+        XCTAssertThrowsError(try AppRealTerminalProtocol(nonce: "bad; command"))
+        XCTAssertNil(try plan.frameValue("ordinary Password: or unrelated text", stage: .ready))
+        XCTAssertNil(try plan.frameValue("AT1|" + String(repeating: "b", count: 32) + "|ready|ok|END", stage: .ready))
+        let ready = "AT1|" + plan.nonce + "|ready|ok|END"
+        XCTAssertEqual(try plan.frameValue(ready, stage: .ready), "ok")
+        XCTAssertThrowsError(try plan.frameValue(ready + ready, stage: .ready))
+        XCTAssertThrowsError(try plan.frameValue(String(repeating: "X", count: 65537), stage: .ready))
+        XCTAssertFalse(plan.captureMatches("1,wronghash", expectedHash: String(repeating: "a", count: 64)))
+        XCTAssertTrue(plan.captureMatches(String(plan.expectedPaste.count) + "," + String(repeating: "a", count: 64), expectedHash: String(repeating: "a", count: 64)))
+        XCTAssertTrue(plan.expectedPaste.starts(with: Data("\u{1b}[200~".utf8)))
+        XCTAssertTrue(plan.expectedPaste.suffix(6) == Data("\u{1b}[201~".utf8))
+        XCTAssertLessThan(try plan.probeCommand().count, 4096)
+        XCTAssertFalse(String(decoding: plan.shellCommand, as: UTF8.self).contains("AT1|"))
+        XCTAssertFalse(AppRealIntegrationPhase.terminalSearchPaste.isTransfer)
+    }
+    func testTerminalCaptureParserReturnsActualFrameFields() throws {
+        let plan = try AppRealTerminalProtocol(nonce: String(repeating: "a", count: 32))
+        for hash in [String(repeating: "0123456789abcdef", count: 4), String(repeating: "f", count: 64)] {
+            let value = String(plan.expectedPaste.count) + "," + hash
+            let frame = "AT1|" + plan.nonce + "|captured|" + value + "|END"
+            let captured = try plan.parseCapture(XCTUnwrap(plan.frameValue(frame, stage: .captured)), expectedHash: hash)
+            XCTAssertEqual(captured.bytes, Int(value.split(separator: ",")[0]))
+            XCTAssertEqual(captured.sha256, String(value.split(separator: ",")[1]))
+            XCTAssertEqual(captured.bytes, plan.expectedPaste.count)
+            XCTAssertEqual(captured.sha256, hash)
+        }
+    }
+    func testTerminalCaptureParserRejectsNoncanonicalCountsAndMalformedFields() throws {
+        let plan = try AppRealTerminalProtocol(nonce: String(repeating: "a", count: 32))
+        let hash = String(repeating: "a", count: 64), count = String(plan.expectedPaste.count)
+        let invalidCounts = ["", "0", "00", "01", "0" + count, "+" + count, "-1", " " + count, count + " ",
+            count + ".0", "1e2", "1024", "999999999999999999999999999999", "５２", "1\n", "1\u{0}"]
+        let invalidHashes = ["", String(hash.dropLast()), hash + "a", hash.uppercased(), String(repeating: "g", count: 64),
+            " " + hash, hash + "\n", hash + "\u{0}"]
+        let malformed = invalidCounts.map { $0 + "," + hash } + invalidHashes.map { count + "," + $0 }
+            + ["", count, count + "," + hash + ",extra", count + ",," + hash, count + "," + hash + ","]
+        for value in malformed {
+            XCTAssertThrowsError(try plan.parseCapture(value, expectedHash: hash), value)
+            XCTAssertFalse(plan.captureMatches(value, expectedHash: hash), value)
+        }
+    }
+    func testTerminalCaptureParserRetainsExactExpectedCountAndHashGates() throws {
+        let plan = try AppRealTerminalProtocol(nonce: String(repeating: "a", count: 32))
+        let hash = String(repeating: "a", count: 64), otherHash = String(repeating: "b", count: 64)
+        for count in [1, plan.expectedPaste.count - 1, plan.expectedPaste.count + 1, 1023] {
+            let value = String(count) + "," + hash
+            XCTAssertThrowsError(try plan.parseCapture(value, expectedHash: hash))
+            XCTAssertFalse(plan.captureMatches(value, expectedHash: hash))
+        }
+        let wrongHash = String(plan.expectedPaste.count) + "," + otherHash
+        XCTAssertThrowsError(try plan.parseCapture(wrongHash, expectedHash: hash))
+        XCTAssertFalse(plan.captureMatches(wrongHash, expectedHash: hash))
+        for malformedHash in [hash.uppercased(), "wronghash", ""] {
+            let value = String(plan.expectedPaste.count) + "," + malformedHash
+            XCTAssertThrowsError(try plan.parseCapture(value, expectedHash: malformedHash))
+            XCTAssertFalse(plan.captureMatches(value, expectedHash: malformedHash))
+        }
+    }
+    func testTerminalProbeRequiresReadbackMatchBeforeRestoredSuccessWithFakes() throws {
+        let plan = try AppRealTerminalProtocol(nonce: String(repeating: "a", count: 32))
+        let command = String(decoding: try plan.probeCommand(), as: UTF8.self)
+        let start = try XCTUnwrap(command.range(of: "base64.b64decode(\""))
+        let end = try XCTUnwrap(command.range(of: "\")", range: start.upperBound..<command.endIndex))
+        let encoded = String(command[start.upperBound..<end.lowerBound])
+        XCTAssertNotNil(Data(base64Encoded: encoded))
+        // Executes the exact embedded probe with memory-only imports; no real PTY, shell,
+        // network, credential store or clipboard. A process alarm bounds regressions.
+        let harness = #"""
+import base64,builtins,hashlib,json,signal,sys,types
+signal.alarm(10)
+source=base64.b64decode(sys.argv[1],validate=True)
+nonce=sys.argv[2]
+payload=base64.b64decode(sys.argv[3],validate=True)
+def run(mode):
+ events=[];frames=[];gets=0
+ original=[1,2,3,4,5,6,[b'a',b'b']]
+ def get(fd):
+  nonlocal gets
+  assert fd==0
+  gets+=1;events.append('get-original' if gets==1 else 'get-restored')
+  if gets>1 and mode=='get-error':raise OSError('fake readback refusal')
+  value=original[:6]+[list(original[6])]
+  if gets>1 and mode=='mismatch':value[3]^=1
+  return value
+ def set_(fd,when,value):
+  assert fd==0 and when==0 and value==original
+  events.append('set')
+  if mode=='set-error':raise OSError('fake restore refusal')
+ def raw(fd,when):
+  assert fd==0 and when==0
+  events.append('raw')
+ def write(fd,value):
+  assert fd==1 and value in (b'\x1b[?2004h',b'\x1b[?2004l')
+  events.append('enable' if value.endswith(b'h') else 'disable')
+  return len(value)
+ def read(fd,size):
+  assert fd==0 and size==1024
+  events.append('read')
+  return b'' if mode=='read-eof' else payload
+ def print_(*values,**options):
+  text=' '.join(str(value) for value in values)
+  if 'AT1|' in text:frames.append(text)
+  if '|restored|' in text:events.append('restored')
+ modules={'hashlib':hashlib,'os':types.SimpleNamespace(read=read,write=write),
+  'select':types.SimpleNamespace(select=lambda *args:([0],[],[])),
+  'sys':types.SimpleNamespace(argv=['fixed-probe',nonce]),
+  'termios':types.SimpleNamespace(TCSANOW=0,tcgetattr=get,tcsetattr=set_),
+  'time':types.SimpleNamespace(monotonic=lambda:0), 'tty':types.SimpleNamespace(setraw=raw)}
+ def imported(name,*args,**kwargs):return modules[name]
+ namespace={'__builtins__':dict(vars(builtins),__import__=imported,print=print_)}
+ status=0
+ try:exec(compile(source,'<fixed-probe-with-fakes>','exec'),namespace)
+ except SystemExit as error:status=error.code
+ except OSError:status=1
+ return {'exitCode':status,'frames':''.join(frames),'events':events}
+print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
+ 'scenarios':{mode:run(mode) for mode in ['match','mismatch','get-error','set-error','read-eof']}}))
+"""#
+        let process = Process(), output = Pipe(), errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-I", "-B", "-c", harness, encoded, plan.nonce, plan.expectedPaste.base64EncodedString()]
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C", "PYTHONDONTWRITEBYTECODE": "1"]
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = errors
+        try process.run(); process.waitUntilExit()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(process.terminationReason, .exit, errorText)
+        XCTAssertEqual(process.terminationStatus, 0, errorText)
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let hash = try XCTUnwrap(result["sha256"] as? String)
+        let scenarios = try XCTUnwrap(result["scenarios"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(scenarios.keys), ["match", "mismatch", "get-error", "set-error", "read-eof"])
+        for (mode, expectedExit) in [("match", 0), ("mismatch", 66), ("get-error", 1), ("set-error", 1), ("read-eof", 65)] {
+            let scenario = try XCTUnwrap(scenarios[mode])
+            XCTAssertEqual(scenario["exitCode"] as? Int, expectedExit, mode)
+            let frames = try XCTUnwrap(scenario["frames"] as? String), events = try XCTUnwrap(scenario["events"] as? [String])
+            XCTAssertEqual(try plan.frameValue(frames, stage: .restored), mode == "match" ? "ok" : nil, mode)
+            var expectedEvents = ["get-original", "raw", "enable", "read", "disable", "set"]
+            if mode != "set-error" { expectedEvents.append("get-restored") }
+            if mode == "match" { expectedEvents.append("restored") }
+            XCTAssertEqual(events, expectedEvents, mode)
+            if mode == "read-eof" { XCTAssertNil(try plan.frameValue(frames, stage: .captured)) }
+            else {
+                let value = try XCTUnwrap(plan.frameValue(frames, stage: .captured))
+                let captured = try plan.parseCapture(value, expectedHash: hash)
+                XCTAssertEqual(captured.bytes, plan.expectedPaste.count)
+                XCTAssertEqual(captured.sha256, hash)
+            }
+        }
     }
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)

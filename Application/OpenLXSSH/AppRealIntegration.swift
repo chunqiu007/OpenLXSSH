@@ -323,6 +323,14 @@ struct AppRealSessionFailure: Error {
         let remoteRootAbsent: Bool, localKnownSourceAndDownloadsRemoved: Bool
         let picker = "HostProbe testSelection via native upload/download buttons, NOT manual Finder/NSOpenPanel"
     }
+    struct TerminalEvidence: Encodable {
+        let nonce: String, sessionID: UUID, sessionGeneration: UInt64
+        let selectedRangeAfterNext: [Int], selectedRangeAfterPrevious: [Int]
+        let nextMatchIndex: Int, previousMatchIndex: Int, totalMatches: Int
+        let expectedPasteBytes: Int, capturedPasteBytes: Int, expectedPasteSHA256: String, capturedPasteSHA256: String
+        let bracketModeReady: Bool, originalTermiosRestoredAndShellReturned: Bool, sameSessionAndPID: Bool
+        let boundary = "Native search field/buttons verified via selection and match summary. Paste uses pasteFromApplication API only; NO global clipboard read/write/copy, not GUI clipboard or manual IME acceptance."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -337,6 +345,7 @@ struct AppRealSessionFailure: Error {
         let windowTransfer: WindowEvidence?
         let quitTransfer: QuitEvidence?
         let fileOperations: FileOperationsEvidence?
+        let terminalOperations: TerminalEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -351,6 +360,7 @@ struct AppRealSessionFailure: Error {
     private var windowEvidence: WindowEvidence?
     private var quitEvidence: QuitEvidence?
     private var fileOperationsEvidence: FileOperationsEvidence?
+    private var terminalEvidence: TerminalEvidence?
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
     private var quitFailureRecorded = false
@@ -421,6 +431,10 @@ struct AppRealSessionFailure: Error {
             try check("actual-outer-auth-and-owned-pid", tab.state == .connected && driver.session.state == .connected && actualPID != nil)
             let filesBefore = await facts.connectionAttempts
             try check("ssh-did-not-open-sftp", filesBefore == 0 && !model.files.visible)
+            let terminalOnly = input.contract.selectedPhase == .terminalSearchPaste
+            if terminalOnly {
+                terminalEvidence = try await terminalSearchPaste(driver: driver)
+            } else {
             try await click("files.open")
             try await wait { self.model.files.visible && self.model.files.canConnect }
             try await type("files.initial.secret", "")
@@ -431,6 +445,7 @@ struct AppRealSessionFailure: Error {
             try await wait { self.model.files.path.bytes == Data("/fixture/home".utf8) && !self.model.files.busy || self.model.files.state == .failed }
             let returned = await facts.returnedProductionServices, listed = await facts.lists
             try check("production-sftp-read-only-list", model.files.state == .ready && returned == 1 && listed >= 2)
+            }
             let manager = model.files.manager
             if input.contract.selectedPhase == .fileOperations { fileOperationsEvidence = try await fileOperations() }
             if input.contract.selectedPhase.isTransfer {
@@ -449,7 +464,7 @@ struct AppRealSessionFailure: Error {
                 try await wait { self.delegate.mainWindow == nil }
             }
             let finalManager = await manager.snapshot(), closedFiles = await facts.closedServices
-            try check("window-close-awaited-files", finalManager.isClosed && closedFiles == 1)
+            try check("window-close-awaited-files", finalManager.isClosed && closedFiles == (terminalOnly ? 0 : 1))
             if input.contract.selectedPhase == .transferSurvivesClose {
                 let open = await facts.openHandleCount(), forced = await facts.shutdownClosedHandles
                 let opens = await facts.successfulOpens, closes = await facts.successfulCloses
@@ -458,7 +473,7 @@ struct AppRealSessionFailure: Error {
             _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
             try await wait { self.delegate.mainWindow?.isVisible == true }
             let attemptsAfterReopen = await facts.connectionAttempts
-            try check("reopen-no-restore", model.sessions.tabs.isEmpty && !model.files.visible && model.files.state == .disconnected && attemptsAfterReopen == 1)
+            try check("reopen-no-restore", model.sessions.tabs.isEmpty && !model.files.visible && model.files.state == .disconnected && attemptsAfterReopen == (terminalOnly ? 0 : 1))
             try await model.repository.apply([.deleteHost(host.id)])
             try await model.security.deleteKey(key.id)
             try await model.security.close(); try await model.repository.close()
@@ -485,6 +500,55 @@ struct AppRealSessionFailure: Error {
         do { try await persistReport(failure: failure, removed: removed) } catch { exit(2) }
         let exitCode: Int32 = failure == nil ? 0 : 1
         RunLoop.main.perform { MainActor.assumeIsolated { () -> Void in exit(exitCode) } }
+    }
+    private func terminalSearchPaste(driver: DirectSessionDriver) async throws -> TerminalEvidence {
+        let nonce = input.contract.runID.replacingOccurrences(of: "-", with: ""), plan = try AppRealTerminalProtocol(nonce: nonce)
+        guard let token = driver.session.token, driver.session.state == .connected, driver.session.ownedProcessID == actualPID else { throw AppRealIntegrationFailure.failedCheck }
+        func current() throws {
+            guard driver.session.token == token, driver.session.state == .connected, driver.session.ownedProcessID == actualPID else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        func frame(_ stage: AppRealTerminalProtocol.Stage, seconds: Double = 15) async throws -> String {
+            let deadline = ProcessInfo.processInfo.systemUptime + seconds
+            while true {
+                try current()
+                if let value = try plan.frameValue(driver.terminal.text, stage: stage) { return value }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        try driver.session.sendInput(plan.shellCommand)
+        try check("terminal-independent-shell-ack", try await frame(.shell) == "ok")
+        try driver.session.sendInput(plan.probeCommand())
+        try check("terminal-owned-probe-ready", try await frame(.ready) == "ok")
+        try check("terminal-actual-bracketed-mode-ready", driver.terminal.bracketedPaste)
+        try await type("terminal.search", plan.marker)
+        try await click("terminal.search.next")
+        let nextRange = driver.terminal.selectedRange(), next = driver.terminal.searchMatchSummary(plan.marker, limit: 32)
+        try check("native-terminal-search-next-selects-owned-marker", next.total == 24 && next.index > 0 && nextRange.location != NSNotFound && nextRange.length > 0)
+        try await click("terminal.search.previous")
+        let previousRange = driver.terminal.selectedRange(), previous = driver.terminal.searchMatchSummary(plan.marker, limit: 32)
+        try check("native-terminal-search-previous-changes-selection", previous.total == 24 && previous.index > 0 && previous.index != next.index && previousRange != nextRange)
+        try current()
+        // Deliberately not terminal.paste button: it reads NSPasteboard.general. This memory-only
+        // API exercises SwiftTerm framing without touching any user clipboard data.
+        driver.terminal.pasteFromApplication(AppRealTerminalProtocol.sample)
+        let capturedValue = try await frame(.captured), expectedHash = AppRealPrivateInput.sha(plan.expectedPaste)
+        let captured = try? plan.parseCapture(capturedValue, expectedHash: expectedHash)
+        try check("terminal-real-raw-bracketed-paste-count-and-sha", captured != nil)
+        guard let captured else { throw AppRealIntegrationFailure.failedCheck }
+        try check("terminal-probe-restored-original-termios", try await frame(.restored) == "ok")
+        try check("terminal-probe-returned-to-outer-shell", try await frame(.returned) == "0")
+        try current()
+        try driver.session.sendInput(Data(("printf '\\101\\1241|" + nonce + "|outer|ok|END\\n'\r").utf8))
+        try check("terminal-fresh-outer-shell-ack-after-restoration", try await frame(.outer) == "ok")
+        let noSFTP = await facts.connectionAttempts
+        try check("terminal-only-no-sftp-clipboard-or-credentials", noSFTP == 0 && !model.files.visible)
+        return TerminalEvidence(nonce: nonce, sessionID: token.sessionID, sessionGeneration: token.generation,
+            selectedRangeAfterNext: [nextRange.location, nextRange.length], selectedRangeAfterPrevious: [previousRange.location, previousRange.length],
+            nextMatchIndex: next.index, previousMatchIndex: previous.index, totalMatches: next.total,
+            expectedPasteBytes: plan.expectedPaste.count, capturedPasteBytes: captured.bytes,
+            expectedPasteSHA256: expectedHash, capturedPasteSHA256: captured.sha256,
+            bracketModeReady: true, originalTermiosRestoredAndShellReturned: true, sameSessionAndPID: true)
     }
     private func fileOperations() async throws -> FileOperationsEvidence {
         let scope = try AppRealFileScope(runID: input.contract.runID), dataset = try store.prepareFileOperations(scope)
@@ -640,7 +704,7 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),
