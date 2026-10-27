@@ -1,5 +1,55 @@
 OpenLXSSH real integration consumer — test-only host15 preparation
 
+PUBLIC SAVED-PASSWORD MEMORY AUTHORIZATION — source/offline buildpoint ONLY
+
+Independent --saved-password-public tests transport's existing public authorization
+and no-authorization/manual fallback, NOT Keychain/save/forget/App AUTH02 persistence.
+No existing positive/negative/OpenSSH/MINA implementation or production gate changed.
+No configureProbeSavedPassword/eligible override/allowlist expansion is used.
+
+Own path RealIntegration/.build/saved-password-case-<12hex>/saved-password-public.json
+file0600/noACL/currentUID/singlelink/parents0700/no symlink. Exact required keys:
+  schema1,taskID:SAVED-PASSWORD-PUBLIC-A
+  testCase:positive-public-authorization|no-authorization-manual-fallback
+  service:passwordonly,host:127.0.0.1,port:22222,user:fixture
+  manualPromptSHA256:null for authorized; independently reviewed exactSHA for manual
+  credentialDirectory:exact fresh root .runtime/passwordonly/credentials-<12hex>
+  expectedFingerprint,baseImage,imageID,containerID,project,networkID,context,endpoint
+    exact independently reviewed local root fixture trust/provenance/identity
+No secret, arbitrary endpoint, retry, storage namespace or gate override field.
+Future explicit release only, exact new signed App:
+  <App>/Contents/MacOS/OpenLXSSHRealIntegration --saved-password-public --live --authorized-local-fixture --engine-ready --contract <exactPath>
+Default/help/validate syntax-only, no files/signature/Docker/network/Keychain.
+
+The authorized case uses ONLY production public DirectSSHSession.connect with
+savedPassword:SavedPasswordAuthorization(provider:...). Production itself evaluates
+OSbuild24H32+Apple signed /usr/bin/ssh+exact OpenSSH9.9p2/LibreSSL3.3.6 output and
+strict passwordOnly config. This test cannot override eligibility. If manual callback
+occurs, fail gateNotCovered BEFORE reading/answering a password: do not fall back
+and call it automatic success. Unknown OS/macOS26 safely remains manual; this
+host15 test cannot justify expanding the product allowlist for macOS26.
+
+Provider API has ONLY SessionToken, NO prompt parameter. It verifies exact bound
+session/generation and one allowance, consumes read before no-follow password read,
+checks current token/cancellation before/after async await and before return. No
+provider prompt hash classification is claimed. It returns only AuthenticationSecret
+from this exact disposable generation's in-memory Data. On cancellation/stale token
+no bytes are returned; active provider/manual tasks must drain before report.
+No terminal output parsing, Keychain/store read, secret argv/env/hash/report/file.
+
+Authorized success requires actual trusted outer .connected1/providerCalls1/
+providerSecretReads1/providerReturns1/manualRequests0. No-authorization case calls
+connect(configuration) WITHOUT authorization, then answers exactly one trusted
+outer manual request only if full expectedSHA/kindunknownMasked/nohint matches;
+providerCalls0/manualRequests1/manualSecretReads1/manualReplies1/connected1 required.
+Connected alone, wrongcounts, extra requests/provider calls, unknown hint/kind,
+closed/late/foreign generation all fail. Both cancel/closeTab and await closed+
+nilPID+provider/manual task drain; test85s/active45/drain12, external90s bounded owner.
+Read counters represent claimed provider/manual reads, not lower-level OS telemetry.
+Report keychainAccess=false,persistenceVerified=false,providerHasPromptParameter=false.
+Only authorized exact flow success records productionGateExercised=true; full
+production gate/provider real connection remains UNVERIFIED until explicit live.
+
 SFTP OTP NEGATIVE ADDENDUM — source/offline only, no negative live acceptance
 
 Independent --sftp-otp-negative entry/schema/negative-only budget. Positive

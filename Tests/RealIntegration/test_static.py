@@ -399,6 +399,31 @@ exec(compile(program,'fixed-root-reader','exec'))
             self.assertNotIn(forbidden, report)
         reader = (HERE / 'Sources/RealIntegrationCore/OpenSSHManagementPolicy.swift').read_text()
         self.assertIn("time.time()<value['expires_at']<=time.time()+75", reader)
+    def test_saved_password_public_never_overrides_gate_or_reads_keychain(self):
+        owner = (HERE / 'Consumer/SavedPasswordPublicOwner.swift').read_text()
+        self.assertIn('SavedPasswordAuthorization(provider:', owner)
+        self.assertIn('session.connect(configuration, savedPassword: authorization)', owner)
+        self.assertIn('session.connect(configuration) // Deliberately NO authorization/provider.', owner)
+        self.assertIn('budget.claimProviderRead(session:', owner)
+        self.assertIn('budget.finishProvider(session:', owner)
+        self.assertIn('try budget.requireExpected(connectedEvents: report.connectedEvents)', owner)
+        self.assertIn('providerActive == 0 && manualTask == nil', owner)
+        for forbidden in ('configureProbeSavedPassword', 'PasswordAutomationGate', 'eligible:', 'startProbe(', 'terminal.text', 'sendInput(', 'CredentialStore(', 'SystemCredentials(', 'Keychain'):
+            self.assertNotIn(forbidden, owner)
+        consumer = (HERE / 'Consumer/SavedPasswordPublicConsumer.swift').read_text()
+        self.assertIn('authentication: SSHAuthentication(method: .passwordOnly)', consumer)
+        self.assertNotIn('savedPassword:', consumer)
+        contract = (HERE / 'Sources/RealIntegrationCore/SavedPasswordPublicContract.swift').read_text()
+        load = contract.split('public static func load(path:', 1)[1].split('public func password()', 1)[0]
+        self.assertNotIn('/password.txt', load)
+        self.assertIn('PrivateInput.read(contract.credentialDirectory + "/password.txt"', contract)
+        policy = (HERE / 'Sources/RealIntegrationCore/SavedPasswordPublicPolicy.swift').read_text()
+        self.assertIn('gateNotCovered = true; throw SavedPasswordPublicError.gateNotCovered', policy)
+        report = policy.split('public struct SavedPasswordPublicReport:', 1)[1]
+        self.assertIn('keychainAccess = false', report)
+        self.assertIn('persistenceVerified = false', report)
+        for forbidden in ('password:', 'secret:', 'prompt:', 'answer:', 'secretHash:'):
+            self.assertNotIn(forbidden, report)
 
 
 if __name__ == '__main__':

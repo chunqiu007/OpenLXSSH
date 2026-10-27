@@ -5,6 +5,13 @@ import RealIntegrationCore
     static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "--saved-password-public" {
+                let options = try SavedPasswordPublicOptions.parse(Array(arguments.dropFirst()))
+                if options.action == .help { print(SavedPasswordPublicOptions.help) }
+                else if options.action == .validate { print("Saved-password public syntax valid; files NOT opened; no Keychain, Docker or connection.") }
+                else { throw SmokeError.signedAppRequired }
+                return
+            }
             if arguments.first == "--sftp-otp-negative" {
                 let options = try SFTPOTPNegativeOptions.parse(Array(arguments.dropFirst()))
                 if options.action == .help { print(SFTPOTPNegativeOptions.help) }
