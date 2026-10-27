@@ -16,7 +16,13 @@
 2. 系统 `/usr/bin/ssh` 同参数/同固定远端 printf，仅 `-T`/`-tt` 不同：无 PTY exit0/6.305s/52B ACK 精确匹配；强制 PTY exit255/15.792s/stdout0/stderr0。不是外层 timeout，不等认证拒绝。
 3. 同 exact 容器 UID0 和 UID10000 各一次 `pty.openpty()` 均成功，FD4→4；不能归因为“所有 PTY 无法分配”，不据 capability 名称猜加权限。
 4. 新短 ACK 诊断真实单案：outer connected t12.455643，73B 非秘密命令 t12.473894 入队，t21.722916 结束，真实 `.failed(.launchFailed)`/lastExitCode255，stop=false。shellACK=false/probeEvents0/**原 loader 从未发送**。入队也不证明远端执行。
-5. root 测试 runtime 已释放，自己的 SSH41010/consumer40915/relay40824 均不存在；relay4/4/0/0 wait0，FD回baseline，exact nonce driver/Vim/目录未观察到，未远端 kill/delete，keyonly仍 Healthy。没有 PTY/Ctrl+C/resize/Vim 通过结论。
+5. 进一步容器内Linux SSH直连原daemon 127.0.0.1:2222，不经宿主relay亦exit255/0.241257s、stdout0/ACK=false。前后pids4/128/Z0/confighash不变，排除“必须经过relay才失败”，不支持PID耗尽；原sshd stderrDEVNULL，无错误日志证据，不猜根因。
+6. 临时同image/caps单会话debugsshd已真实命中固定`linux_audit_write_entry failed:`（audit-fatal），server/client255、errno集合1/30，不将集合强配时序。原helper ownedProcessesReaped=false/exit2保持PARTIAL；独立外层确认无debugPID/2223listener/临时目录、pids4/Z0/原daemon20-start430及confighash不变。上游audit源码与官方cap定义支持AUDIT_WRITE bit29为最小候选，尚未改变任何cap。
+7. 单变量实测已通过：fresh串行A/B同image/config/资源/internal/nohostports，A原7cap -T0/-tt255无ACK，B仅增加AUDIT_WRITE bit29、实际sshd Eff/Prm/Bnd0x200400eb，-T0/-tt0精确LF/CRLFACK。总41.350s；两临时container/vol/network已精确删除，主管独立run标签查询全0、originalUnchanged=true。证据 `docs/reports/pty-audit-capability.md`，已本地提交619f3c6。先前首pair12s元数据超时/资源0失败保留，R1专用20s前置预算与失败记录/9回归已过，不改身份门。
+8. keyonly最小修复已真实落地：新CID `1253a29501483eb71f80e39b9af5c85e10c3a49329d5e93700fecd3f00f334f2`，新FP `SHA256:MHUel445tN/gQtcvZikLZVE1mlWZf7U38C0zZTTru+Q`，仅增加AUDIT_WRITE；原卷/NetworkID及另三服务CID/StartedAt不变。manager action先exit1/incomplete且新容器Created，主会话只exact start一次恢复Healthy；原失败不追认通过。新daemon-tt真实0/53B CRLFACK/.235s。报告 `docs/reports/keyonly-audit-fix.md`。端口预检reservation持有到Compose可能干扰启动，正仅source/offline最小释放顺序R1，no第二次recreate。
+9. 修后Terminal单案已释放runtime：shortACK/remotePID确认、输入SHA/CtrlC及严格8帧到size31×93有真实证据，Vim前unexpectedFrame、session仍connected；原report remoteSizeMatchedfalse（旧赋值时机）与remoteCleanupfalse保留，外层精确PID/start/nonce后验无残留。新9b工程师仅source/offline定位Vim边界，不重跑/放宽12帧。
+10. 修后App新f851 16MiB真实上传**28检查全过**：running720896B原生关SSH、983040B隐藏，samejob/service/gen/binding/attempt1/reconnect0，最终SHA一致、8opens8closes/end0/shutdown0、known远端/本地清理、三PIDgone，主管独立原JSON验收。仅HostProbe/mac15分项，不等整体AC22/24。现四文件source/offline新增window-continue-cancel，下一步真实活动关窗继续/取消；Quit另案。
+
 
 详见 `docs/reports/real-remote-terminal.md` 与 `docs/reports/app-real-transfer-survival.md`。主管已读原结果、独立核时序/三PID与冻结输入/严格签名。
 
@@ -62,10 +68,12 @@
 
 | Task ID / 执行者 | 状态与下一验收点 |
 | --- | --- |
-| APP-TRANSFER-DIAGNOSTIC-R1 / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 四源冻结；主管118tests/49输入/14命令/签名独立通过。ae16与062f两案均失败，远端已知temp/空root与本地11files+5空dirs/root均按FD/inode/字节账本恢复，raw失败报告不改。暂不重跑；需先解决共同postauth问题 |
-| TERMINAL-POSTAUTH-DIAG-LIVE-A / agent_d121dcfb-d2ed-4b51-91b0-89ba0b6571ce | 九源冻结；新de94静态Core128/Python10/27命令/9快照/8父对象/strict主管通过。唯一短ACK实测failed(launchFailed)/255/loader未发，资源已释放，停止连接/构建 |
-| PUBLIC-CREDENTIAL-REVIEW-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 独占Tests/RealIntegration，仅source/offline修P1 stop跨await副作用/密码返回窗口、P2新run父目录fsync、P2预算error白名单映射。原57Swift17Python29CLI保留，三红source回归已落，新pure await/fsync/map tests及增量新签名审点未交。禁止真实store/Keychain/SecItem/Docker/live |
-| FIXTURE-PTY-DEBUG-PREP-A / agent_80f0dacc-5fe4-42ec-ac4b-3ac1155adba0 | system-T/-tt及两UIDopenpty已结束/证据已核。仅Tests/PTYDebugAcceptance新子树准备≤100行容器内Linux客户端直连原127.0.0.1:2222的有界阶段诊断，绕开opaque relay；-i/临时server方案未实施已取消。无新端口、不重启原daemon、不改cap/PAM/生产。必须主管先审源/offline，尚未runtime |
+| APP-REAL-WINDOW-TRANSFER-A / agent_2c8c76ef-77d1-4313-b527-8e49cfe4feae | 新身份两pin/118test49hash签名审点主会话核过，当前App f65…helperfbd…已f851真实28checks跨close/hide/16MiBSHA/资源全过，主会话独立验收。现只四文件source/offline新增单job windowContinue→windowCancel，强inflight/identity/actualdrain/knownledger，先审新UUID增量产物后runtime，Quit不本轮 |
+| TERMINAL-VIM-FRAME-INVESTIGATE-A / agent_9b78446f-cc66-499c-bdff-efc846e3db1c | onlyRemoteTerminal source/offline：修后单案8帧/输入CtrlC/size成功、Vim前unexpectedFrame/sessionconnected；定位源码错误或加闭合stage/errno失败元数据，保全12帧及cleanup/returned0门，不Docker/live |
+| PUBLIC-CREDENTIAL-REVIEW-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 三原缺陷主会话/原reviewer定向复审resolved；主管独立8pure及完整65Swift17Python29CLI/368快照12复用对象18命令/strict/inert0/0/2通过，仅离线准备，已本地提交6a65bb1。新f201 driver3526b308…；source/build冻结，禁止真实store/Keychain/SecItem/Docker/live。报告 `docs/reports/public-credential-store-preparation.md` |
+| KEYONLY-RECREATE-PORT-R1 / agent_fce7a218-7787-48e4-bee6-96d709d2b320 | 六环境源主会话审/39静态28relay35MINA离线过，端口预检R1追加时序断言主会话39/28过；真实action失败后exactstart恢复Healthy/PTY0/卷网络other3不变，旧incomplete保留，R1 action未重跑。已本地59c898c，source/runtime冻结 |
+| KEYONLY-REBIND-LOCATE-A / agent_6fd8346f-0175-4028-b0e5-0cbe2f3744e5 | 六文件只读完成，App仅Contract常量148/149需future新CID/FP+重新签名/collectafterbuild；Terminal动态freshcontract无需source literal。旧campaign pins不改不重跑 |
+| FIXTURE-AUDIT-PAIR / 原agent80f已停写 | helper/client/server/pair审查及真实失败、A/B结果已存检查点d118000/619f3c6。主会话仅极小R1收口；不再用该writer推进，旧raw不改 |
 | RELAY-POSTAUTH-TIMEOUT-REVIEW-A / agent_53e824ce-ce3e-4eeb-bcc5-92fe9ec80b25 | 四文件只读完成；未发现认证后10s定时器或PTY特判。8sreadiness不延用，pump600s idle/全局寿命不同；底层EOF/IO reason未导出为可观测性限制，未确证relay缺陷 |
 | 主管 | 维护状态/验收、读实际差异/原结果、独立复验、按精确文件列表本地提交；不把任何分项或cleanup成功当整体通过 |
 
@@ -87,7 +95,7 @@
 - 实测宿主macOS15.8.1/24H32/arm64，Xcode26.3/17C529、SDK26.2/Swift6.2.4。正式App arm64/min26，HostProbe/独立消费者min15不能冒目标runtime。最新本地磁盘观察约42GiB可用，瞬时值不能沿用为下一安装许可。
 - Docker Desktop4.97.0/build244584官方验签；DMG SHA256 94e4ccec4a035b7dcdf67cfff0520d4b46ee873ae04b155abc0d22b333cc90ad；Agent无sudo/accept-license。外部GUI后LicenseTermsVersion2/2CPU4096MiB/40GiB/AutoStartfalse，Engine实物一致。context desktop-linux固定unix:///Users/liuwenshuo/.docker/run/docker.sock，不建全局特权socket链接。
 - Ubuntu固定24.04 digest18b33ff…，rootimage7f633d33…；project openlxssh-fixture-61ed25328c13，四原CID不重启/换key。MINA2.20.0/commit2221febd…、image18c77956…/独立原CID。internal/noegress/readonly/no-new-privileges/capdropALL+原七项/资源受限/namedvolume无hostbind；HostConfig.PortBindings不冒称实际可达，有限opaque relay仅批准回环端口。详情 `docs/reports/env-authorized-installation.md`。
-- 分支 `development/p1-prototypes`；最新已确认本地HEAD **18761e6**（终端九源与真实短ACK失败报告），前一 **18ee766**（App四源及两次传输失败诊断），之前7c925fa。两项仅诊断范围验收/失败证据检查点，不宣称产品通过。尚未提交public CredentialStore新源及入口/build/tests，当前仍在R1；工程师写域不得reset/覆盖。remote为空、未push。
+- 分支 `development/p1-prototypes`；最新本地HEAD **59c898c**（有实证keyonly AUDIT_WRITE修正/单服务管理R1），前 **619f3c6**（audit A/B）、**d118000**（PTY诊断）、**6a65bb1**（凭据离线R1）等。不宣称产品通过。当前App窗口phase/Terminal Vim诊断两互斥写域与报告状态未提交；不得覆盖writer。remote为空、未push。
 - 最近完整内部候选仍 `DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，来源8b6396199db273493a438679df0020fa6ef7c3a4/dirty=false/version0.1.0 build1。arm64/min26/Development strict/runtime通过，Gatekeeper false/spctl3，未公证/上传/安装运行。ZIP7418092B/SHA256 fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e；tree499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066；manifest4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f。不能声称包含后续测试基础设施或报告。
 - 正式min26长期driver `Tests/StabilityAcceptance/.build/driver-71e5e2da-b345-4c4b-ab54-53b8d128209d/wrapper/OpenLXSSHStability.app`，driver66843ddc286375de474e9823ea7353cd7d77265b5e1a8bf1cbf8a009cf7f625a/helper31d0ee0ee9d357d7edd0bfaf129a9ae4b38334fd8955184f6afc049d685a0590；未运行200/24h，不降平台门。
 
@@ -95,6 +103,8 @@
 
 - 短ACK单案原typed报告一致性/时序/三PID实际不存在：`DerivedData/Verification/primary-terminal-postauth-live-14a17ac5-93bd-469e-9124-092d0861ba34/`。结果为失败证据核验通过，非PTY验收通过。
 - App49source/既有118tests0fail、Terminal9输入/8父对象、双App主/helper hash和deep strict签名复核：`DerivedData/Verification/primary-app-terminal-frozen-a24c034b-da4a-4254-907e-4f311351baec/`。首次复核脚本误用辅助文件名断言失败，修为实物Contents/Helpers/openlxssh-askpass后通过，无产品改动。主管随后独立再跑Terminal核心128与Python10均exit0，无文件/代次/Docker/socket/live；新日志 `DerivedData/Verification/primary-terminal-offline-checkpoint-7f690b18-1299-467b-80dc-7faaee6f9679/`。
+- 凭据R1：主管独立8pure→完整65Swift17Python29CLI、368输入/12复用对象/18构建命令、strict及inert0/0/2；`DerivedData/Verification/primary-credential-r1-{pure-52bbbe08-d489-48f8-bf79-61f9929b2d60,signed-d57f1a91-975d-4924-bcc5-417ee78b0d50,full-5140868d-a8f4-42ae-831d-e0eb6903ba8f}/`，未真实Keychain。详细 `docs/reports/public-credential-store-preparation.md`。
+- 容器内原daemon直连255与临时audit-fatal/PARTIAL已独立核：`DerivedData/Verification/primary-internal-pty-client-d2e43ea0-70ac-41b9-9736-cc14bd1e18ed/`、`primary-server-pty-live-12eba838-b5b2-41ba-a8cf-d393c1ba2116/`。不重写内部cleanupfalse，外层无残留另记录。
 - system-T/-tt：`DerivedData/Verification/postauth-system-ssh-control-b9a22fc3-c911-422e-86fe-c2673e46d3c8/`；两UID分配：`DerivedData/Verification/fixture-pty-metadata-507dc766-f62f-43db-98eb-9cdbfe485afe/`。不重复这些探针。
 
 ## 剩余必要工作与外部条件
@@ -103,4 +113,4 @@
 - 外部仍缺：macOS26真实运行；正式driver200次/五会话真实连续24h；DeveloperID Application/Installer当前0（仅Development1）、对应最终产物Apple上传批准；双机安装、人工IME/Finder/像素、企业允许环境。不能以缩数据/改时钟/HostProbe/多次短测替代。
 - 不创建Cron/OffPeak/常驻，不改电源/保护/宿主SSH，不因普通失败停止全部工作。仅必要信息/权限/无替代外部条件才BLOCKED；整体未完成时不得称COMPLETE。
 
-下一具体审点：80f只交最小容器内Linux SSH直连原daemon客户端诊断及离线自有Popen回收/输出白名单，主管先审后决定一次有限运行（临时sshd-i/新监听方案均未实施）；125交stop/durability/error-map纯测试红绿与增量签名审点。App/Terminal源码冻结，已保存18ee766/18761e6检查点，不重跑无新信息的旧案。
+下一具体审点：2c交四文件单job真实windowContinue/windowCancel source/offline/newUUID增量签名；9b交Vim前unexpectedFrame的最小根因/失败元数据及纯回归，均不自行runtime。root网络当前已释放，后续单案串行由主管分配。App f851上传跨关闭隐藏已主会话独立验收，旧失败保留；凭据真实Keychain仍未放行，正式mac26/长期/发布外部门不降低。

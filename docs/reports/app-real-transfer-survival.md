@@ -1,6 +1,6 @@
 # 原生真实上传跨标签关闭：首案失败检查点
 
-日期2026-10-27，Task APP-REAL-TRANSFER-PREP-A / LIVE-A / APP-TRANSFER-DIAGNOSTIC-R1。**两个真实16MiB phase均失败，不能证明关闭SSH/隐藏面板后传输继续。** 第二案已定位SSH在动作之前失败，原失败及远端、本地精确恢复证据均保留，相关源码冻结；未放宽生产或测试进度门。
+日期2026-10-27，Task APP-REAL-TRANSFER-PREP-A / LIVE-A / APP-TRANSFER-DIAGNOSTIC-R1 / APP-TRANSFER-AUDIT-FIX-LIVE-A。**原两个真实16MiB phase失败保留；定位并修复测试环境AUDIT_WRITE缺失后，新f851单案28检查全部通过，实际上传跨原生关闭SSH/隐藏面板完成、同服务SHA一致、8opens/8closes/endhandles0/shutdown救援0。** 仅HostProbe/mac15上传分项，窗口/Quit活动任务/目标系统仍待。
 
 ## 已审实现与准备证据
 
@@ -88,4 +88,23 @@
 
 主管再次核49冻结源码与既有118tests/0fail、双App主程序/helper摘要及strict签名，证据 `DerivedData/Verification/primary-app-terminal-frozen-a24c034b-da4a-4254-907e-4f311351baec/`。这是可复现诊断检查点，不是上传生命周期验收通过。
 
-AC-22/24仍未整体通过；macOS26/人工Finder/IME/嵌套、窗口/退出活动任务矩阵未被本phase覆盖。整体Goal NOT COMPLETE。
+## AUDIT_WRITE修正后全新实际成功案
+
+同image单差A/B确证环境missingAUDIT_WRITE破坏PTY后，仅keyonly修正/新身份，其余三服务与原数据卷/网络不变，见 `docs/reports/pty-audit-capability.md`、`docs/reports/keyonly-audit-fix.md`。App仅测试Contract两compiledpin换新CID1253a295…/FP SHA256:MHUel445tN/gQtcvZikLZVE1mlWZf7U38C0zZTTru+Q，生产/P6/phase/inflight/sessionConnected等逻辑和断言未改。
+
+既有私有853树受影响增量build/test/sign，新UUID diagnostic436855a2…：118tests/49hash/14命令/native160/strict通过，主管独立核 `DerivedData/Verification/primary-app-rebind-ee8558f1-ac8b-4c9c-8b03-58e111d36525/`。同App路径现主程序SHA256 `f65aea8fd76ee23f55dce052a81b142f2ded1a24dbb8a6b7fa24c63f1bc0297d`、helper `fbd19ace487f75df06b5d0bfec5ad8834eac0dd175ef2afd6cfe55c80c1a871f`；旧hash仅对应旧记录，正式min26沿用旧证据而非本轮重建。
+
+fresh collect晚于buildEpoch/newUUID run `f85121e5-6f69-4f04-8d4b-57c1bbd38519`，唯一实际运行exit0/32.116s、原JSON passed=true/28检查全过：
+
+- 原生SSH close动作发生于running 720896/16777216B，动作前SSH connected且ownedPID存在；随后原生hide发生于983040B，均真实未完成，不把waitingRisk或快照完成当inflight。
+- 同job/request/host/generation/service/serverbinding、connectionattempt1/reconnect0，任务实际succeeded/16777216B。
+- source与同生产service流式读取remote SHA256均 `e3a417b4096ae29df2f7bae6cffd693d99004229c1b22601f52150f5d3b838f9`。
+- 仅已知payload/空UUID远端根和held本地source/store清理，剩余ownedpaths空，remote root同service lstat notFound。原生窗口关闭awaitFiles并重开不恢复。
+- productionFiles attempts/returned/awaitclose1/1/1，publicopens/closes8/8、endhandles0、shutdown救援0、forbiddencredentialcalls0。
+- App58635/SSH58671/relay58540均不存在/无其directchildren；relay TERMwait0/5-5-0-0、hostports无listener、canonicalstore实际不存在。runtime已交回。
+
+原result：`DerivedData/AppRealIntegration/Inputs/run-f85121e5-6f69-4f04-8d4b-57c1bbd38519/app-result.json`，SHA256 `1e9a508945c58bc1cfb0117a6a9e68dd9da7c61434be79f9ec99f10fb8a67819`。完整harness/setup/run/资源 `DerivedData/AppRealIntegration/audit-fix-live-c4c99694-e898-4b98-9f36-a3e8a2ad6041/`。
+
+主管独立读原JSON/28checks、严格进度/动作前SSH状态、sameidentity/摘要/8正常closes、三实际PID和canonicalstore不存在，通过此有限分项：`DerivedData/Verification/primary-app-transfer-pass-6c91397d-7bf7-4f8a-877f-4f42492293fd/`。两次旧失败及外层恢复不追认为成功。
+
+当前AC-22有限host15上传跨关闭/隐藏分项通过，**不等整体AC-22/24完成**；picker仍是HostProbe测试选择，不是人工Finder/NSOpenPanel。macOS26、人工交互、其他传输方向/活动窗口与Quit完整矩阵未覆盖，整体Goal NOT COMPLETE。

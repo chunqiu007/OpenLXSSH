@@ -95,4 +95,16 @@ closed/PID释放/FD回baseline=true；自有SSH41010、consumer40915和relay4082
 
 原结果/命令/前后元数据：`DerivedData/Verification/fixture-server-pty-error-43181553-8d78-4a11-bfd9-6ad3746591a3/`；主管独立核auditfatal/原失败/原daemon身份/资源及实际outerPID不存在：`DerivedData/Verification/primary-server-pty-live-12eba838-b5b2-41ba-a8cf-d393c1ba2116/`。
 
-固定上游V_9_6_P1 `loginrec.c`/`audit-linux.c` 只读证据显示login记录后的Linux audit写入失败存在该fatal，普通lastlog/wtmp只读写失败多为logit/debug返回；上游不是Ubuntu完整补丁/编译证明。现证据支持针对audit写入的最小对照方案，尚未加cap或修改原服务；不采用privileged/AUDIT_CONTROL/关闭认证等绕过。临时helper内部标志false的原因另按源码收窄，不重跑旧案。没有真实PTY、Ctrl+C、resize或Vim通过，整体Goal NOT COMPLETE。
+固定上游V_9_6_P1 `loginrec.c`/`audit-linux.c` 只读证据显示login记录后的Linux audit写入失败存在该fatal，普通lastlog/wtmp只读写失败多为logit/debug返回；上游不是Ubuntu完整补丁/编译证明。现证据支持针对audit写入的最小对照方案，尚未加cap或修改原服务；不采用privileged/AUDIT_CONTROL/关闭认证等绕过。临时helper内部标志false的原因另按源码收窄，不重跑旧案。## 修后真实完整探针：通过八帧，Vim前失败
+
+新keyonly身份/八cap下，冻结de94 App使用fresh generation7120ec7ad11c/contract1e81f02595fa执行唯一actual consumer，PID58117 exit1/28.707s。前置harness CAP_前缀误比及本地Python缩进SyntaxError都在relay/consumer0次时发生，保留原诊断，修正后才本次实际尝试；未重复collect或连接。
+
+相比旧auth后255，现short shellACK=true/probeProcessACK=true，actual remotePID2996/start8461985/UID10000已确认；strictframe顺序通过8项至size31×93，UTF8输入SHA匹配/CtrlC中断已观察，App认证回调总数及connected后增量均0。failure=unexpectedFrame/failureStage=waitingProbe，failure/preClose仍connected/ownedSSH58157/pending0/stop=false，没有记录255或SessionFailure；不回填旧错误。
+
+尚未确认vim-ready/Vim文件SHA/done/returned0，完整12帧未通过。原report remoteSizeMatched=false原样保留：该字段旧代码要到vim-ready才置true，不抹去8帧严格validator已经核size的事实，也不追改旧report。具体Vim前内部失败未知，仅source/offline最小诊断，不猜Vim缺失或权限。
+
+本地closed/PIDreleased/FDreturn=true；relay58050 TERM/wait0/4-4-0-0/端口释放。精确nonce05eb0e78143e49908a741769c63141bf远端driver2996/start8461985已不存在、knownroot不存在/非symlink、exactVim与activebridgeowners空，未手工remote kill/delete，newkeyonly仍Healthy。外层后验无残留不把原remoteCleanup=false/remoteProcessReleased=false改绿。
+
+原报告/命令/精确后验：`Tests/RemoteTerminalAcceptance/.build/audit-fix-live-a/`。主管独立核原typed报告、阶段/8帧计数、原失败字段和三个实际本地PID不存在：`DerivedData/Verification/primary-terminal-audit-fix-c453eefe-2617-4b36-aed7-e6cd38a102c4/`。这确认环境修复恢复shell/输入/CtrlC的分项进展，但不是完整终端/TUI验收。
+
+整体Goal NOT COMPLETE。
