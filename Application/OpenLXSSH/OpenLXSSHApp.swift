@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+#if HOST_PROBE
+import OpenLXSSHFiles
+#endif
 
 @main enum OpenLXSSHEntry {
     @MainActor static func main() {
@@ -44,6 +47,9 @@ import SwiftUI
     #if HOST_PROBE
     private let smoke: NativeSmoke.Options?
     private var realIntegration: AppRealIntegration?
+    var realQuitBeforeStoresClose: ((TransferManagerSnapshot) async throws -> Void)?
+    var realQuitAfterStoresClose: (() async throws -> Void)?
+    var realQuitFailure: (() -> Void)?
     #endif
 
     init(arguments: [String]) throws {
@@ -196,8 +202,31 @@ import SwiftUI
                     if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) { try? data.write(to: smoke.directory.appendingPathComponent("transfer-exit-cleanup.json")) }
                 }
                 #endif
+                #if HOST_PROBE
+                if let realQuitBeforeStoresClose {
+                    do { try await realQuitBeforeStoresClose(finalTransfers) }
+                    catch {
+                        realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
+                    }
+                }
+                #endif
                 do { try await model.security.close(); try await model.repository.close() }
-                catch { /* Do not log database or credential error descriptions. */ }
+                catch {
+                    #if HOST_PROBE
+                    if realQuitBeforeStoresClose != nil {
+                        realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
+                    }
+                    #endif
+                    /* Do not log database or credential error descriptions. */
+                }
+                #if HOST_PROBE
+                if let realQuitAfterStoresClose {
+                    do { try await realQuitAfterStoresClose() }
+                    catch {
+                        realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
+                    }
+                }
+                #endif
                 terminationReplyPending = false; replyToTermination(true)
             } else {
                 windowCloseApproved = true; mainWindow?.performClose(nil)

@@ -56,7 +56,7 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel"
     var isTransfer: Bool { self != .readOnly }
 }
 struct AppRealTransferScope: Sendable {
@@ -85,6 +85,30 @@ struct AppRealWindowTransferGate {
         state == "cancelled" && managerClosed && !activeWork && sshClosed && !pidPresent && !windowPresent && closedServices == 1 && handles == 0
     }
 }
+enum AppRealQuitDecision { case continueTransfer, cancelAndQuit }
+struct AppRealQuitHookGate: Sendable {
+    private(set) var beforeCalls = 0, afterCalls = 0
+    private(set) var receiptWritten = false
+    mutating func before(phase: AppRealIntegrationPhase) throws {
+        guard phase == .quitContinueCancel, beforeCalls == 0, afterCalls == 0 else { throw AppRealTransferGuard.quitHookOrder }
+        beforeCalls = 1
+    }
+    mutating func after() throws {
+        guard beforeCalls == 1, afterCalls == 0 else { throw AppRealTransferGuard.quitHookOrder }
+        afterCalls = 1
+    }
+    mutating func committedReceipt() throws {
+        guard beforeCalls == 1, afterCalls == 1, !receiptWritten else { throw AppRealTransferGuard.quitHookOrder }
+        receiptWritten = true
+    }
+    var mayReplyToNativeQuit: Bool { beforeCalls == 1 && afterCalls == 1 && receiptWritten }
+}
+struct AppRealQuitTransferGate {
+    static func cancelledAndDrained(state: String, managerClosed: Bool, activeWork: Bool, sshClosed: Bool, pidPresent: Bool,
+                                    closedServices: Int, handles: Int, attempts: Int) -> Bool {
+        state == "cancelled" && managerClosed && !activeWork && sshClosed && !pidPresent && closedServices == 1 && handles == 0 && attempts == 1
+    }
+}
 struct AppRealWindowCheckpoint: Encodable, Sendable {
     let runID: String, event: String
     let jobID: UUID, generation: UUID, serviceID: UUID, hostID: UUID
@@ -92,12 +116,21 @@ struct AppRealWindowCheckpoint: Encodable, Sendable {
     let remoteRootBase64: String, payloadBase64: String, temporaryBase64: String
     let connectionAttempts: Int
     let retainedTemporaryPathsBase64: [String]
-    let phase = AppRealIntegrationPhase.windowContinueCancel
+    let phase: AppRealIntegrationPhase
+    init(runID: String, event: String, jobID: UUID, generation: UUID, serviceID: UUID, hostID: UUID, serverBinding: String,
+         sourceBytes: UInt64, progressBytes: UInt64, remoteRootBase64: String, payloadBase64: String, temporaryBase64: String,
+         connectionAttempts: Int, retainedTemporaryPathsBase64: [String], phase: AppRealIntegrationPhase = .windowContinueCancel) {
+        self.runID = runID; self.event = event; self.jobID = jobID; self.generation = generation; self.serviceID = serviceID; self.hostID = hostID
+        self.serverBinding = serverBinding; self.sourceBytes = sourceBytes; self.progressBytes = progressBytes
+        self.remoteRootBase64 = remoteRootBase64; self.payloadBase64 = payloadBase64; self.temporaryBase64 = temporaryBase64
+        self.connectionAttempts = connectionAttempts; self.retainedTemporaryPathsBase64 = retainedTemporaryPathsBase64; self.phase = phase
+    }
 }
 enum AppRealTransferStage: String, Codable, Sendable {
     case source, mkdir, enterOwnedRoot, probePrepare, probeExecute, transferContext, uploadControl, observeJob
     case pendingDecision, firstJobIdentity, temporaryLedger, preCloseAction, preHideAction, awaitSSHClose
     case windowFirstClose, windowContinue, windowSecondClose, windowCancelClose, windowAwaitClosed, windowFinalCancelled
+    case quitFirstTerminate, quitContinueDecision, quitSecondTerminate, quitCancelDecision, quitAwaitDrain, quitBeforeStoresClose, quitAfterStoresClose, quitReceipt
     case awaitTransfer, finalSucceeded, sameServiceContext, remoteDigest, remoteCleanup, localCleanup, complete
 }
 enum AppRealTransferGuard: String, Codable, Error, Sendable {
@@ -105,6 +138,7 @@ enum AppRealTransferGuard: String, Codable, Error, Sendable {
     case singleJob, pendingRiskMismatch, firstJobIdentity, temporaryCount, preCloseInflight, preCloseIdentity
     case sessionConnected, closeControl, preHideInflight, preHideIdentity, hideControl, finalJobIdentity
     case windowFirstInflight, windowContinueIdentity, windowContinueAdmission, windowSecondInflight, windowCancelIdentity, windowFinalCancelled, windowNotClosed, windowResources
+    case quitFirstInflight, quitContinueIdentity, quitContinueAdmission, quitSecondInflight, quitCancelIdentity, quitFinalCancelled, quitHookOrder, quitReceiptWrite, quitTimeout
     case unexpectedFinalDecision, finalSucceeded, sameConnection, sameServiceContext, remoteDigest, ownedCleanupLedger
 }
 enum AppRealDiagnosticJobState: String, Codable, Sendable {

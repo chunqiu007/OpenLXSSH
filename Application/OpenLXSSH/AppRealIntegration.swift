@@ -227,6 +227,15 @@ struct AppRealSessionFailure: Error {
         let retainedTemporaryPathsBase64: [String], createdPathsBase64: [String]
         let remotePostcheck = "NOT PERFORMED after cancellation: original service may be disposed. External fixed-CID exact-ledger final absence/temp metadata check required; no automatic reconnect."
     }
+    struct QuitEvidence: Encodable {
+        let jobID: UUID, generation: UUID, serviceID: UUID
+        let progressAtFirstTerminate: UInt64, progressAfterContinue: UInt64, progressAtSecondTerminate: UInt64, progressAtCancelDecision: UInt64
+        let cancelledState: String, managerClosed: Bool, allWorkDrained: Bool, sshClosedPIDNil: Bool
+        let beforeStoreCloseCalls: Int, afterStoreCloseCalls: Int
+        let nativeReplyStillPending: Bool
+        let retainedTemporaryPathsBase64: [String]
+        let remotePostcheck = "External fixed-CID exact-ledger final absence/temp check pending. No second SFTP/autoreconnect."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -239,11 +248,12 @@ struct AppRealSessionFailure: Error {
         let phase: String
         let transfer: TransferEvidence?
         let windowTransfer: WindowEvidence?
+        let quitTransfer: QuitEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
         let publicOpenHandles: Int, publicSuccessfulOpens: Int, publicSuccessfulCloses: Int, publicShutdownClosedHandles: Int
-        let boundary = "Real App native controls and SFTP. Transfer-survives-close tests SSH close/hide; window-continue-cancel tests one real inflight window Continue then CancelAndClose. Cancellation remote absence/temp verification is EXTERNAL pending, never I/O on a closed service. Test picker is not manual Finder. No Quit/IME/macOS26/product PERF claim."
+        let boundary = "Real App native controls and SFTP. Quit phase receipt is fsynced before the original native termination reply; outer process exit still required. Cancelled remote absence/temp verification is EXTERNAL pending, never I/O on a closed service. Test picker is not manual Finder. No IME/macOS26/product PERF claim."
     }
     let delegate: AppDelegate, options: AppRealIntegrationArguments.Options, input: AppRealPublicMaterial, store: AppRealOwnedStore
     let facts: AppRealFilesFacts, credentials: AppRealNoCredentials
@@ -251,6 +261,12 @@ struct AppRealSessionFailure: Error {
     private var ssh: DirectSessionDriver?, actualPID: Int32?, sshReleased = false
     private var transferEvidence: TransferEvidence?
     private var windowEvidence: WindowEvidence?
+    private var quitEvidence: QuitEvidence?
+    private var quitHooks = AppRealQuitHookGate()
+    private var quitTimer: Timer?
+    private var quitFailureRecorded = false
+    private var quitHostID: UUID?, quitKeyID: UUID?
+    var isQuitPhase: Bool { input.contract.selectedPhase == .quitContinueCancel }
     private var transferDiagnostics = AppRealTransferDiagnostics()
     init(delegate: AppDelegate, options: AppRealIntegrationArguments.Options, input: AppRealPublicMaterial, store: AppRealOwnedStore,
          facts: AppRealFilesFacts, credentials: AppRealNoCredentials) {
@@ -286,6 +302,7 @@ struct AppRealSessionFailure: Error {
             try check("fixture-key-source-unmodified", try AppRealPrivateInput.sha(AppRealPrivateInput.read(input.contract.generation + "/id_ed25519", limit: 32768)) == originalSHA)
             let host = HostConfiguration(name: "Local approved keyonly fixture", address: "127.0.0.1", port: 22221, username: "fixture", authentication: .privateKey, keyRef: key.id)
             try check("host-saved-no-password", await model.saveHostSecurely(host, isNew: true, password: .manual))
+            if isQuitPhase { quitHostID = host.id; quitKeyID = key.id }
             try await doubleClickHost()
             try await wait { !self.model.sessions.tabs.isEmpty }
             let trustDeadline = ProcessInfo.processInfo.systemUptime + 90
@@ -328,6 +345,7 @@ struct AppRealSessionFailure: Error {
             let manager = model.files.manager
             if input.contract.selectedPhase.isTransfer {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
+                if isQuitPhase { return } // Native termination owns the only store closes and final reply.
                 sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
             } else {
                 try await click("tab.close." + tab.id.uuidString)
@@ -365,30 +383,50 @@ struct AppRealSessionFailure: Error {
         if failure != nil, input.contract.selectedPhase.isTransfer {
             await captureTransferDiagnostic(stage: transferDiagnostics.stage, driver: ssh, job: nil)
         }
+        if isQuitPhase, let failure {
+            failQuit(failure)
+            return // No exit() may masquerade as a native Quit outcome, including failures.
+        }
         if failure != nil {
             _ = await model.lifecycle.closeConnections(cancelTransfers: true)
             if let ssh { sshReleased = ssh.session.state == .closed && ssh.session.ownedProcessID == nil }
             try? await model.security.close(); try? await model.repository.close()
         }
+        do { try await persistReport(failure: failure, removed: removed) } catch { exit(2) }
+        let exitCode: Int32 = failure == nil ? 0 : 1
+        RunLoop.main.perform { MainActor.assumeIsolated { () -> Void in exit(exitCode) } }
+    }
+    private func persistReport(failure: String?, removed: Bool) async throws {
         let report = await Report(scanSeconds: options.scanSeconds, passed: failure == nil, failureCode: failure, checks: checks,
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),
             publicOpenHandles: facts.openHandleCount(), publicSuccessfulOpens: facts.successfulOpens, publicSuccessfulCloses: facts.successfulCloses,
             publicShutdownClosedHandles: facts.shutdownClosedHandles)
-        let parent = String(options.contractPath!.dropLast("/app-real-integration.json".count))
-        do {
-            let fd = try AppRealPrivateInput.directory(parent); defer { Darwin.close(fd) }
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try AppRealPrivateInput.write(encoder.encode(report), parent: fd, name: "app-result.json")
-            print(report.passed ? "App real fixture finite case passed; see app-result.json" : "App real fixture finite case failed; own store retained; see app-result.json")
-        } catch { exit(2) }
-        let exitCode: Int32 = report.passed ? 0 : 1
-        RunLoop.main.perform { MainActor.assumeIsolated { () -> Void in exit(exitCode) } }
+        let fd = try AppRealPrivateInput.directory(String(options.contractPath!.dropLast("/app-real-integration.json".count)))
+        defer { Darwin.close(fd) }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try AppRealPrivateInput.write(encoder.encode(report), parent: fd, name: "app-result.json")
+    }
+    private func failQuit(_ code: String) {
+        guard !quitFailureRecorded else { return }
+        quitFailureRecorded = true; quitTimer?.invalidate(); quitTimer = nil
+        Task { @MainActor in
+            _ = await model.lifecycle.closeConnections(cancelTransfers: true)
+            if let ssh { sshReleased = ssh.session.state == .closed && ssh.session.ownedProcessID == nil }
+            // Store ownership remains with AppDelegate; never close Security/Repository twice.
+            try? await persistReport(failure: code, removed: false)
+            let fd = try? AppRealPrivateInput.directory(String(options.contractPath!.dropLast("/app-real-integration.json".count)))
+            if let fd {
+                try? AppRealPrivateInput.write(Data(("{\"passed\":false,\"failureCode\":\"quit-preexit-failed\"}\n").utf8), parent: fd, name: "quit-failure.json")
+                Darwin.close(fd)
+            }
+            // Leave native termination denied. Outer finite owner sees failure/missing success receipt.
+        }
     }
     private func captureTransferDiagnostic(stage: AppRealTransferStage, driver: DirectSessionDriver?, job supplied: TransferJobSnapshot?) async {
         transferDiagnostics.enter(stage)
@@ -503,6 +541,10 @@ struct AppRealSessionFailure: Error {
             return path.parent == remoteRoot && path.name?.bytes.starts(with: Data(".openlxssh-transfer.".utf8)) == true && actualCreated[bytes] == false
         }
         guard temporaries.count == 1 else { throw AppRealTransferGuard.temporaryCount }
+        if isQuitPhase {
+            try await quitContinueCancel(first: first, context: context, binding: binding, scope: scope, temporary: temporaries[0], manager: manager, driver: driver)
+            return nil
+        }
         if input.contract.selectedPhase == .windowContinueCancel {
             windowEvidence = try await windowContinueCancel(first: first, context: context, binding: binding, scope: scope,
                 sourceSHA: expectedSHA, temporary: temporaries[0], manager: manager, driver: driver)
@@ -595,6 +637,132 @@ struct AppRealSessionFailure: Error {
             progressAtCloseAction: atClose.transferredBytes, progressAtHideAction: atHide.transferredBytes, finalProgress: final.transferredBytes,
             actualTemporaryBase64: temporaries[0].base64EncodedString(), actualJobSucceeded: true,
             unchangedJobServiceHostGeneration: true, reconnects: 0, cleanedRemoteRoot: true, localSourceRemoved: true)
+    }
+    @MainActor private final class QuitDecisionState {
+        var decision: AppRealQuitDecision = .continueTransfer
+        var deadline = ProcessInfo.processInfo.systemUptime + 90
+    }
+    private func quitContinueCancel(first: TransferJobSnapshot, context: FilesTransferContext, binding: String, scope: AppRealTransferScope,
+                                    temporary: Data, manager: TransferManager, driver: DirectSessionDriver) async throws {
+        guard isQuitPhase, let originalWindow = delegate.mainWindow, delegate.realQuitBeforeStoresClose == nil,
+              delegate.realQuitAfterStoresClose == nil else { throw AppRealTransferGuard.quitHookOrder }
+        let same: @Sendable (TransferJobSnapshot) -> Bool = { $0.id == first.id && $0.generation == first.generation && $0.request == first.request }
+        let inflight: @Sendable (TransferJobSnapshot) -> Bool = { AppRealTransferScope.isRealInflight(state: $0.state.rawValue, transferred: $0.transferredBytes, sourceBytes: AppRealTransferScope.sourceBytes) }
+        let checkpoint: @MainActor @Sendable (String, UInt64, [String]) throws -> Void = { name, bytes, retained in
+            let record = AppRealWindowCheckpoint(runID: scope.runID, event: name, jobID: first.id, generation: first.generation,
+                serviceID: context.serviceID, hostID: context.hostID, serverBinding: binding, sourceBytes: AppRealTransferScope.sourceBytes,
+                progressBytes: bytes, remoteRootBase64: Data(scope.remoteDirectory.utf8).base64EncodedString(),
+                payloadBase64: Data(scope.remotePayload.utf8).base64EncodedString(), temporaryBase64: temporary.base64EncodedString(),
+                connectionAttempts: 1, retainedTemporaryPathsBase64: retained, phase: .quitContinueCancel)
+            let fd = try AppRealPrivateInput.directory(String(self.options.contractPath!.dropLast("/app-real-integration.json".count))); defer { Darwin.close(fd) }
+            try AppRealPrivateInput.write(JSONEncoder().encode(record), parent: fd, name: "quit-" + name + ".json")
+        }
+        var firstBytes: UInt64 = 0, continuedBytes: UInt64 = 0, secondBytes: UInt64 = 0, cancelBytes: UInt64 = 0
+        var kept = false, cancelClicked = false, retainedAcked = false
+        let decisionState = QuitDecisionState()
+        var timerTaskBusy = false
+        delegate.realQuitFailure = { [weak self] in self?.failQuit("quit-hook-or-store-close-failed") }
+        delegate.realQuitBeforeStoresClose = { [weak self] final in
+            guard let self, !self.quitFailureRecorded else { throw AppRealTransferGuard.quitHookOrder }
+            self.transferDiagnostics.enter(.quitBeforeStoresClose)
+            try self.quitHooks.before(phase: self.input.contract.selectedPhase)
+            guard cancelClicked, let job = final.jobs.first(where: { $0.id == first.id }), same(job),
+                  AppRealQuitTransferGate.cancelledAndDrained(state: job.state.rawValue, managerClosed: final.isClosed, activeWork: final.hasActiveWork,
+                    sshClosed: driver.session.state == .closed, pidPresent: driver.session.ownedProcessID != nil,
+                    closedServices: await self.facts.closedServices, handles: await self.facts.openHandleCount(), attempts: await self.facts.connectionAttempts)
+            else { throw AppRealTransferGuard.quitFinalCancelled }
+            let paths = job.retainedTemporaryPaths.map { $0.bytes.base64EncodedString() }
+            guard paths.isEmpty || paths == [temporary.base64EncodedString()] else { throw AppRealTransferGuard.ownedCleanupLedger }
+            self.sshReleased = true
+            try self.check("quit-native-continue-kept-same-window-job", kept && self.delegate.mainWindow === originalWindow)
+            try self.check("quit-native-cancel-waits-worker-files-ssh", true)
+            try checkpoint("before-stores-close", job.transferredBytes, paths)
+            guard let host = self.quitHostID, let key = self.quitKeyID else { throw AppRealTransferGuard.quitHookOrder }
+            try await self.model.repository.apply([.deleteHost(host)])
+            try await self.model.security.deleteKey(key)
+            try self.store.cleanupTransferSource()
+            self.quitEvidence = QuitEvidence(jobID: first.id, generation: first.generation, serviceID: context.serviceID,
+                progressAtFirstTerminate: firstBytes, progressAfterContinue: continuedBytes, progressAtSecondTerminate: secondBytes,
+                progressAtCancelDecision: cancelBytes, cancelledState: job.state.rawValue, managerClosed: final.isClosed,
+                allWorkDrained: !final.hasActiveWork, sshClosedPIDNil: true, beforeStoreCloseCalls: 1, afterStoreCloseCalls: 0,
+                nativeReplyStillPending: true, retainedTemporaryPathsBase64: paths)
+        }
+        delegate.realQuitAfterStoresClose = { [weak self] in
+            guard let self, !self.quitFailureRecorded else { throw AppRealTransferGuard.quitHookOrder }
+            self.transferDiagnostics.enter(.quitAfterStoresClose); try self.quitHooks.after()
+            try self.check("quit-stores-closed-once-before-native-reply", self.quitHooks.beforeCalls == 1 && self.quitHooks.afterCalls == 1)
+            try self.check("quit-forbidden-credentials-zero", await self.credentials.forbiddenCalls == 0)
+            guard let before = self.quitEvidence else { throw AppRealTransferGuard.quitHookOrder }
+            self.quitEvidence = QuitEvidence(jobID: before.jobID, generation: before.generation, serviceID: before.serviceID,
+                progressAtFirstTerminate: before.progressAtFirstTerminate, progressAfterContinue: before.progressAfterContinue,
+                progressAtSecondTerminate: before.progressAtSecondTerminate, progressAtCancelDecision: before.progressAtCancelDecision,
+                cancelledState: before.cancelledState, managerClosed: before.managerClosed, allWorkDrained: before.allWorkDrained,
+                sshClosedPIDNil: before.sshClosedPIDNil, beforeStoreCloseCalls: self.quitHooks.beforeCalls,
+                afterStoreCloseCalls: self.quitHooks.afterCalls, nativeReplyStillPending: true, retainedTemporaryPathsBase64: before.retainedTemporaryPathsBase64)
+            try self.store.cleanupEmptyStore()
+            self.quitTimer?.invalidate(); self.quitTimer = nil
+            self.transferDiagnostics.enter(.quitReceipt)
+            try await self.persistReport(failure: nil, removed: true) // Exclusive+fsync before native reply, never exit().
+            try self.quitHooks.committedReceipt()
+            guard self.quitHooks.mayReplyToNativeQuit else { throw AppRealTransferGuard.quitHookOrder }
+        }
+        let consumeSnapshot: @MainActor @Sendable (TransferManagerSnapshot) -> Void = { [weak self] snapshot in
+            defer { timerTaskBusy = false }
+            guard let self, !self.quitFailureRecorded else { return }
+            do {
+                guard ProcessInfo.processInfo.systemUptime < decisionState.deadline else { throw AppRealTransferGuard.quitTimeout }
+                if let acknowledge = self.find("lifecycle.transfers.retained.acknowledge", NSButton.self), !retainedAcked {
+                    guard snapshot.isClosed, !snapshot.hasActiveWork, let job = snapshot.jobs.first(where: { $0.id == first.id }), same(job), job.state == .cancelled,
+                          job.retainedTemporaryPaths.map({ $0.bytes.base64EncodedString() }) == [temporary.base64EncodedString()] else { throw AppRealTransferGuard.ownedCleanupLedger }
+                    try checkpoint("retained-before-ack", job.transferredBytes, [temporary.base64EncodedString()])
+                    acknowledge.performClick(nil); retainedAcked = true
+                } else if decisionState.decision == .continueTransfer, !kept, let button = self.find("lifecycle.transfers.continue", NSButton.self) {
+                    self.transferDiagnostics.enter(.quitContinueDecision)
+                    guard let job = snapshot.jobs.first(where: { $0.id == first.id }), same(job), inflight(job),
+                          driver.session.state == .connected, driver.session.ownedProcessID == self.actualPID else { throw AppRealTransferGuard.quitContinueIdentity }
+                    continuedBytes = job.transferredBytes; button.performClick(nil); kept = true
+                    try checkpoint("continued", continuedBytes, [])
+                } else if decisionState.decision == .cancelAndQuit, !cancelClicked, let button = self.find("lifecycle.transfers.cancelClose", NSButton.self) {
+                    self.transferDiagnostics.enter(.quitCancelDecision)
+                    guard let job = snapshot.jobs.first(where: { $0.id == first.id }), same(job), inflight(job),
+                          driver.session.state == .connected, driver.session.ownedProcessID == self.actualPID else { throw AppRealTransferGuard.quitCancelIdentity }
+                    cancelBytes = job.transferredBytes; button.performClick(nil); cancelClicked = true
+                    try checkpoint("cancel-decision", cancelBytes, [])
+                    self.transferDiagnostics.enter(.quitAwaitDrain)
+                }
+            } catch { self.failQuit((error as? AppRealTransferGuard).map { "transfer." + $0.rawValue } ?? "quit-control-failed") }
+        }
+        let timer = Timer(timeInterval: 0.025, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !timerTaskBusy, !self.quitFailureRecorded else { return }
+                timerTaskBusy = true
+                // AppKit terminateLater can exclude main-queue Swift Tasks. Ask the actor
+                // off-main, then synchronously validate/click in the active native run loop.
+                Task.detached {
+                    let snapshot = await manager.snapshot()
+                    RunLoop.main.perform(inModes: [.common, .default, .eventTracking, .modalPanel]) {
+                        MainActor.assumeIsolated { consumeSnapshot(snapshot) }
+                    }
+                }
+            }
+        }
+        quitTimer = timer; RunLoop.main.add(timer, forMode: .common)
+        transferDiagnostics.enter(.quitFirstTerminate)
+        guard let firstAction = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(firstAction), inflight(firstAction),
+              driver.session.state == .connected, driver.session.ownedProcessID == actualPID else { throw AppRealTransferGuard.quitFirstInflight }
+        firstBytes = firstAction.transferredBytes; try checkpoint("before-first-terminate", firstBytes, [])
+        RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+        try await wait { kept && !self.model.files.admissionFrozen && !self.model.lifecycle.terminating }
+        guard !quitFailureRecorded, delegate.mainWindow === originalWindow, originalWindow.isVisible,
+              let continued = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(continued), inflight(continued),
+              await facts.connectionAttempts == 1, await facts.bindings == [binding] else { throw AppRealTransferGuard.quitContinueAdmission }
+        decisionState.decision = .cancelAndQuit; decisionState.deadline = ProcessInfo.processInfo.systemUptime + 120
+        transferDiagnostics.enter(.quitSecondTerminate)
+        guard let second = await manager.snapshot().jobs.first(where: { $0.id == first.id }), same(second), inflight(second),
+              driver.session.state == .connected, driver.session.ownedProcessID == actualPID else { throw AppRealTransferGuard.quitSecondInflight }
+        secondBytes = second.transferredBytes; try checkpoint("before-second-terminate", secondBytes, [])
+        RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+        // Return to run loop. Native AppDelegate hooks persist success before its one true reply.
     }
     private func windowContinueCancel(first: TransferJobSnapshot, context: FilesTransferContext, binding: String, scope: AppRealTransferScope,
                                       sourceSHA: String, temporary: Data, manager: TransferManager, driver: DirectSessionDriver) async throws -> WindowEvidence {

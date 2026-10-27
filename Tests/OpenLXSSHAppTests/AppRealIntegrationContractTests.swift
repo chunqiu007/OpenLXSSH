@@ -19,7 +19,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -82,6 +82,36 @@ final class AppRealIntegrationContractTests: XCTestCase {
         XCTAssertEqual(ring.stage, .preCloseAction); XCTAssertEqual(ring.failedGuard, .preCloseInflight)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(ring)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["stage", "failedGuard", "snapshots"])
+    }
+    func testQuitHooksAreAbsentByDefaultAndOrderedOnceBeforeNativeReply() throws {
+        var gate = AppRealQuitHookGate()
+        XCTAssertFalse(gate.mayReplyToNativeQuit)
+        XCTAssertThrowsError(try gate.after())
+        XCTAssertThrowsError(try gate.committedReceipt())
+        XCTAssertThrowsError(try gate.before(phase: .readOnly))
+        XCTAssertThrowsError(try gate.before(phase: .windowContinueCancel))
+        try gate.before(phase: .quitContinueCancel)
+        XCTAssertThrowsError(try gate.before(phase: .quitContinueCancel))
+        XCTAssertFalse(gate.mayReplyToNativeQuit)
+        try gate.after()
+        XCTAssertThrowsError(try gate.after())
+        XCTAssertFalse(gate.mayReplyToNativeQuit)
+        try gate.committedReceipt()
+        XCTAssertTrue(gate.mayReplyToNativeQuit)
+        XCTAssertThrowsError(try gate.committedReceipt())
+        XCTAssertEqual(gate.beforeCalls, 1); XCTAssertEqual(gate.afterCalls, 1)
+    }
+    func testQuitCancelMustBeCancelledDrainedAndSameSingleConnection() {
+        XCTAssertTrue(AppRealQuitTransferGate.cancelledAndDrained(state: "cancelled", managerClosed: true, activeWork: false, sshClosed: true,
+            pidPresent: false, closedServices: 1, handles: 0, attempts: 1))
+        for state in ["succeeded", "running", "failed"] {
+            XCTAssertFalse(AppRealQuitTransferGate.cancelledAndDrained(state: state, managerClosed: true, activeWork: false, sshClosed: true,
+                pidPresent: false, closedServices: 1, handles: 0, attempts: 1))
+        }
+        XCTAssertFalse(AppRealQuitTransferGate.cancelledAndDrained(state: "cancelled", managerClosed: false, activeWork: true, sshClosed: true,
+            pidPresent: false, closedServices: 1, handles: 0, attempts: 1))
+        XCTAssertFalse(AppRealQuitTransferGate.cancelledAndDrained(state: "cancelled", managerClosed: true, activeWork: false, sshClosed: false,
+            pidPresent: true, closedServices: 1, handles: 1, attempts: 2))
     }
     func testWindowCancelRequiresCancelledWorkerServiceSSHAndWindowDrain() {
         func gate(_ state: String = "cancelled", _ closed: Bool = true, _ active: Bool = false, _ ssh: Bool = true,
