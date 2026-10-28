@@ -1,0 +1,106 @@
+{
+  "dependencyObjects": [
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/OpenLXSSHTrust.o",
+      "sha256": "917df2667f781067397550dd5e3d06d0414b0b6af38a1c3c924714967fa61af4"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/SwiftTerm.o",
+      "sha256": "1742dfae82fb68dd80e70127785a40a6493d1eaca9a3f0ac652b4d80681a331d"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/OpenLXSSHAskpass.o",
+      "sha256": "464f7ed5bb159ab16faccf5f13d22b71bf40d0f50c25899c5aefb33867144b67"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/OpenLXSSHTransport.o",
+      "sha256": "d0773b64747773042c65ca5301e2f508ca855c1cd76aad0d00fe04acf6353d6e"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/COpenLXSSHAskpass-AskpassMach.o",
+      "sha256": "f0df729d3e88a5c60cf4bbacf99ca26f80711b6fce629ac6d316e31462ade949"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/COpenLXSSHAskpass-BoundedTool.o",
+      "sha256": "f48e467f2a4babb4e4f70a0ac020c6f9b9f34abfd96ad282a4f34cb9260280ac"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/COpenLXSSHAskpass-Identity.o",
+      "sha256": "eeb3bb063ad2edd4a35dcced6bd7338af35d6a439eff068e82cc7a701e599e75"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-f43c264c-363f-4cf3-829e-73dd3e4a7f90/objects/RealIntegrationPOSIX-PrivateInput.o",
+      "sha256": "d769a5d57c0311d9110d8c101a1d79bb255cf97a352bccd0a4aaee184571b88b"
+    },
+    {
+      "metadata": {
+        "architecture": "arm64",
+        "kind": 1,
+        "minimumOS": "15.0"
+      },
+      "module": "RemoteTerminalCore",
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/objects/RemoteTerminalCore.o",
+      "sha256": "58f1ac9116cd29f3cbff9cfa345911de22b18d6bcef593ceac68e00c7679981d"
+    }
+  ],
+  "frozenLiveInput": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/inputs/Tests/RemoteTerminalAcceptance/LiveInput.swift",
+  "frozenLiveInputSHA256": "5a83ce95aa2c72006bbf95660b4b83024d473f5f46a4e659a0978a2618f20ea4",
+  "frozenRelayDirectory": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/KeepaliveAcceptance/.build/frozen-relay",
+  "frozenRelaySHA256": {
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/KeepaliveAcceptance/.build/frozen-relay/fixture.py": "e1e433c7625c1255e1799030dd2d0d461a6d880ef4bfb670f98fe47e61af4b98",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/KeepaliveAcceptance/.build/frozen-relay/relay.py": "4bacca3f0fffe6713f6f4ce9717c40f0ec96c83afa76c8789e194b832ff63048"
+  },
+  "fullDependencyBuildRequired": false,
+  "helper": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/OpenLXSSHRemoteTerminal.app/Contents/Helpers/openlxssh-askpass",
+  "helperSHA256": "b7d48e6a209c256c54b603247f5ed406b536daacd6e9525d6f9d59330e426f4e",
+  "moduleDirectory": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules",
+  "moduleSHA256": {
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpass.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpass.swiftdoc": "f7ff77c69ae53998f52314e9e253d4bd548c329cce01329311d21743d6a97fc9",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpass.swiftmodule": "45d6fa7b456466e0cdc7d974654f3d2c4a3fb5901898f7f4f5c1cf1e37880833",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpass.swiftsourceinfo": "486b66bea97c5a8d5d23a3a0caea1f2dc21f075ec029fa91a4dcb7192f9355a0",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpassHelper.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpassHelper.swiftdoc": "9c0e96c091463d026252ebf3b14af98b1621a87b6d195d6de9ac3fe4f512ed70",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpassHelper.swiftmodule": "97cecdb20acff0cb05f8f39681f9f87d73aa444e0da3cb78a26ca392e24ec075",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHAskpassHelper.swiftsourceinfo": "c17c705a7f8003c08866691307b4bba6e120d3c2dcc1844d6e50a31be751d75b",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHRemoteTerminal.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHRemoteTerminal.swiftdoc": "987244975c62db5f0321fcc09bf49b3dd38f28c1f510bad26683bc2c839948de",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHRemoteTerminal.swiftmodule": "71d971ae1aa4c15779d732e5d37e76e0553d698568309ec3ba7a304fa62c0350",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHRemoteTerminal.swiftsourceinfo": "ef8965e3589c6c737ea4fde29835f82a6671cadfad39587c764ab8ab279b0dde",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTransport.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTransport.swiftdoc": "7be6b6cfbb4b9412e38b8e06e464144557d50890e1fe7c2aeeef27f47dd85bb6",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTransport.swiftmodule": "31fc2c93cacc28fc7757529f119d90e72dfebc4b8f3270101af32b4bf5f7af74",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTransport.swiftsourceinfo": "a4a5f7c4e8858f5c28f2086c2138242921852e62629877269b6e1507817a3327",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTrust.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTrust.swiftdoc": "e3ab950d3a741aa37e472b936c39c91700a6b50d5785be02eec6376954bf420b",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTrust.swiftmodule": "a491ba8a419a87fc6e4d62a686d8805941407021df8f5db925d5fb6305ffeb7e",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/OpenLXSSHTrust.swiftsourceinfo": "ccc8862f7b0d7b84363ebe5d3a89099263b023c8437853750868347cd85fde43",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalCore.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalCore.swiftdoc": "432c314ad7a04f629790986985b0dd58b41a52e2c1841c7e6f6a16f7998d5e3d",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalCore.swiftmodule": "57cc2701524a23077cb3d5cfaba543c75c028cd933a9f1c6979db3de4568907a",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalCore.swiftsourceinfo": "a13a1b532eff0c2746760ff980c938f13b1968b14f1826f0565eef1a872094b4",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalOffline.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalOffline.swiftdoc": "fdcc4d8cce340a45ef294b52101b19daf3d174c20535fed294254dc3f19a322f",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalOffline.swiftmodule": "faec7cbc74b6081b905b67743e06451c5fccba42802cd7d484d6aba81db8d410",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/RemoteTerminalOffline.swiftsourceinfo": "fe8013fabd95d655496306506bc1ab4c1932961f672872ef737812b707d173a3",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/SwiftTerm.abi.json": "4277ac6b49f8511196028a5ac20f5b1b1dfa754c24615d34068089f0b1739728",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/SwiftTerm.swiftdoc": "4e2a52a4504048fae391a6b7dcfdcd05e26d538c6b6303d8c4bd8ff49b288e7e",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/SwiftTerm.swiftmodule": "1a9e36d9fc8b952fadb0b0b9fe5c4076c0a0547adecea105a3f381667edb0a21",
+    "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/modules/SwiftTerm.swiftsourceinfo": "32a0578481c2530a75cac3d01d69536dcf5474a1194fa354dd1593a52b89bea9"
+  },
+  "parentCheckpoint": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf",
+  "parentManifestSHA256": "b2c3ea6e0862790eb47fdefd85705fd316b755550f97239cc05ca75d0d0eceb6",
+  "reviewedConsumerSources": [
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/LiveInput.swift",
+      "sha256": "5a83ce95aa2c72006bbf95660b4b83024d473f5f46a4e659a0978a2618f20ea4",
+      "snapshot": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/inputs/Tests/RemoteTerminalAcceptance/LiveInput.swift"
+    },
+    {
+      "path": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/Main.swift",
+      "sha256": "6e5acbdac1f193f613e79ff072acd251b60f77c119f53cb56ba77010972d4255",
+      "snapshot": "/Users/liuwenshuo/Desktop/OpenLXSSH/Tests/RemoteTerminalAcceptance/.build/host-89033e34-66db-4c4c-9a23-c2c881636baf/inputs/Tests/RemoteTerminalAcceptance/Main.swift"
+    }
+  ],
+  "stage": "source-offline-no-link-sign-live"
+}
