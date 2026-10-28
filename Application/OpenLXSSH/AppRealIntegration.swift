@@ -342,6 +342,22 @@ struct AppRealSessionFailure: Error {
 }
 @MainActor final class AppRealIntegration {
     struct Check: Encodable { let name: String; let passed: Bool }
+    struct SwitchEvidence: Encodable {
+        struct Transition: Encodable {
+            let fromTabID: UUID, selectedTabID: UUID
+            let progressAtAction: UInt64, actionUptime: Double
+            let inFlight: Bool, identitiesAndObjectsUnchanged: Bool
+        }
+        let aBefore: AppRealSessionsProtocol.Identity, bBefore: AppRealSessionsProtocol.Identity
+        let job: AppRealBatchGate.Job, transitions: [Transition]
+        let serviceID: UUID, hostID: UUID, lifetime: UUID, serverBinding: String
+        let sourceBytes: UInt64, finalProgress: UInt64, sourceSHA256: String, remoteSHA256: String
+        let actualTemporaryBase64: String, tasksEntryJobID: UUID, tasksEntryState: String, tasksEntryProgress: UInt64
+        let tasksEntryUptime: Double, tasksVisible: Bool
+        let sameJobServiceAndBothSessionsAfterTransfer: Bool, bothDriversClosed: Bool, bothOwnedProcessesGone: Bool
+        let remoteRootCleaned: Bool, localSourceRemoved: Bool
+        let boundary = "Two native tab selections each require fresh positive running progress below16MiB. Task entry is explicitly verified AFTER completion. No SSH close/panel hide during transfer, no throttle/pause, no pixels/IME/macOS26/24h claim."
+    }
     struct TransferEvidence: Encodable {
         let jobID: UUID, generation: UUID, serviceID: UUID, hostID: UUID
         let serverBinding: String, sourceBytes: UInt64, sourceSHA256: String, remoteSHA256: String
@@ -443,6 +459,7 @@ struct AppRealSessionFailure: Error {
         let localStoreRemoved: Bool
         let phase: String
         let transfer: TransferEvidence?
+        let transferSwitch: SwitchEvidence?
         let windowTransfer: WindowEvidence?
         let quitTransfer: QuitEvidence?
         let fileOperations: FileOperationsEvidence?
@@ -461,6 +478,7 @@ struct AppRealSessionFailure: Error {
     private var checks: [Check] = []
     private var ssh: DirectSessionDriver?, actualPID: Int32?, sshReleased = false
     private var transferEvidence: TransferEvidence?
+    private var switchEvidence: SwitchEvidence?
     private var windowEvidence: WindowEvidence?
     private var quitEvidence: QuitEvidence?
     private var fileOperationsEvidence: FileOperationsEvidence?
@@ -580,7 +598,7 @@ struct AppRealSessionFailure: Error {
             }
             let finalManager = await manager.snapshot(), closedFiles = await facts.closedServices
             try check("window-close-awaited-files", finalManager.isClosed && closedFiles == (terminalOnly ? 0 : 1))
-            if input.contract.selectedPhase == .transferSurvivesClose || input.contract.selectedPhase == .batchConflicts || input.contract.selectedPhase == .batchOverwrite {
+            if input.contract.selectedPhase == .transferSurvivesClose || input.contract.selectedPhase == .batchConflicts || input.contract.selectedPhase == .batchOverwrite || input.contract.selectedPhase == .transferSurvivesSwitch {
                 let open = await facts.openHandleCount(), forced = await facts.shutdownClosedHandles
                 let opens = await facts.successfulOpens, closes = await facts.successfulCloses
                 try check("transfer-public-handles-closed-without-shutdown-rescue", open == 0 && forced == 0 && opens == closes)
@@ -1342,7 +1360,7 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),
@@ -1417,8 +1435,73 @@ struct AppRealSessionFailure: Error {
             guard try await service.lstat(current, token: token).kind == .directory else { throw AppRealIntegrationFailure.cleanup }
         }
     }
+    @MainActor private final class SwitchSessions {
+        let a: SessionTab, b: SessionTab, aDriver: DirectSessionDriver, bDriver: DirectSessionDriver
+        let aBefore: AppRealSessionsProtocol.Identity, bBefore: AppRealSessionsProtocol.Identity
+        let aView: NativeTerminalView, bView: NativeTerminalView, aSession: DirectSSHSession, bSession: DirectSSHSession
+        init(a: SessionTab, b: SessionTab, aDriver: DirectSessionDriver, bDriver: DirectSessionDriver,
+             aBefore: AppRealSessionsProtocol.Identity, bBefore: AppRealSessionsProtocol.Identity) {
+            self.a = a; self.b = b; self.aDriver = aDriver; self.bDriver = bDriver; self.aBefore = aBefore; self.bBefore = bBefore
+            aView = aDriver.terminal; bView = bDriver.terminal; aSession = aDriver.session; bSession = bDriver.session
+        }
+        static func identity(_ tab: SessionTab, _ driver: DirectSessionDriver) throws -> AppRealSessionsProtocol.Identity {
+            guard tab.driver === driver, let token = driver.token, token.sessionID == driver.session.sessionID,
+                  let pid = driver.session.ownedProcessID, pid > 0, Darwin.kill(pid, 0) == 0 else { throw AppRealIntegrationFailure.failedCheck }
+            var info = proc_bsdinfo(); let size = MemoryLayout<proc_bsdinfo>.size
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size)) == Int32(size), info.pbi_pid == UInt32(pid),
+                  info.pbi_uid == getuid(), info.pbi_ppid == UInt32(getpid()) else { throw AppRealIntegrationFailure.failedCheck }
+            let process = AppRealSessionsProtocol.ProcessIdentity(pid: pid, parentPID: Int32(info.pbi_ppid), startSeconds: info.pbi_start_tvsec, startMicroseconds: info.pbi_start_tvusec)
+            guard process.isValid else { throw AppRealIntegrationFailure.failedCheck }
+            return .init(tabID: tab.id, sessionID: token.sessionID, generation: token.generation, process: process)
+        }
+        func current(_ controller: SessionController) throws {
+            guard controller.tabs.count == 2, controller.tabs.contains(where: { $0 === a }), controller.tabs.contains(where: { $0 === b }),
+                  a.driver === aDriver, b.driver === bDriver, aDriver.terminal === aView, bDriver.terminal === bView,
+                  aDriver.session === aSession, bDriver.session === bSession,
+                  a.state == .connected, b.state == .connected, aDriver.state == .connected, bDriver.state == .connected,
+                  a.authentication == nil, b.authentication == nil, a.trust.isEmpty, b.trust.isEmpty,
+                  try Self.identity(a, aDriver) == aBefore, try Self.identity(b, bDriver) == bBefore else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        static func gone(_ pid: Int32) -> Bool { pid > 0 && Darwin.kill(pid, 0) == -1 && errno == ESRCH }
+    }
+    private func prepareSwitchSessions(a: SessionTab, driver: DirectSessionDriver) async throws -> SwitchSessions {
+        let plan = try AppRealSessionsProtocol(nonce: input.contract.runID.replacingOccurrences(of: "-", with: ""))
+        let aBefore = try SwitchSessions.identity(a, driver)
+        func ack(_ tab: SessionTab, _ driver: DirectSessionDriver, _ expected: AppRealSessionsProtocol.Identity, _ role: AppRealSessionsProtocol.Role) async throws {
+            try driver.session.sendInput(plan.ackCommand(role)); let deadline = ProcessInfo.processInfo.systemUptime + 15
+            while true {
+                guard tab.state == .connected, driver.state == .connected, try SwitchSessions.identity(tab, driver) == expected else { throw AppRealIntegrationFailure.failedCheck }
+                if try plan.acknowledged(driver.terminal.text, role: role) { return }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        try await ack(a, driver, aBefore, .aInitial)
+        try await click("session.new"); try await wait { self.model.sessions.tabs.count == 2 && self.model.sessions.tabs.contains { $0.id != a.id && $0.driver != nil } }
+        guard let b = model.sessions.tabs.first(where: { $0.id != a.id }), b.hostID == a.hostID,
+              let bDriver = b.driver as? DirectSessionDriver else { throw AppRealIntegrationFailure.failedCheck }
+        let deadline = ProcessInfo.processInfo.systemUptime + 90
+        while b.state != .connected || bDriver.state != .connected {
+            guard b.authentication == nil, b.trust.isEmpty else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if case .failed(let reason) = b.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let bBefore = try SwitchSessions.identity(b, bDriver)
+        try await ack(b, bDriver, bBefore, .bInitial)
+        let pair = SwitchSessions(a: a, b: b, aDriver: driver, bDriver: bDriver, aBefore: aBefore, bBefore: bBefore)
+        try pair.current(model.sessions)
+        try check("switch-upload-not-started-both-independent-real-shells-ready", AppRealSessionsProtocol.independent(aBefore, bBefore,
+            distinctObjects: a !== b && driver !== bDriver && driver.session !== bDriver.session && pair.aView !== pair.bView))
+        try await click("tab.select." + a.id.uuidString); try pair.current(model.sessions)
+        try check("switch-initial-native-selection-a", model.sessions.selectedTabID == a.id)
+        return pair
+    }
     private func transferSurvivesClose(tab: SessionTab, driver: DirectSessionDriver) async throws -> TransferEvidence? {
         transferDiagnostics.enter(.source)
+        let switching = input.contract.selectedPhase == .transferSurvivesSwitch
+        var switchPair: SwitchSessions?
+        if switching { switchPair = try await prepareSwitchSessions(a: tab, driver: driver); transferDiagnostics.enter(.switchSessionsReady) }
         let scope = try AppRealTransferScope(runID: input.contract.runID)
         let sourceURL = try store.generateTransferSource(scope), expectedSHA = try store.transferSourceSHA256()
         try check("transfer-source-generated-16MiB", sourceURL.lastPathComponent == scope.payloadName)
@@ -1491,6 +1574,32 @@ struct AppRealSessionFailure: Error {
                 sourceSHA: expectedSHA, temporary: temporaries[0], manager: manager, driver: driver)
             return nil
         }
+        var transitions: [SwitchEvidence.Transition] = []
+        var closeProgress: UInt64 = 0, hideProgress: UInt64 = 0
+        if let pair = switchPair {
+            let gate = try AppRealSwitchGate(first: .actual(first), a: pair.aBefore, b: pair.bBefore)
+            for target in [pair.b.id, pair.a.id] {
+                transferDiagnostics.enter(target == pair.b.id ? .switchToB : .switchToA)
+                let controlID = "tab.select." + target.uuidString
+                try await wait { self.find(controlID, NSButton.self)?.isEnabled == true }
+                let snapshot = await manager.snapshot()
+                guard snapshot.jobs.count == 1, let current = snapshot.jobs.first else { throw AppRealTransferGuard.singleJob }
+                try pair.current(model.sessions)
+                let before = model.sessions.selectedTabID
+                guard gate.before(.actual(current), a: try SwitchSessions.identity(pair.a, pair.aDriver),
+                    b: try SwitchSessions.identity(pair.b, pair.bDriver), bothConnectedAndSameObjects: true,
+                    selected: before, target: target), let button = find(controlID, NSButton.self), button.isEnabled,
+                    let before else { throw AppRealIntegrationFailure.transferCompletedBeforeLifecycleAction }
+                let actionTime = ProcessInfo.processInfo.systemUptime
+                button.performClick(nil) // No suspension between fresh inflight validation and native selection.
+                try pair.current(model.sessions)
+                guard gate.after(from: before, selected: model.sessions.selectedTabID, target: target) else { throw AppRealIntegrationFailure.failedCheck }
+                transitions.append(.init(fromTabID: before, selectedTabID: target, progressAtAction: current.transferredBytes,
+                    actionUptime: actionTime, inFlight: AppRealTransferScope.isRealInflight(state: current.state.rawValue,
+                        transferred: current.transferredBytes, sourceBytes: AppRealTransferScope.sourceBytes), identitiesAndObjectsUnchanged: true))
+            }
+            try check("two-native-tab-switches-during-positive-running-transfer", transitions.count == 2 && model.sessions.selectedTabID == pair.a.id)
+        } else {
         transferDiagnostics.enter(.preCloseAction)
         // Wait for both native controls before the final action-time snapshot.
         try await wait { self.find("tab.close." + tab.id.uuidString, NSButton.self)?.isEnabled == true && self.find("files.hide", NSButton.self)?.isEnabled == true }
@@ -1513,6 +1622,8 @@ struct AppRealSessionFailure: Error {
         await captureTransferDiagnostic(stage: .awaitSSHClose, driver: driver, job: atHide)
         try await wait { !self.model.files.visible && self.model.sessions.tabs.isEmpty && driver.session.state == .closed && driver.session.ownedProcessID == nil }
         try check("native-ssh-close-and-panel-hide-during-real-inflight", !model.files.visible && driver.session.ownedProcessID == nil)
+        closeProgress = atClose.transferredBytes; hideProgress = atHide.transferredBytes
+        }
         transferDiagnostics.enter(.awaitTransfer)
         var final: TransferJobSnapshot?
         let finishDeadline = ProcessInfo.processInfo.systemUptime + 180
@@ -1532,7 +1643,7 @@ struct AppRealSessionFailure: Error {
         let attempts = await facts.connectionAttempts, nowBindings = await facts.bindings
         try check("same-job-service-host-generation-no-reconnect", attempts == 1 && nowBindings == bindings && ObjectIdentifier(manager) == ObjectIdentifier(model.files.manager))
         let finalContext = try model.files.transferContext(upload: true)
-        try check("same-current-service-context-after-hide", finalContext.serviceID == context.serviceID && finalContext.hostID == context.hostID && finalContext.lifetime == context.lifetime)
+        try check(switching ? "same-current-service-context-after-switch" : "same-current-service-context-after-hide", finalContext.serviceID == context.serviceID && finalContext.hostID == context.hostID && finalContext.lifetime == context.lifetime)
         // Exact same service lease, bounded 64KiB streaming SHA; no shell hash or reconnect.
         transferDiagnostics.enter(.remoteDigest)
         let digest = try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
@@ -1555,6 +1666,7 @@ struct AppRealSessionFailure: Error {
                 return hash.finalize().map { String(format: "%02x", $0) }.joined()
             } catch { try? await service.closeHandle(handle); throw error }
         }
+        if let pair = switchPair { try pair.current(model.sessions) }
         try check("actual-remote-payload-stream-sha256", digest == expectedSHA)
         transferDiagnostics.enter(.remoteCleanup)
         let owned = await facts.ownedPaths()
@@ -1572,10 +1684,37 @@ struct AppRealSessionFailure: Error {
         transferDiagnostics.enter(.localCleanup)
         try store.cleanupTransferSource()
         try check("only-known-remote-and-held-local-source-cleaned", await facts.ownedPaths().isEmpty)
+        if let pair = switchPair {
+            try pair.current(model.sessions)
+            transferDiagnostics.enter(.switchTasksVisible)
+            if model.files.tasksVisible { try await click("transfers.hide") }
+            try await click("transfers.open")
+            try pair.current(model.sessions)
+            let taskUptime = ProcessInfo.processInfo.systemUptime
+            guard model.files.tasksVisible, let shown = model.files.transferSnapshot.jobs.first(where: { $0.id == first.id }),
+                  shown.generation == first.generation, shown.request == first.request, shown.state == .succeeded else { throw AppRealIntegrationFailure.failedCheck }
+            try check("switch-same-completed-job-visible-through-native-task-entry", model.files.tasksVisible)
+            transferDiagnostics.enter(.switchCloseBoth)
+            try await click("tab.close." + pair.b.id.uuidString)
+            try await wait { self.model.sessions.tabs.count == 1 && pair.bDriver.state == .closed && pair.bDriver.session.ownedProcessID == nil && SwitchSessions.gone(pair.bBefore.process.pid) }
+            guard try SwitchSessions.identity(pair.a, pair.aDriver) == pair.aBefore, pair.aDriver.state == .connected else { throw AppRealIntegrationFailure.failedCheck }
+            try await click("tab.close." + pair.a.id.uuidString)
+            try await wait { self.model.sessions.tabs.isEmpty && pair.aDriver.state == .closed && pair.bDriver.state == .closed && pair.aDriver.session.ownedProcessID == nil && pair.bDriver.session.ownedProcessID == nil && SwitchSessions.gone(pair.aBefore.process.pid) && SwitchSessions.gone(pair.bBefore.process.pid) }
+            switchEvidence = SwitchEvidence(aBefore: pair.aBefore, bBefore: pair.bBefore, job: .init(.actual(first)), transitions: transitions,
+                serviceID: context.serviceID, hostID: context.hostID, lifetime: context.lifetime, serverBinding: binding,
+                sourceBytes: AppRealTransferScope.sourceBytes, finalProgress: final.transferredBytes, sourceSHA256: expectedSHA, remoteSHA256: digest,
+                actualTemporaryBase64: temporaries[0].base64EncodedString(), tasksEntryJobID: shown.id, tasksEntryState: shown.state.rawValue,
+                tasksEntryProgress: shown.transferredBytes, tasksEntryUptime: taskUptime, tasksVisible: true,
+                sameJobServiceAndBothSessionsAfterTransfer: true, bothDriversClosed: pair.aDriver.state == .closed && pair.bDriver.state == .closed,
+                bothOwnedProcessesGone: SwitchSessions.gone(pair.aBefore.process.pid) && SwitchSessions.gone(pair.bBefore.process.pid),
+                remoteRootCleaned: true, localSourceRemoved: true)
+            transferDiagnostics.enter(.complete)
+            return nil // Never fill close/hide progress labels with switch data.
+        }
         transferDiagnostics.enter(.complete)
         return TransferEvidence(jobID: first.id, generation: first.generation, serviceID: context.serviceID, hostID: context.hostID,
             serverBinding: binding, sourceBytes: AppRealTransferScope.sourceBytes, sourceSHA256: expectedSHA, remoteSHA256: digest,
-            progressAtCloseAction: atClose.transferredBytes, progressAtHideAction: atHide.transferredBytes, finalProgress: final.transferredBytes,
+            progressAtCloseAction: closeProgress, progressAtHideAction: hideProgress, finalProgress: final.transferredBytes,
             actualTemporaryBase64: temporaries[0].base64EncodedString(), actualJobSucceeded: true,
             unchangedJobServiceHostGeneration: true, reconnects: 0, cleanedRemoteRoot: true, localSourceRemoved: true)
     }

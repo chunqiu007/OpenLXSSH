@@ -56,8 +56,8 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite"
-    var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel }
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch"
+    var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel || self == .transferSurvivesSwitch }
     var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect }
 }
 struct AppRealTransferScope: Sendable {
@@ -366,6 +366,28 @@ struct AppRealBatchGate: Sendable {
         }
     }
 }
+struct AppRealSwitchGate: Sendable {
+    let job: AppRealBatchGate.Job
+    let request: TransferRequest
+    let a: AppRealSessionsProtocol.Identity, b: AppRealSessionsProtocol.Identity
+    init(first: AppRealBatchGate.Snapshot, a: AppRealSessionsProtocol.Identity, b: AppRealSessionsProtocol.Identity) throws {
+        guard AppRealTransferScope.isRealInflight(state: first.state.rawValue, transferred: first.transferredBytes, sourceBytes: AppRealTransferScope.sourceBytes),
+              first.pendingDecision == nil, first.retryOf == nil, !first.cancellationRequested,
+              AppRealSessionsProtocol.independent(a, b, distinctObjects: true) else { throw AppRealIntegrationFailure.failedCheck }
+        job = .init(first); request = first.request; self.a = a; self.b = b
+    }
+    func before(_ current: AppRealBatchGate.Snapshot, a: AppRealSessionsProtocol.Identity, b: AppRealSessionsProtocol.Identity,
+                bothConnectedAndSameObjects: Bool, selected: UUID?, target: UUID) -> Bool {
+        AppRealBatchGate.Job(current) == job && current.request == request && current.retryOf == nil && !current.cancellationRequested &&
+            current.pendingDecision == nil && current.error == nil &&
+            AppRealTransferScope.isRealInflight(state: current.state.rawValue, transferred: current.transferredBytes, sourceBytes: AppRealTransferScope.sourceBytes) &&
+            self.a == a && self.b == b && bothConnectedAndSameObjects &&
+            ((selected == a.tabID && target == b.tabID) || (selected == b.tabID && target == a.tabID))
+    }
+    func after(from: UUID?, selected: UUID?, target: UUID) -> Bool {
+        from != selected && selected == target && ((from == a.tabID && target == b.tabID) || (from == b.tabID && target == a.tabID))
+    }
+}
 #endif
 struct AppRealFileDigest: Codable, Equatable, Sendable {
     let relativePathBase64: String
@@ -425,6 +447,7 @@ struct AppRealWindowCheckpoint: Encodable, Sendable {
 enum AppRealTransferStage: String, Codable, Sendable {
     case source, mkdir, enterOwnedRoot, probePrepare, probeExecute, transferContext, uploadControl, observeJob
     case pendingDecision, firstJobIdentity, temporaryLedger, preCloseAction, preHideAction, awaitSSHClose
+    case switchSessionsReady, switchToB, switchToA, switchTasksVisible, switchCloseBoth
     case windowFirstClose, windowContinue, windowSecondClose, windowCancelClose, windowAwaitClosed, windowFinalCancelled
     case quitFirstTerminate, quitContinueDecision, quitSecondTerminate, quitCancelDecision, quitAwaitDrain, quitBeforeStoresClose, quitAfterStoresClose, quitReceipt
     case awaitTransfer, finalSucceeded, sameServiceContext, remoteDigest, remoteCleanup, localCleanup, complete

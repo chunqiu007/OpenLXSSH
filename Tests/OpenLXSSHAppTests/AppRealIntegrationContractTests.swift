@@ -22,7 +22,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite", "transfer-survives-switch"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -632,6 +632,60 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
                 question: .risk(.overwriteIsAtomicButNotCompareAndSwap(path: try RemotePath(scope.root + "/unknown"))))
             XCTAssertThrowsError(try fresh.decision(wrongPath,job: snapshot(decision: wrongPath),stage: stage,scope: scope,risk: true))
         }
+    }
+    #endif
+    func testSwitchClosedPhaseUsesTransferNotTerminalOnlyAndKeepsOtherPhaseSemantics() throws {
+        var value = object(); value["phase"] = "transfer-survives-switch"
+        XCTAssertEqual(try decode(value).selectedPhase, .transferSurvivesSwitch)
+        XCTAssertTrue(AppRealIntegrationPhase.transferSurvivesSwitch.isTransfer); XCTAssertFalse(AppRealIntegrationPhase.transferSurvivesSwitch.isTerminalOnly)
+        for phase in [AppRealIntegrationPhase.transferSurvivesClose,.windowContinueCancel,.quitContinueCancel] { XCTAssertTrue(phase.isTransfer) }
+        for phase in [AppRealIntegrationPhase.batchConflicts,.batchOverwrite,.sessionsReconnect,.terminalSearchPaste,.readOnly] { XCTAssertFalse(phase.isTransfer) }
+    }
+    #if HOST_PROBE
+    func testSwitchGateRequiresExactRunningJobRequestSessionsAndRealSelectionChange() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID()
+        let jobID = UUID(), generation = UUID(), aID = UUID(), bID = UUID()
+        let a = AppRealSessionsProtocol.Identity(tabID: aID,sessionID: aID,generation: 1,process: .init(pid: 111,parentPID: 99,startSeconds: 1,startMicroseconds: 0))
+        let b = AppRealSessionsProtocol.Identity(tabID: bID,sessionID: bID,generation: 1,process: .init(pid: 222,parentPID: 99,startSeconds: 2,startMicroseconds: 0))
+        func job(state: TransferJobState = .running, bytes: UInt64 = 65536, id: UUID? = nil, gen: UUID? = nil,
+                 batchID: UUID? = nil, hostID: UUID? = nil, serviceID: UUID? = nil, name: String = "a.bin") throws -> AppRealBatchGate.Snapshot {
+            try batchJob(scope: scope,host: hostID ?? host,service: serviceID ?? service,local: local,batch: batchID ?? batch,
+                name: name,jobID: id ?? jobID,generation: gen ?? generation,state: state,bytes: bytes)
+        }
+        let first = try job(), gate = try AppRealSwitchGate(first: first,a: a,b: b)
+        XCTAssertTrue(gate.before(first,a: a,b: b,bothConnectedAndSameObjects: true,selected: aID,target: bID))
+        XCTAssertTrue(gate.before(try job(bytes: 131072),a: a,b: b,bothConnectedAndSameObjects: true,selected: bID,target: aID))
+        for bad in [try job(state: .succeeded),try job(state: .queued),try job(state: .waitingRisk),try job(bytes: 0),
+                    try job(bytes: AppRealTransferScope.sourceBytes),try job(bytes: AppRealTransferScope.sourceBytes+1),
+                    try job(id: UUID()),try job(gen: UUID()),try job(batchID: UUID()),try job(hostID: UUID()),try job(serviceID: UUID()),try job(name: "b.bin")] {
+            XCTAssertFalse(gate.before(bad,a: a,b: b,bothConnectedAndSameObjects: true,selected: aID,target: bID))
+        }
+        let newA = AppRealSessionsProtocol.Identity(tabID: aID,sessionID: aID,generation: 2,process: a.process)
+        let newB = AppRealSessionsProtocol.Identity(tabID: bID,sessionID: bID,generation: 1,process: .init(pid: 223,parentPID: 99,startSeconds: 3,startMicroseconds: 0))
+        XCTAssertFalse(gate.before(first,a: newA,b: b,bothConnectedAndSameObjects: true,selected: aID,target: bID))
+        XCTAssertFalse(gate.before(first,a: a,b: newB,bothConnectedAndSameObjects: true,selected: aID,target: bID))
+        XCTAssertFalse(gate.before(first,a: a,b: b,bothConnectedAndSameObjects: false,selected: aID,target: bID))
+        XCTAssertFalse(gate.before(first,a: a,b: b,bothConnectedAndSameObjects: true,selected: aID,target: aID))
+        XCTAssertFalse(gate.before(first,a: a,b: b,bothConnectedAndSameObjects: true,selected: nil,target: bID))
+        XCTAssertTrue(gate.after(from: aID,selected: bID,target: bID)); XCTAssertTrue(gate.after(from: bID,selected: aID,target: aID))
+        XCTAssertFalse(gate.after(from: aID,selected: aID,target: bID)); XCTAssertFalse(gate.after(from: aID,selected: bID,target: aID))
+        XCTAssertFalse(gate.after(from: nil,selected: bID,target: bID)); XCTAssertFalse(gate.after(from: aID,selected: UUID(),target: bID))
+    }
+    func testSwitchGateRejectsCompletedFirstSamplePendingDecisionAndInvalidPair() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID()
+        let aID = UUID(), bID = UUID()
+        let a = AppRealSessionsProtocol.Identity(tabID: aID,sessionID: aID,generation: 1,process: .init(pid: 111,parentPID: 99,startSeconds: 1,startMicroseconds: 0))
+        let b = AppRealSessionsProtocol.Identity(tabID: bID,sessionID: bID,generation: 1,process: .init(pid: 222,parentPID: 99,startSeconds: 2,startMicroseconds: 0))
+        let first = try batchJob(scope: scope,host: host,service: service,local: local,batch: batch,name: "a.bin",state: .running,bytes: 65536)
+        XCTAssertThrowsError(try AppRealSwitchGate(first: first,a: a,b: a))
+        let completed = try batchJob(scope: scope,host: host,service: service,local: local,batch: batch,name: "a.bin",state: .succeeded,bytes: AppRealTransferScope.sourceBytes)
+        XCTAssertThrowsError(try AppRealSwitchGate(first: completed,a: a,b: b))
+        let pending = AppRealBatchGate.Decision(id: UUID(),jobID: first.id,generation: first.generation,question: .risk(.remotePathChecksAreNotAtomic(path: first.request.destination.path)))
+        let waiting = AppRealBatchGate.Snapshot(id: first.id,generation: first.generation,retryOf: nil,request: first.request,state: .running,
+            transferredBytes: 65536,cancellationRequested: false,pendingDecision: pending,error: nil,items: [])
+        XCTAssertThrowsError(try AppRealSwitchGate(first: waiting,a: a,b: b))
+        let gate = try AppRealSwitchGate(first: first,a: a,b: b)
+        XCTAssertFalse(gate.before(waiting,a: a,b: b,bothConnectedAndSameObjects: true,selected: aID,target: bID))
     }
     #endif
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
