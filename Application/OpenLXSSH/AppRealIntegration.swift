@@ -418,6 +418,20 @@ struct AppRealSessionFailure: Error {
         let sameManagerServiceLifetime: Bool, connectionAttempts: Int, remoteRootAbsent: Bool, localDatasetRemoved: Bool
         let boundary = "Native upload+conflict batch-skip then NEW batch single-item transfer rename; independent exact risk dialogs. Test picker, not Finder. No overwrite/in-flight switch/clipboard/macOS26 claim."
     }
+    struct OverwriteEvidence: Encodable {
+        struct Decision: Encodable {
+            let stage: AppRealBatchScope.Stage, jobID: UUID, generation: UUID, batchID: UUID, decisionID: UUID
+            let question: String, pathBase64: String, nativeReply: String, applyToBatch: Bool
+            let stateBeforeAnswer: String, transferredBytesBeforeAnswer: UInt64, retainedTemporaryCountBeforeAnswer: Int
+            let completedItemCountBeforeAnswer: Int, ownedTemporaryCountBeforeAnswer: Int
+        }
+        let serviceID: UUID, hostID: UUID, lifetime: UUID, serverBinding: String
+        let seedJobs: [BatchEvidence.TerminalJob], overwrittenJobs: [BatchEvidence.TerminalJob]
+        let decisions: [Decision], localManifest: [AppRealFileDigest], seededRemote: [AppRealFileDigest], overwrittenRemote: [AppRealFileDigest]
+        let deletePlanID: UUID, deletedPathsBase64: [String]
+        let sameManagerServiceLifetime: Bool, connectionAttempts: Int, remoteRootAbsent: Bool, localDatasetRemoved: Bool
+        let boundary = "One native apply-to-batch overwrite conflict; every item has its OWN explicit overwrite-non-CAS risk and path risk. Pre-answer zero progress/no completed items, no host-gate digest lease while risk is pending. Test picker; not Finder/macOS26/in-flight switching."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -435,6 +449,7 @@ struct AppRealSessionFailure: Error {
         let terminalOperations: TerminalEvidence?
         let sessionOperations: SessionsEvidence?
         let batchConflicts: BatchEvidence?
+        let batchOverwrite: OverwriteEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -452,6 +467,7 @@ struct AppRealSessionFailure: Error {
     private var terminalEvidence: TerminalEvidence?
     private var sessionsEvidence: SessionsEvidence?
     private var batchEvidence: BatchEvidence?
+    private var overwriteEvidence: OverwriteEvidence?
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
     private var quitFailureRecorded = false
@@ -546,6 +562,7 @@ struct AppRealSessionFailure: Error {
             let manager = model.files.manager
             if input.contract.selectedPhase == .fileOperations { fileOperationsEvidence = try await fileOperations() }
             if input.contract.selectedPhase == .batchConflicts { batchEvidence = try await batchConflicts() }
+            if input.contract.selectedPhase == .batchOverwrite { overwriteEvidence = try await batchOverwrite() }
             if input.contract.selectedPhase.isTransfer {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
                 if isQuitPhase { return } // Native termination owns the only store closes and final reply.
@@ -563,7 +580,7 @@ struct AppRealSessionFailure: Error {
             }
             let finalManager = await manager.snapshot(), closedFiles = await facts.closedServices
             try check("window-close-awaited-files", finalManager.isClosed && closedFiles == (terminalOnly ? 0 : 1))
-            if input.contract.selectedPhase == .transferSurvivesClose || input.contract.selectedPhase == .batchConflicts {
+            if input.contract.selectedPhase == .transferSurvivesClose || input.contract.selectedPhase == .batchConflicts || input.contract.selectedPhase == .batchOverwrite {
                 let open = await facts.openHandleCount(), forced = await facts.shutdownClosedHandles
                 let opens = await facts.successfulOpens, closes = await facts.successfulCloses
                 try check("transfer-public-handles-closed-without-shutdown-rescue", open == 0 && forced == 0 && opens == closes)
@@ -1137,12 +1154,195 @@ struct AppRealSessionFailure: Error {
             deletedPathsBase64: deletion.items.map { $0.path.bytes.base64EncodedString() }, sameManagerServiceLifetime: true,
             connectionAttempts: await facts.connectionAttempts, remoteRootAbsent: true, localDatasetRemoved: true)
     }
+    private func batchOverwrite() async throws -> OverwriteEvidence {
+        let scope = try AppRealBatchScope(runID: input.contract.runID), dataset = try store.prepareBatch(scope)
+        let localManifest = try store.verifyBatch(scope), root = try RemotePath(scope.root), home = try RemotePath("/fixture/home")
+        let manager = model.files.manager, initial = try model.files.transferContext(upload: false), bindings = await facts.bindings
+        guard (await manager.snapshot()).jobs.isEmpty, bindings.count == 1, let binding = bindings.first else { throw AppRealIntegrationFailure.failedCheck }
+        var gate = AppRealBatchGate(), decisions: [OverwriteEvidence.Decision] = []
+        func sameService() async throws {
+            let current = try model.files.transferContext(upload: false)
+            guard model.files.manager === manager, current.serviceID == initial.serviceID, current.hostID == initial.hostID,
+                  current.lifetime == initial.lifetime, await facts.bindings == bindings, await facts.connectionAttempts == 1 else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        func browse(_ path: RemotePath) async throws {
+            try await type("files.path", String(decoding: path.bytes, as: UTF8.self)); try await click("files.go")
+            try await wait { self.model.files.path == path && !self.model.files.busy || self.model.files.issue != nil }
+            guard model.files.issue == nil, model.files.state == .ready else { throw AppRealIntegrationFailure.failedCheck }
+            try await sameService()
+        }
+        try check("overwrite-fixed-home-one-original-service", model.files.path == home)
+        try await click("files.mkdir"); try await type("files.operation.name", String(decoding: root.name!.bytes, as: UTF8.self))
+        try await click("files.mkdir.risk"); try await click("files.operation.confirm")
+        try await wait { !self.model.files.busy && self.model.files.entries.contains { $0.name == root.name } || self.model.files.issue != nil }
+        guard await facts.ownedPaths()[root.bytes] == true, model.files.issue == nil else { throw AppRealIntegrationFailure.failedCheck }
+        try await browse(root); try check("overwrite-new-owned-root-empty", model.files.entries.isEmpty)
+        try await click("files.probe.prepare"); try await wait { self.model.files.probeReview != nil && !self.model.files.busy }
+        guard let probe = model.files.probeReview, probe.plan.parent == root else { throw AppRealIntegrationFailure.failedCheck }
+        try await click("files.probe.review"); try await click("files.probe.approve"); try await click("files.probe.execute")
+        try await wait { self.model.files.lastProbeResult != nil && !self.model.files.busy }
+        guard let result = model.files.lastProbeResult, result.passed, result.retainedPaths.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+        let context = try model.files.transferContext(upload: true)
+        guard context.confirmation?.serverBinding.uuidString == binding else { throw AppRealIntegrationFailure.failedCheck }
+        func jobs(_ ids: [UUID]) async throws -> [TransferJobSnapshot] {
+            let all = await manager.snapshot().jobs
+            guard all.count == gate.jobs.count, Set(all.map(\.id)) == Set(gate.jobs.map(\.id)), all.allSatisfy({ gate.current(.actual($0)) }) else { throw AppRealIntegrationFailure.failedCheck }
+            return all.filter { ids.contains($0.id) }
+        }
+        func upload(_ urls: [URL], stage: AppRealBatchScope.Stage) async throws -> [UUID] {
+            try await sameService(); let previous = Set(gate.jobs.map(\.id))
+            model.files.pathPicker.testSelection = urls; try await click("files.upload")
+            let deadline = ProcessInfo.processInfo.systemUptime + 30
+            while true {
+                let all = await manager.snapshot().jobs, added = all.filter { !previous.contains($0.id) }
+                guard all.count <= previous.count + urls.count else { throw AppRealIntegrationFailure.failedCheck }
+                if added.count == urls.count {
+                    try gate.admit(added.map(AppRealBatchGate.Snapshot.actual), stage: stage, scope: scope, hostID: context.hostID, serviceID: context.serviceID)
+                    return added.map(\.id)
+                }
+                guard model.files.issue == nil, ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        func reply(_ job: TransferJobSnapshot, stage: AppRealBatchScope.Stage, risk: Bool) async throws {
+            guard let request = job.pendingDecision else { throw AppRealIntegrationFailure.failedCheck }
+            if stage == .overwrite { try gate.overwriteDecision(.actual(request), job: .actual(job), scope: scope) }
+            else { try gate.decision(.actual(request), job: .actual(job), stage: stage, scope: scope, risk: risk) }
+            let current = try await jobs([job.id])
+            guard current.first?.pendingDecision == request else { throw AppRealIntegrationFailure.failedCheck }
+            let temporaryCount = await facts.ownedPaths().keys.filter {
+                $0.starts(with: root.bytes + Data("/.openlxssh-transfer.".utf8)) && $0.suffix(5) == Data(".part".utf8)
+            }.count
+            if case .risk(.overwriteIsAtomicButNotCompareAndSwap) = request.question {
+                guard temporaryCount == 0 else { throw AppRealIntegrationFailure.failedCheck }
+            }
+            try await click("transfer.decision." + job.id.uuidString)
+            let path: RemotePath, answer: String, apply: Bool, question: String
+            if risk {
+                switch request.question {
+                case .risk(.remotePathChecksAreNotAtomic(let value)): path = value; question = "remotePathChecksAreNotAtomic"
+                case .risk(.overwriteIsAtomicButNotCompareAndSwap(let value)) where stage == .overwrite:
+                    path = value; question = "overwriteIsAtomicButNotCompareAndSwap"
+                    guard job.state == .waitingRisk, job.transferredBytes == 0, job.items.isEmpty,
+                          job.retainedTemporaryPaths.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+                default: throw AppRealIntegrationFailure.failedCheck
+                }
+                answer = "transfer.risk.accept"; apply = false
+                try await click(answer)
+            } else {
+                guard stage == .overwrite, case .conflict(let conflict) = request.question,
+                      !decisions.contains(where: { $0.question == "conflict" }) else { throw AppRealIntegrationFailure.failedCheck }
+                path = conflict.destination; question = "conflict"; answer = "transfer.conflict.overwrite"; apply = true
+                try await click("transfer.conflict.batch"); try await click(answer)
+            }
+            try await wait { self.delegate.mainWindow?.attachedSheet == nil }
+            guard (try await jobs([job.id])).first?.pendingDecision?.id != request.id else { throw AppRealIntegrationFailure.failedCheck }
+            decisions.append(OverwriteEvidence.Decision(stage: stage, jobID: job.id, generation: job.generation, batchID: job.request.batchID,
+                decisionID: request.id, question: question, pathBase64: path.bytes.base64EncodedString(), nativeReply: answer, applyToBatch: apply,
+                stateBeforeAnswer: job.state.rawValue, transferredBytesBeforeAnswer: job.transferredBytes,
+                retainedTemporaryCountBeforeAnswer: job.retainedTemporaryPaths.count, completedItemCountBeforeAnswer: job.items.count,
+                ownedTemporaryCountBeforeAnswer: temporaryCount))
+        }
+        func finish(_ ids: [UUID], stage: AppRealBatchScope.Stage) async throws -> [TransferJobSnapshot] {
+            let deadline = ProcessInfo.processInfo.systemUptime + 120
+            while true {
+                try await sameService(); let current = try await jobs(ids)
+                for job in current where job.pendingDecision != nil {
+                    guard let pending = job.pendingDecision else { throw AppRealIntegrationFailure.failedCheck }
+                    if case .risk = pending.question { try await reply(job, stage: stage, risk: true) }
+                    else { try await reply(job, stage: stage, risk: false) }
+                }
+                if current.count == ids.count && current.allSatisfy({ !$0.state.isActive }) {
+                    guard gate.terminal(current.map(AppRealBatchGate.Snapshot.actual), stage: stage, scope: scope) else { throw AppRealIntegrationFailure.failedCheck }; return current
+                }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        func manifest(_ names: [String]) async throws -> [AppRealFileDigest] {
+            try await sameService()
+            return try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
+                guard Set(try await service.list(root, token: token).map { $0.name.bytes }) == Set(names.map { Data($0.utf8) }) else { throw AppRealIntegrationFailure.failedCheck }
+                var result: [AppRealFileDigest] = []
+                for name in names {
+                    let path = try root.appending(FileName(name)), size = try AppRealBatchScope.size(name == AppRealBatchScope.alternate ? AppRealBatchScope.names[0] : name)
+                    let attr = try await service.lstat(path, token: token)
+                    guard attr.kind == .regular, attr.size == UInt64(size) else { throw AppRealIntegrationFailure.failedCheck }
+                    let handle = try await service.open(path, mode: .read, token: token)
+                    do {
+                        var bytes = Data()
+                        while true {
+                            let chunk = try await service.read(handle, maxBytes: 8192, token: token)
+                            if chunk.isEmpty { break }; bytes += chunk
+                            guard bytes.count <= size else { throw AppRealIntegrationFailure.failedCheck }
+                        }
+                        try await service.closeHandle(handle)
+                        guard bytes.count == size else { throw AppRealIntegrationFailure.failedCheck }
+                        result.append(AppRealFileDigest(relativePathBase64: Data(name.utf8).base64EncodedString(), bytes: size, sha256: AppRealPrivateInput.sha(bytes)))
+                    } catch { try? await service.closeHandle(handle); throw error }
+                }
+                return result
+            }
+        }
+        let seedIDs = try await upload(dataset.seed, stage: .seed), seedJobs = try await finish(seedIDs, stage: .seed)
+        let seeded = try await manifest(AppRealBatchScope.names)
+        for digest in seeded {
+            guard let name = Data(base64Encoded: digest.relativePathBase64).flatMap({ String(data: $0, encoding: .utf8) }),
+                  digest.sha256 == AppRealPrivateInput.sha(try scope.payload(name, fresh: false)) else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        try check("overwrite-native-seed-two-succeeded-original-digests", seedJobs.count == 2)
+        let overwriteIDs = try await upload(dataset.fresh, stage: .overwrite), overwritten = try await finish(overwriteIDs, stage: .overwrite)
+        let final = try await manifest(AppRealBatchScope.names)
+        for (index, digest) in final.enumerated() {
+            let name = AppRealBatchScope.names[index]
+            guard digest.sha256 == AppRealPrivateInput.sha(try scope.payload(name, fresh: true)),
+                  digest.bytes == seeded[index].bytes, digest.sha256 != seeded[index].sha256 else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        try check("overwrite-native-batch-two-targets-have-fresh-same-name-content", final.count == 2)
+        let overwriteRisks = decisions.filter { $0.question == "overwriteIsAtomicButNotCompareAndSwap" }
+        guard gate.jobs.count == 4, Set(gate.batches.values).count == 2, decisions.count == 7,
+              decisions.filter({ $0.question == "conflict" }).count == 1,
+              decisions.filter({ $0.question == "remotePathChecksAreNotAtomic" }).count == 4,
+              overwriteRisks.count == 2, Set(overwriteRisks.map(\.jobID)) == Set(overwriteIDs),
+              Set(decisions.map(\.decisionID)).count == 7, (try store.verifyBatch(scope)) == localManifest else { throw AppRealIntegrationFailure.failedCheck }
+        try check("overwrite-one-batch-conflict-does-not-replace-two-independent-risk-answers", true)
+        try await browse(home)
+        try await wait { self.find("files.entries", NSTableView.self) != nil }
+        guard let table = find("files.entries", NSTableView.self), let row = model.files.entries.firstIndex(where: { $0.name == root.name }), table.numberOfRows == model.files.entries.count else { throw AppRealIntegrationFailure.nativeControl }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); try await Task.sleep(for: .milliseconds(100))
+        try await click("files.delete"); try await click("files.delete.prepare")
+        try await wait { self.model.files.deleteReview != nil && !self.model.files.busy }
+        guard let review = model.files.deleteReview, review.serviceID == context.serviceID, review.plan.root == root,
+              review.plan.canExecute, review.plan.linkPolicy == .reject,
+              scope.exactOverwriteDelete(review.plan.items.map { ($0.path.bytes, $0.action == .removeFile ? "file" : $0.action == .removeEmptyDirectory ? "directory" : "link") }, issues: review.plan.issues.count) else { throw AppRealIntegrationFailure.cleanup }
+        try await click("files.delete.review"); try await click("files.delete.acknowledge"); try await click("files.delete.execute")
+        try await wait { self.model.files.lastDeleteReport?.planID == review.id && !self.model.files.busy }
+        guard let deletion = model.files.lastDeleteReport, deletion.allSucceeded,
+              Set(deletion.items.map { $0.path.bytes }) == Set(review.plan.items.map { $0.path.bytes }) else { throw AppRealIntegrationFailure.cleanup }
+        try await sameService()
+        try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
+            do { _ = try await service.lstat(root, token: token); throw AppRealIntegrationFailure.cleanup }
+            catch let error as FileServiceError where error.kind == .notFound { }
+        }
+        guard await facts.ownedPaths().isEmpty else { throw AppRealIntegrationFailure.cleanup }
+        try store.cleanupBatch(scope)
+        try check("overwrite-native-reviewed-delete-exact-root-and-local-dataset-clean", true)
+        func evidence(_ jobs: [TransferJobSnapshot]) -> [BatchEvidence.TerminalJob] {
+            jobs.map { BatchEvidence.TerminalJob(identity: .init(.actual($0)), state: $0.state.rawValue, bytes: $0.transferredBytes,
+                pending: $0.pendingDecision != nil, retainedTemporaryCount: $0.retainedTemporaryPaths.count) }
+        }
+        return OverwriteEvidence(serviceID: context.serviceID, hostID: context.hostID, lifetime: context.lifetime, serverBinding: binding,
+            seedJobs: evidence(seedJobs), overwrittenJobs: evidence(overwritten), decisions: decisions,
+            localManifest: localManifest, seededRemote: seeded, overwrittenRemote: final, deletePlanID: review.id,
+            deletedPathsBase64: deletion.items.map { $0.path.bytes.base64EncodedString() }, sameManagerServiceLifetime: true,
+            connectionAttempts: await facts.connectionAttempts, remoteRootAbsent: true, localDatasetRemoved: true)
+    }
     private func persistReport(failure: String?, removed: Bool) async throws {
         let report = await Report(scanSeconds: options.scanSeconds, passed: failure == nil, failureCode: failure, checks: checks,
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),

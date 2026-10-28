@@ -22,7 +22,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -548,6 +548,89 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
                 XCTAssertEqual(AppRealPrivateInput.sha(data), AppRealPrivateInput.sha(try scope.payload(name, fresh: fresh)))
                 XCTAssertNotEqual(AppRealPrivateInput.sha(data), AppRealPrivateInput.sha(try scope.payload(name, fresh: !fresh)))
             }
+        }
+    }
+    #endif
+    func testOverwriteClosedPhaseAndExactThreePathCleanupDoNotAllowAlternate() throws {
+        var value = object(); value["phase"] = "batch-overwrite"
+        XCTAssertEqual(try decode(value).selectedPhase, .batchOverwrite)
+        XCTAssertFalse(AppRealIntegrationPhase.batchOverwrite.isTransfer); XCTAssertFalse(AppRealIntegrationPhase.batchOverwrite.isTerminalOnly)
+        let scope = try AppRealBatchScope(runID: id)
+        let exact = AppRealBatchScope.names.map { (Data((scope.root + "/" + $0).utf8), "file") } + [(Data(scope.root.utf8), "directory")]
+        XCTAssertTrue(scope.exactOverwriteDelete(exact, issues: 0)); XCTAssertFalse(scope.exactOverwriteDelete(exact, issues: 1))
+        XCTAssertFalse(scope.exactOverwriteDelete(exact + [(Data((scope.root + "/" + AppRealBatchScope.alternate).utf8), "file")], issues: 0))
+        XCTAssertFalse(scope.exactOverwriteDelete([exact[0],exact[0],exact[2]], issues: 0))
+        XCTAssertFalse(scope.exactOverwriteDelete([(exact[0].0,"link"),exact[1],exact[2]], issues: 0))
+        for name in AppRealBatchScope.names {
+            XCTAssertEqual(try scope.payload(name, fresh: false).count, try scope.payload(name, fresh: true).count)
+            XCTAssertNotEqual(try scope.payload(name, fresh: false), try scope.payload(name, fresh: true))
+        }
+    }
+    #if HOST_PROBE
+    func testOverwriteRequiresOneConflictButSeparateRiskPerJobWithFreshIDs() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID()
+        let originals = try AppRealBatchScope.names.map { try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: $0) }
+        var gate = AppRealBatchGate(); try gate.admit(originals, stage: .overwrite, scope: scope, hostID: host, serviceID: service)
+        func waiting(_ job: AppRealBatchGate.Snapshot, _ question: TransferDecisionQuestion, decisionID: UUID = UUID()) -> (AppRealBatchGate.Decision, AppRealBatchGate.Snapshot) {
+            let decision = AppRealBatchGate.Decision(id: decisionID, jobID: job.id, generation: job.generation, question: question)
+            let state: TransferJobState = { if case .conflict = question { return .waitingConflict }; return .waitingRisk }()
+            return (decision,.init(id: job.id, generation: job.generation, retryOf: nil, request: job.request, state: state,
+                transferredBytes: 0, cancellationRequested: false, pendingDecision: decision, error: nil, items: []))
+        }
+        let a = originals[0], b = originals[1]
+        let early = waiting(a,.risk(.overwriteIsAtomicButNotCompareAndSwap(path: a.request.destination.path)))
+        XCTAssertThrowsError(try gate.overwriteDecision(early.0, job: early.1, scope: scope))
+        let pathA = waiting(a,.risk(.remotePathChecksAreNotAtomic(path: a.request.destination.path)))
+        try gate.overwriteDecision(pathA.0, job: pathA.1, scope: scope)
+        let conflict = waiting(a,.conflict(.init(source: a.request.source.path, destination: a.request.destination.path, existing: .init(kind: .regular,size: 4096))))
+        try gate.overwriteDecision(conflict.0, job: conflict.1, scope: scope)
+        XCTAssertEqual(gate.overwriteRiskJobs.count,0) // The conflict is not risk acceptance.
+        let riskA = waiting(a,.risk(.overwriteIsAtomicButNotCompareAndSwap(path: a.request.destination.path)))
+        try gate.overwriteDecision(riskA.0, job: riskA.1, scope: scope)
+        XCTAssertThrowsError(try gate.overwriteDecision(riskA.0, job: riskA.1, scope: scope))
+        let pathB = waiting(b,.risk(.remotePathChecksAreNotAtomic(path: b.request.destination.path)))
+        try gate.overwriteDecision(pathB.0, job: pathB.1, scope: scope)
+        let secondConflict = waiting(b,.conflict(.init(source: b.request.source.path, destination: b.request.destination.path, existing: .init(kind: .regular,size: 8192))))
+        XCTAssertThrowsError(try gate.overwriteDecision(secondConflict.0, job: secondConflict.1, scope: scope))
+        let repeatedID = waiting(b,.risk(.overwriteIsAtomicButNotCompareAndSwap(path: b.request.destination.path)),decisionID: riskA.0.id)
+        XCTAssertThrowsError(try gate.overwriteDecision(repeatedID.0, job: repeatedID.1, scope: scope))
+        let riskB = waiting(b,.risk(.overwriteIsAtomicButNotCompareAndSwap(path: b.request.destination.path)))
+        try gate.overwriteDecision(riskB.0, job: riskB.1, scope: scope)
+        XCTAssertEqual(gate.decisions.count,5); XCTAssertEqual(gate.overwriteRiskJobs,Set(originals.map(\.id)))
+        func complete(_ job: AppRealBatchGate.Snapshot, includeRisks: Bool = true) throws -> AppRealBatchGate.Snapshot {
+            let size = UInt64(try AppRealBatchScope.size(String(decoding: job.request.source.path.name!.bytes,as: UTF8.self)))
+            let item = TransferItemResult(source: job.request.source.path,destination: job.request.destination.path,state: .succeeded(bytes: size),retainedTemporary: nil,
+                acknowledgedRisks: includeRisks ? [.remotePathChecksAreNotAtomic(path: job.request.destination.path),.overwriteIsAtomicButNotCompareAndSwap(path: job.request.destination.path)] : [])
+            return .init(id: job.id,generation: job.generation,retryOf: nil,request: job.request,state: .succeeded,transferredBytes: size,cancellationRequested: false,pendingDecision: nil,error: nil,items: [item])
+        }
+        XCTAssertTrue(try gate.terminal(originals.map { try complete($0) },stage: .overwrite,scope: scope))
+        XCTAssertFalse(try gate.terminal([complete(a,includeRisks: false),complete(b)],stage: .overwrite,scope: scope))
+    }
+    func testOverwriteRiskRefusesWrongStagePathGenerationStateProgressAndTemporary() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID()
+        let originals = try AppRealBatchScope.names.map { try batchJob(scope: scope,host: host,service: service,local: local,batch: batch,name: $0) }
+        for stage in [AppRealBatchScope.Stage.seed,.skip,.rename,.overwrite] {
+            var gate = AppRealBatchGate(); let values = stage == .rename ? [originals[0]] : originals
+            try gate.admit(values,stage: stage,scope: scope,hostID: host,serviceID: service)
+            let job = originals[0], risk = AppRealBatchGate.Decision(id: UUID(),jobID: job.id,generation: job.generation,
+                question: .risk(.overwriteIsAtomicButNotCompareAndSwap(path: job.request.destination.path)))
+            func snapshot(bytes: UInt64 = 0,state: TransferJobState = .waitingRisk,items: [TransferItemResult] = [],decision: AppRealBatchGate.Decision? = nil) -> AppRealBatchGate.Snapshot {
+                .init(id: job.id,generation: job.generation,retryOf: nil,request: job.request,state: state,transferredBytes: bytes,
+                    cancellationRequested: false,pendingDecision: decision ?? risk,error: nil,items: items)
+            }
+            if stage == .overwrite { XCTAssertNoThrow(try gate.decision(risk,job: snapshot(),stage: stage,scope: scope,risk: true)) }
+            else { XCTAssertThrowsError(try gate.decision(risk,job: snapshot(),stage: stage,scope: scope,risk: true)) }
+            var fresh = AppRealBatchGate(); try fresh.admit(values,stage: stage,scope: scope,hostID: host,serviceID: service)
+            XCTAssertThrowsError(try fresh.decision(risk,job: snapshot(bytes: 1),stage: stage,scope: scope,risk: true))
+            XCTAssertThrowsError(try fresh.decision(risk,job: snapshot(state: .running),stage: stage,scope: scope,risk: true))
+            let item = TransferItemResult(source: job.request.source.path,destination: job.request.destination.path,state: .skipped,
+                retainedTemporary: try RemotePath(scope.root + "/.openlxssh-transfer.retained.part"))
+            XCTAssertThrowsError(try fresh.decision(risk,job: snapshot(items: [item]),stage: stage,scope: scope,risk: true))
+            let wrong = AppRealBatchGate.Decision(id: UUID(),jobID: job.id,generation: UUID(),question: risk.question)
+            XCTAssertThrowsError(try fresh.decision(wrong,job: snapshot(decision: wrong),stage: stage,scope: scope,risk: true))
+            let wrongPath = AppRealBatchGate.Decision(id: UUID(),jobID: job.id,generation: job.generation,
+                question: .risk(.overwriteIsAtomicButNotCompareAndSwap(path: try RemotePath(scope.root + "/unknown"))))
+            XCTAssertThrowsError(try fresh.decision(wrongPath,job: snapshot(decision: wrongPath),stage: stage,scope: scope,risk: true))
         }
     }
     #endif

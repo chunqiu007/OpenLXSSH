@@ -56,7 +56,7 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel }
     var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect }
 }
@@ -227,7 +227,7 @@ struct AppRealFileScope: Sendable {
     }
 }
 struct AppRealBatchScope: Sendable {
-    enum Stage: String, Codable, Sendable { case seed, skip, rename }
+    enum Stage: String, Codable, Sendable { case seed, skip, rename, overwrite }
     let runID: String
     init(runID: String) throws {
         guard let id = UUID(uuidString: runID), id.uuidString.lowercased() == runID else { throw AppRealIntegrationFailure.contract }
@@ -243,6 +243,10 @@ struct AppRealBatchScope: Sendable {
         var data = Data(); while data.count < count { data.append(seed.prefix(min(seed.count, count - data.count))) }; return data
     }
     func allowsRisk(_ path: Data) -> Bool { (Self.names + [Self.alternate]).contains { path == Data((root + "/" + $0).utf8) } }
+    func exactOverwriteDelete(_ items: [(Data, String)], issues: Int) -> Bool {
+        let expected = Dictionary(uniqueKeysWithValues: Self.names.map { (Data((root + "/" + $0).utf8), "file") } + [(Data(root.utf8), "directory")])
+        return issues == 0 && items.count == 3 && Set(items.map(\.0)).count == 3 && items.allSatisfy { expected[$0.0] == $0.1 }
+    }
     func exactDelete(_ items: [(Data, String)], issues: Int) -> Bool {
         let expected = Dictionary(uniqueKeysWithValues: (Self.names + [Self.alternate]).map { (Data((root + "/" + $0).utf8), "file") } + [(Data(root.utf8), "directory")])
         return issues == 0 && items.count == 4 && Set(items.map(\.0)).count == 4 && items.allSatisfy { expected[$0.0] == $0.1 }
@@ -280,6 +284,29 @@ struct AppRealBatchGate: Sendable {
     private(set) var jobs: [Job] = []
     private(set) var batches: [AppRealBatchScope.Stage: UUID] = [:]
     private(set) var decisions: Set<UUID> = []
+    private(set) var overwriteConflictDecision: UUID?
+    private(set) var overwritePathRiskJobs: Set<UUID> = []
+    private(set) var overwriteRiskJobs: Set<UUID> = []
+    mutating func overwriteDecision(_ request: Decision, job: Snapshot, scope: AppRealBatchScope) throws {
+        guard batches[.overwrite] == job.request.batchID, current(job), job.pendingDecision == request,
+              request.jobID == job.id, request.generation == job.generation, !decisions.contains(request.id),
+              job.transferredBytes == 0, job.items.isEmpty, job.error == nil else { throw AppRealIntegrationFailure.failedCheck }
+        switch request.question {
+        case .conflict:
+            guard overwriteConflictDecision == nil, overwritePathRiskJobs.contains(job.id) else { throw AppRealIntegrationFailure.failedCheck }
+            try decision(request, job: job, stage: .overwrite, scope: scope, risk: false)
+            overwriteConflictDecision = request.id
+        case .risk(.remotePathChecksAreNotAtomic):
+            guard !overwritePathRiskJobs.contains(job.id) else { throw AppRealIntegrationFailure.failedCheck }
+            try decision(request, job: job, stage: .overwrite, scope: scope, risk: true)
+            overwritePathRiskJobs.insert(job.id)
+        case .risk(.overwriteIsAtomicButNotCompareAndSwap):
+            guard overwriteConflictDecision != nil, overwritePathRiskJobs.contains(job.id), !overwriteRiskJobs.contains(job.id) else { throw AppRealIntegrationFailure.failedCheck }
+            try decision(request, job: job, stage: .overwrite, scope: scope, risk: true)
+            overwriteRiskJobs.insert(job.id)
+        default: throw AppRealIntegrationFailure.failedCheck
+        }
+    }
     mutating func admit(_ values: [Snapshot], stage: AppRealBatchScope.Stage, scope: AppRealBatchScope, hostID: UUID, serviceID: UUID) throws {
         let names = stage == .rename ? [AppRealBatchScope.names[0]] : AppRealBatchScope.names
         guard batches[stage] == nil, values.count == names.count, Set(values.map(\.id)).count == values.count,
@@ -301,9 +328,14 @@ struct AppRealBatchGate: Sendable {
         guard current(job), batches[stage] == job.request.batchID, job.pendingDecision == request,
               request.jobID == job.id, request.generation == job.generation, !decisions.contains(request.id) else { throw AppRealIntegrationFailure.failedCheck }
         if risk {
-            guard job.state == .waitingRisk, case .risk(.remotePathChecksAreNotAtomic(let path)) = request.question,
-                  path == job.request.destination.path || (stage == .rename && path.bytes == Data((scope.root + "/" + AppRealBatchScope.alternate).utf8)),
-                  scope.allowsRisk(path.bytes) else { throw AppRealIntegrationFailure.failedCheck }
+            if case .risk(.overwriteIsAtomicButNotCompareAndSwap(let path)) = request.question {
+                guard stage == .overwrite, job.state == .waitingRisk, path == job.request.destination.path,
+                      job.transferredBytes == 0, job.items.isEmpty, job.error == nil, job.retainedTemporaryPaths.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+            } else {
+                guard job.state == .waitingRisk, case .risk(.remotePathChecksAreNotAtomic(let path)) = request.question,
+                      path == job.request.destination.path || (stage == .rename && path.bytes == Data((scope.root + "/" + AppRealBatchScope.alternate).utf8)),
+                      scope.allowsRisk(path.bytes) else { throw AppRealIntegrationFailure.failedCheck }
+            }
         } else {
             guard stage != .seed, job.state == .waitingConflict, case .conflict(let conflict) = request.question,
                   conflict.source == job.request.source.path, conflict.destination == job.request.destination.path,
@@ -313,6 +345,10 @@ struct AppRealBatchGate: Sendable {
         decisions.insert(request.id)
     }
     func terminal(_ values: [Snapshot], stage: AppRealBatchScope.Stage, scope: AppRealBatchScope) -> Bool {
+        if stage == .overwrite {
+            let ids = Set(values.map(\.id))
+            guard overwriteConflictDecision != nil, overwritePathRiskJobs == ids, overwriteRiskJobs == ids else { return false }
+        }
         let expected = jobs.filter { $0.batchID == batches[stage] }
         guard values.count == (stage == .rename ? 1 : 2), values.count == expected.count,
               Set(values.map(\.id)) == Set(expected.map(\.id)) else { return false }
@@ -320,6 +356,10 @@ struct AppRealBatchGate: Sendable {
             guard current(job), job.pendingDecision == nil, job.error == nil, job.retainedTemporaryPaths.isEmpty, job.items.count == 1,
                   let item = job.items.first, item.source == job.request.source.path else { return false }
             if stage == .skip { return job.state == .skipped && job.transferredBytes == 0 && item.state == .skipped && item.destination == job.request.destination.path }
+            if stage == .overwrite {
+                guard item.acknowledgedRisks == [.remotePathChecksAreNotAtomic(path: job.request.destination.path),
+                    .overwriteIsAtomicButNotCompareAndSwap(path: job.request.destination.path)] else { return false }
+            }
             let target = stage == .rename ? Data((scope.root + "/" + AppRealBatchScope.alternate).utf8) : job.request.destination.path.bytes
             guard let name = job.request.source.path.name, let size = try? AppRealBatchScope.size(String(decoding: name.bytes, as: UTF8.self)) else { return false }
             return job.state == .succeeded && job.transferredBytes == UInt64(size) && item.state == .succeeded(bytes: UInt64(size)) && item.destination.bytes == target
