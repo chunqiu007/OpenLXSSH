@@ -288,7 +288,9 @@ def validate_capabilities(host, service, *, legacy_keyonly=False):
     if service not in SERVICES:
         raise FixtureError('unknown root fixture service')
     expected = set(BASE_CAPABILITIES)
-    if service == 'keyonly' and not legacy_keyonly:
+    # Only the historical keyonly-before snapshot may retain seven caps.
+    # Current root services, including the other auth modes, require all eight.
+    if not (service == 'keyonly' and legacy_keyonly):
         expected.add('AUDIT_WRITE')
     values = host.get('CapAdd')
     if (not isinstance(values, list) or any(not isinstance(value, str) for value in values)

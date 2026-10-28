@@ -1,5 +1,25 @@
 # OpenLXSSH integration environment (ENV-FIXTURE-A)
 
+## macOS 26 takeover: root-service PTY audit capability configuration
+
+The current Compose source gives all four root OpenSSH services the same exact
+seven original capabilities plus `AUDIT_WRITE`, following the fixed-image PTY
+audit A/B already accepted for `keyonly`. Its explicit eight-cap configuration
+is unchanged; only the other three services inherit the updated shared anchor.
+The normal validator/relay rejects missing or additional capabilities for every
+root service. `legacy_keyonly=True` remains restricted to the historical
+seven-cap **keyonly-before** snapshot; it does not exempt other services. MINA
+remains at zero added capabilities, with its existing independent validator.
+
+This source/offline change does not recreate a running container or prove any
+new password/MFA shell/UI acceptance. Before applying it, the Primary must stop
+owned test connections/relays, verify exact owned image/project/network/volumes,
+and review the intended three-service change. Fresh container and host-key
+identities must be collected and verified afterward; do not reuse a frozen relay
+or old credential generation as if identities were unchanged. Do not rebuild the
+image, expand capabilities, change network confinement or alter historical
+failed results to make an old campaign pass.
+
 **The reviewed-digest image build, restricted offline ABI probe and first four-service `up --wait` have run successfully.** Four services were healthy and runtime internal/no-egress/resource/permission checks passed, but Engine 29.9.2 did **not** install the requested host port bindings on the pure-internal bridge: effective bindings were empty and host loopback connections were refused. No SSH/SFTP/PAM authentication or private credential collection has run. A finite, opaque, loopback-only test relay is source/offline-tested for main-session review. Its first actual startup attempt failed after 130.68 seconds before readiness/listeners/admissions; startup R1 now removes repeated discovery and separates finite preflight/startup budgets. No successful relay connection is claimed. The server implementation uses real Ubuntu OpenSSH plus a test-only policy loaded by mature `libpam-python`, not a mock SSH server. These facts do not prove authentication or enterprise MFA compatibility.
 
 ## Authorization and resource/network proposal

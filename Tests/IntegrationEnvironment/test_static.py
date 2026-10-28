@@ -317,6 +317,40 @@ class StaticTests(unittest.TestCase):
         compose.assert_called_once_with(state, ['up', '-d', '--no-build', '--pull', 'never', '--wait',
                                                '--wait-timeout', '120'])
 
+    def test_all_current_root_services_require_exact_audit_write_capabilities(self):
+        driver = module('fixture')
+        base = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SYS_CHROOT', 'KILL']
+        current = base + ['AUDIT_WRITE']
+        for service in driver.SERVICES:
+            for prefixed in (False, True):
+                values = [('CAP_' if prefixed else '') + value for value in current]
+                host = {'CapAdd': values, 'CapDrop': ['ALL']}
+                with self.subTest(service=service, prefixed=prefixed):
+                    driver.validate_capabilities(host, service)
+                for missing in range(len(values)):
+                    with self.subTest(service=service, missing=values[missing]), self.assertRaises(driver.FixtureError):
+                        driver.validate_capabilities({'CapAdd': values[:missing] + values[missing+1:], 'CapDrop': ['ALL']}, service)
+                for extra in ('SYS_ADMIN', 'AUDIT_CONTROL', 'NET_ADMIN', 'AUDIT_WRITE', 'CAP_AUDIT_WRITE'):
+                    with self.subTest(service=service, extra=extra), self.assertRaises(driver.FixtureError):
+                        driver.validate_capabilities({'CapAdd': values + [extra], 'CapDrop': ['ALL']}, service)
+            # The historical acknowledgement permits only the old keyonly
+            # seven-cap input. It never exempts the other current services.
+            legacy = {'CapAdd': base, 'CapDrop': ['ALL']}
+            if service == 'keyonly':
+                driver.validate_capabilities(legacy, service, legacy_keyonly=True)
+                with self.assertRaises(driver.FixtureError):
+                    driver.validate_capabilities({'CapAdd': current, 'CapDrop': ['ALL']}, service, legacy_keyonly=True)
+            else:
+                with self.assertRaises(driver.FixtureError):
+                    driver.validate_capabilities(legacy, service, legacy_keyonly=True)
+                driver.validate_capabilities({'CapAdd': current, 'CapDrop': ['ALL']}, service, legacy_keyonly=True)
+        for service in ('foreign', 'multiprompt', '', None):
+            with self.subTest(service=service), self.assertRaises(driver.FixtureError):
+                driver.validate_capabilities({'CapAdd': current, 'CapDrop': ['ALL']}, service)
+        for dropped in (None, [], ['all'], ['ALL', 'NET_ADMIN']):
+            with self.subTest(dropped=dropped), self.assertRaises(driver.FixtureError):
+                driver.validate_capabilities({'CapAdd': current, 'CapDrop': dropped}, 'passwordonly')
+
     def recreate_objects(self, driver, *, after=False):
         # Public, synthetic metadata only; no runtime, Docker, credentials or corpus.
         project = 'openlxssh-fixture-61ed25328c13'
@@ -327,7 +361,7 @@ class StaticTests(unittest.TestCase):
         for index, (service, volume_key) in enumerate(zip(driver.SERVICES, volume_keys), 1):
             identifier = ('e' if after and service == 'keyonly' else str(index)) * 64
             volume = project + '_' + volume_key
-            added = caps + (['AUDIT_WRITE'] if after and service == 'keyonly' else [])
+            added = caps + (['AUDIT_WRITE'] if service != 'keyonly' or after else [])
             result.append({'Id': identifier, 'Image': image, 'Name': '/' + project + '-' + service + '-1',
                 'Config': {'Image': image if after and service == 'keyonly' else driver.IMAGE,
                     'Entrypoint': ['python3', '/opt/openlxssh-fixture/server.py'],
@@ -943,7 +977,7 @@ exec(compile(code,'<exact-private-reader>','exec'),{'__name__':'__main__'})
             self.assertEqual(item['platform'], 'linux/arm64')
             self.assertEqual(item['cap_drop'], ['ALL'])
             expected_caps = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SYS_CHROOT', 'KILL']
-            if service == 'keyonly': expected_caps.append('AUDIT_WRITE')
+            expected_caps.append('AUDIT_WRITE')
             self.assertEqual(item['cap_add'], expected_caps)
             self.assertNotIn('SYS_ADMIN', item['cap_add'])
             self.assertNotIn('NET_ADMIN', item['cap_add'])

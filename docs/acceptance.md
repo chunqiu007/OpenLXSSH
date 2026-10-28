@@ -1,5 +1,7 @@
 # OpenLXSSH V1.0 — 验收总表
 
+**接手更新（2026-10-28）：** 宿主已升级为 macOS26.7.1，用户已批准一次性默认Keychain测试。新增精确OpenSSH10.3兼容门、默认扫描10秒及另外三类测试服务PTY权限同步已审；目标系统正式App、真实Keychain、200次/24h等仍须实际执行。下文host15为历史基线，不因升级自动改为全部通过；进展见 `docs/reports/mac26-takeover.md` 和 `ENGINEERING_STATE.md` 接手章节。
+
 当前状态：**本轮host15受控分项已收口，OpenLXSSH V1.0整体验收仍未通过。** 真实SSH/SFTP四类认证、多提示/审批、2GiB/1000及异常已有分项证据；App上传跨关闭/隐藏、关窗/Quit、原生文件操作与批skip/rename/overwrite、正字节切标签、双标签/自然断线历史/手动重连、原生搜索/内存Bracketed Paste、加密key认证UI取消恢复/并发提示归属、真实预扫变化拒绝/原生信任管理，以及Vim/tmux/htop、公钥nested、正常保活+R2黑洞均经主管独立验收。当前App160tests/0failure、最终正式Debug/Release各一次arm64/min26静态编译/运行测试代码隔离通过，**不等macOS26运行或已发布Release**。原MFA fixture取消材料cleanupIncomplete、原黑洞control/-9等失败历史保留，不被恢复或后续通过追认。当前需满足的默认Keychain动作授权、目标mac26/200次/连续24h/Release压力资源、DeveloperID/具体产物Apple上传、双机/人工/企业和剩余工具合法条件见 `docs/release/acceptance-prerequisites.md`；不把这些必要门删除或以host15短测替代。
 
 当前检查点：P6B1/R1已有主管103tests/原生与签名回归；本轮五view有限渲染压力独立通过并提交ba4a2ec，见 `docs/reports/p7-app-output-stress.md`。正式Transport对抗发现的voucher检查与超时dead-name泄漏已最小修复，主管独立Release35/6/4/10/28/28及rights矩阵通过；最终C对应App105/Release/签名及退出回归已核，见 `docs/reports/p7-transport-adversarial.md`。真实网络与目标系统不因此通过。最新干净源8b63961/UUIDfdb05b4d Development内部候选已包含两修复并独立校验，仍Gatekeeper拒绝/未公证或安装；旧候选仅历史。下方阶段历史记录仅指当时状态，当前实现/委派以 `ENGINEERING_STATE.md` 为准。

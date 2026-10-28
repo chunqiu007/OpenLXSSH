@@ -263,6 +263,17 @@ final class TransportTests: XCTestCase {
         let done = await until { s.canReconnect }; XCTAssertTrue(done)
         XCTAssertTrue(s.trustChallenges.isEmpty); XCTAssertNil(s.ownedProcessID)
     }
+    func testHostKeyScannerDefaultAndExplicitBounds() throws {
+        XCTAssertEqual(try SystemHostKeyScanner().timeoutSeconds, 10)
+        for seconds in [1, 5, 10, 15] {
+            XCTAssertEqual(try SystemHostKeyScanner(timeoutSeconds: seconds).timeoutSeconds, seconds)
+        }
+        for seconds in [-1, 0, 16] {
+            XCTAssertThrowsError(try SystemHostKeyScanner(timeoutSeconds: seconds)) {
+                XCTAssertEqual($0 as? HostScanError, .timeout)
+            }
+        }
+    }
     func testBoundedToolTimeoutCancelOverflowAndNonProtocolOutput() throws {
         XCTAssertThrowsError(try BoundedTool.run(fixture, ["--sleep"], seconds: 0.05)) { XCTAssertEqual($0 as? HostScanError, .timeout) }
         let cancelled = ToolCancellation(); cancelled.cancel()
@@ -311,8 +322,32 @@ final class TransportTests: XCTestCase {
         XCTAssertFalse(hinted.claim(Request(grant: grant, prompt: "password", hint: "unknown"))); XCTAssertFalse(hinted.claim(request))
         var unknownOS = SavedPasswordBudget(eligible: false)
         XCTAssertFalse(unknownOS.claim(request))
+        let version = try BoundedTool.run("/usr/bin/ssh", ["-V"], seconds: 3, includeStandardError: true)
+        XCTAssertEqual(version.status, 0)
+        let expected = PasswordAutomationGate.matchesReviewedSystem(
+            build: PasswordAutomationGate.operatingSystemBuild(),
+            versionOutput: String(decoding: version.output, as: UTF8.self),
+            signatureValid: ap_system_ssh_signed() == 0)
         let gate = await PasswordAutomationGate.evaluate()
-        XCTAssertTrue(gate, "This host is expected to match the explicitly gated 24H32 SSH build; unknown hosts must stay manual")
+        XCTAssertEqual(gate, expected, "Runtime must match the exact reviewed OS/SSH/signature policy; unknown hosts remain manual")
+    }
+    func testPasswordAutomationCompatibilityRequiresExactReviewedPairAndSignature() {
+        let reviewed = [
+            ("24H32", "OpenSSH_9.9p2, LibreSSL 3.3.6\n"),
+            ("25G241", "OpenSSH_10.3p1, LibreSSL 3.3.6\n")
+        ]
+        for (build, version) in reviewed {
+            XCTAssertTrue(PasswordAutomationGate.matchesReviewedSystem(build: build, versionOutput: version, signatureValid: true))
+            XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: build, versionOutput: version, signatureValid: false))
+            XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: build, versionOutput: String(version.dropLast()), signatureValid: true))
+            XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: build, versionOutput: version + "\n", signatureValid: true))
+            XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: build, versionOutput: version.replacingOccurrences(of: "3.3.6", with: "3.3.7"), signatureValid: true))
+        }
+        XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: reviewed[0].0, versionOutput: reviewed[1].1, signatureValid: true))
+        XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: reviewed[1].0, versionOutput: reviewed[0].1, signatureValid: true))
+        for unknown in [nil, "", "25G242", "25G241 ", "24H33"] as [String?] {
+            XCTAssertFalse(PasswordAutomationGate.matchesReviewedSystem(build: unknown, versionOutput: reviewed[1].1, signatureValid: true))
+        }
     }
     func testAuthenticatedEventCommandQuotesOnlyFixedBundlePath() throws {
         let command = try AuthenticatedEventCommand.quoteExecutable("/private/app 'quote' % value/Contents/Helpers/openlxssh-askpass")

@@ -24,7 +24,7 @@ public protocol HostKeyScanning: Sendable {
 /// The scanner only obtains candidates. No path here writes trust records.
 public struct SystemHostKeyScanner: HostKeyScanning {
     public let timeoutSeconds: Int
-    public init(timeoutSeconds: Int = 5) throws {
+    public init(timeoutSeconds: Int = 10) throws {
         guard (1...15).contains(timeoutSeconds) else { throw HostScanError.timeout }
         self.timeoutSeconds = timeoutSeconds
     }

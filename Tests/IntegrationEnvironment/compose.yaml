@@ -16,8 +16,9 @@ x-server: &server
     - no-new-privileges:true
   cap_drop: [ALL]
   # OpenSSH's root monitor drops IDs, sets group lists and enters its privilege
-  # separation jail. No NET_ADMIN/SYS_ADMIN/NET_BIND_SERVICE/host namespaces.
-  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL]
+  # separation jail. The fixed-image PTY audit A/B also requires AUDIT_WRITE
+  # for each authentication mode. No AUDIT_CONTROL/NET_ADMIN/SYS_ADMIN or host namespaces.
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL, AUDIT_WRITE]
   cpus: 0.5
   mem_limit: 384m
   memswap_limit: 384m

@@ -24,13 +24,26 @@ struct SavedPasswordBudget {
 }
 
 enum PasswordAutomationGate {
+    // Compatibility is an exact OS/SSH pair, never a version range. A newer OS
+    // or Apple SSH build remains manual until its authentication path is reviewed.
+    private static let reviewedVersions = [
+        "24H32": "OpenSSH_9.9p2, LibreSSL 3.3.6\n",
+        "25G241": "OpenSSH_10.3p1, LibreSSL 3.3.6\n"
+    ]
+
+    static func matchesReviewedSystem(build: String?, versionOutput: String, signatureValid: Bool) -> Bool {
+        guard signatureValid, let build, let expected = reviewedVersions[build] else { return false }
+        return versionOutput == expected
+    }
+
     static func evaluate() async -> Bool {
         await Task.detached {
-            guard operatingSystemBuild() == "24H32", ap_system_ssh_signed() == 0,
+            guard let build = operatingSystemBuild(), reviewedVersions[build] != nil,
+                  ap_system_ssh_signed() == 0,
                   let result = try? BoundedTool.run("/usr/bin/ssh", ["-V"], seconds: 3, includeStandardError: true),
                   result.status == 0,
-                  String(data: result.output, encoding: .utf8) == "OpenSSH_9.9p2, LibreSSL 3.3.6\n" else { return false }
-            return true
+                  let versionOutput = String(data: result.output, encoding: .utf8) else { return false }
+            return matchesReviewedSystem(build: build, versionOutput: versionOutput, signatureValid: true)
         }.value
     }
     static func operatingSystemBuild() -> String? {

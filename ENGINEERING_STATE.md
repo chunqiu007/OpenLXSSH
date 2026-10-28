@@ -2,6 +2,16 @@
 
 更新：2026-10-28（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
+## Codex 接手检查点（2026-10-28，进行中）
+
+- 用户已要求由当前 Codex 主会话接手剩余开发和验收，不重复 ZCode 已完成且未受变化影响的工作；下方 ZCode 最终检查点保留为历史基线，不能将其中 host15/等待目标设备描述当成当前事实。
+- 接手基线 `0711b24`，`development/p1-prototypes` 工作区干净。实测宿主 macOS 26.7.1 / 25G241 / arm64，Xcode 26.3 / 17C529，系统 OpenSSH 10.3p1 / LibreSSL 3.3.6，接手时磁盘约 119 GiB 可用。
+- 用户本轮明确允许仅本轮新建的一次性测试 Keychain 条目保存、读取、忘记/删除及失败回退；不枚举或读取其他条目，系统交互由用户本人处理。此授权取代旧的相应待授权记录，不含 Apple 上传或账号安全操作。
+- 当前仍只有 Apple Development 身份，Developer ID Application/Installer 均为零；Docker 已安装但升级重启后 Engine 尚未运行。复用原已批准隔离环境，不新增环境或连接生产服务器。
+- `TAKEOVER-MAC26-AUTH-GATE-R1` 已完成兼容矩阵、扫描默认10秒与定向回归，主管源审和独立四项测试通过；`TAKEOVER-MFA-FIXTURE-AUDIT-CAP` 的最小三服务权限同步已源审、离线检查并实际应用，四服务 healthy/keyonly身份及隔离资源不变。详见 `docs/reports/mac26-takeover.md`。
+- `TAKEOVER-MAC26-FROZEN-RUNTIME-BUILDS` / `software-engineer`：当前只构建新冻结源的正式 min26 稳定性驱动与测试专用 API 消费者，禁止自行 live。主管已独立验证新 driver-5ae677f7 来源、对象 min26 与严格 Development 签名。下一项为新系统真实密码/Keychain、正式App运行、200次与24h；不重复既有大文件 campaign。
+- 整体仍未完成；不把接手、升级或既有构建结果当成 Release 验收通过。所有原失败与已验收分项保留，不回写改绿。
+
 ## 当前目标、范围与授权
 
 - 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 BLOCKED于必要发布/目标平台与人工条件。本轮已确认范围内的host15受控分项和当前源码静态构建已收口，无活动工程师或测试进程；这不是整个产品完成。** 不虚构运行环境 Goal 状态变更。

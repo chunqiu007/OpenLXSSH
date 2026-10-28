@@ -311,7 +311,6 @@ class OfflineTests(unittest.TestCase):
             item = objects['container'][0]
             item['Config']['Labels']['com.docker.compose.service'] = service
             item['HostConfig']['PortBindings']['2222/tcp'][0]['HostPort'] = str(frozen.host_port)
-            if service != 'keyonly': item['HostConfig']['CapAdd'].remove('CAP_AUDIT_WRITE')
             with self.subTest(service=service), mock.patch(__name__ + '.target', return_value=frozen):
                 self.validate_objects(objects)
                 for capability in list(item['HostConfig']['CapAdd']):
