@@ -42,3 +42,19 @@
 公证上传前需提供**具体构建App/ZIP、版本、提交、SHA256、Apple目的地与用途**，获得针对该产物的明确批准后才调用Apple公证服务。当前无上传批准，也未执行。不能关闭Gatekeeper、清除隔离标记、改SIP等绕过安装。
 
 第二台Mac及公司允许环境由用户操作或提供明确授权测试条件，不索要公司密码、OTP、私钥或终端录屏。记录日期、构建、覆盖场景与结果；账号拥有、第一台重复运行或模拟审批均不能代替人工验收。
+
+## 当前集中交付前提（2026-10-28检查点）
+
+已授权隔离环境无需再次等待安装或Docker许可。基础真实四认证/SFTP、多提示审批、2GiB/1000及异常、App上传/关窗/Quit/文件操作/批skip-rename-overwrite/正字节切标签、外层Vim/tmux/htop、公钥nested、原生加密key认证取消恢复/信任管理，以及有限正常保活与R2黑洞分项已有主管独立证据；不得为消除历史失败而重复campaign。原并发MFA fixture取消材料卫生整案PARTIAL、原黑洞control/-9失败均保留，不因精确恢复或后来成功追认为原案成功。
+
+仍必须满足且不能由host15短测或构建替代的条件：
+
+1. **目标设备与正式长测**：可运行正式min26产物的Apple Silicon/macOS26设备；正式driver200次创建关闭和五会话实际连续24小时，真实Release输出/快速切标签压力及App＋子进程资源趋势/内存努力目标报告。Agent不升级宿主、不改电源设置或创建定时/常驻保活。
+2. **默认Keychain真实动作的明确放行**：公开CredentialStore消费者目前source/offline-only。需要仅一次性测试命名空间的save/read/forget/delete/不可用回退实跑及系统交互条件；testNamespace不是独立物理Keychain。历史隔离CRUD、内存provider及当前只读签名证据不能替代该动作授权。目标mac26自动密码白名单及升级/重新安装访问另需验证。
+3. **发布身份、具体产物与Apple上传**：准备可用Developer ID及正常系统访问，Agent不创建/读取签名私钥或代答登录授权。最终Release含版本/commit/依赖/摘要后，展示具体App/ZIP及Apple公证目的地/用途再集中申请上传批准；未批准不上传。现内部候选不是已完成正式验收的Release，旧manifest不自动代表后续源码。
+4. **双机与人工/企业场景**：第二台Apple Silicon/macOS26安装、正常启动/升级/卸载说明；人工IME/组合输入、Finder/NSOpenPanel、真实剪贴板copy/paste与像素交互；公司允许环境四类适用认证/手机审批、内层密码/OTP。用户自行操作秘密，不提供给AI；记录构建/日期/覆盖范围，不采敏感终端录像。
+5. **剩余工具合法运行条件**：Docker日志需非秘密日志源和受限读取方案，不能挂宿主Docker socket/特权或开启认证日志；Claude Code需要合法账号/条款/网络条件，OpenCode无账号离线TUI仍未实测，不擅自补装、读取宿主配置或连provider。执行计划允许缺合法条件时记录限制，但不等help/version通过，见 `docs/reports/terminal-tool-runtime-prerequisites.md`。
+
+App并发提示归属仍在现有keyonly/cap8上做最后受限接线验证；不为此静默重建MFA服务。若后续要补App密码/OTP整条shell可用链，另三旧root服务仅cap7，应先审定目标服务最小AUDIT_WRITE方案/精确单服务重建及fresh CID/指纹绑定，而不是拿outer-auth事件冒shell-ready。
+
+本清单是必要条件记录，不是新增授权、范围删减或产品完成声明；当前实际已完成项与最新源码审点仍以 `ENGINEERING_STATE.md` / `docs/acceptance.md` 为准。
