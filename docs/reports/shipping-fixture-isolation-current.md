@@ -31,3 +31,17 @@ PBX实际资源来源为Application/OpenLXSSH/NOTICE.txt和SOURCE_ROOT下Package
 主管独立核41清单/106当前输入/19命令loghash、两配置实际compile与Ld记录、当前binaryhash/vtool26/nm符号、PBX资源来源和HostProbe未变，证据：`DerivedData/Verification/primary-shipping-fixture-b-2366defe-1611-4318-a4e6-a159b830e8fc/`。主管首次只读核验也误将GRDB-LICENSE归App分组，实际SOURCE_ROOT路径修正后通过，未做状态动作或改产品。
 
 本轮未重跑既有148HostProbe tests，复用其已审结果；无Docker/SSH/Keychain/SecItem/Apple上传、min26启动或签名打包。**只表示当前静态构建隔离通过，整体Goal仍未完成。**
+
+## AUTH/trust变更后的回归 C
+
+B后新增的认证UI与信任管理测试源码已在C中实际正式编译复核；对应App源3adb274，独立Keepalive不进入产品目标。Debug/Release仍各一次incrementalcompile+Ld1，无重试：Debug11.372s编译AppRealIntegration/Contract/Entry三输入，Release21.421s按现有WMO27输入，actualdefines分别仅DEBUG/空，无HOST_PROBE。19命令/19日志全部exit0，106输入、native160/7许可、两实际PBX资源notice、Info26/系统动态链接通过。
+
+运行Auth/Trust Evidence、认证/信任消费者、Batch/SwitchGate与hooks符号0，纯AppRealAuthUIGate/AppRealTrustGate/拒flagparser metadata按源码条件允许保留；不是靠某字符串不存在推全程序可达性。当前156tests只复用，不重跑。HostProbe全15文件aea234-main/5409helper和Keepalive App4文件2aace-main/b7d48-helper保持不变。
+
+- C Debug SHA256 `e9bada830c064573e44002a8ba7a1edf946769c43d5726ff73f8e456e3effa53`
+- C Release SHA256 `110b2e8fa7b03c62553eefdb58c08561cad9ee19823a94b5a9048a0b4d153439`（哈希仍同旧，实际compile/Ld日志明确执行）
+- C证据：`DerivedData/AppRealIntegration/offline-853dd2e8-feff-4491-bc00-cf97bedfbfe4/shipping-fixture-c-03a4158a-6399-4053-90a7-fc36aaadb25a/`
+- C result SHA256 `d4f802e546e326f399fe388498f4692ff42281ea9c29f0c3adc55dc1306fa2f3`，24文件manifest `098562202b62669e0bd6a1583fbf33ea93284805be3b6b38c94d09ccc8035f0b`
+- 主管独立当前106输入/19log摘要/实际两次compile-Ld/当前binary-vtool26-nm/许可资源和两套测试App保护：`DerivedData/Verification/primary-shipping-fixture-c-452b2b7d-acac-4a3a-98b6-eb629599a6e7/`
+
+C仍无运行、签名、打包或公证，不把编译闭环写为发布通过。此后若再改App接线源码，C的哈希只代表当时审点，不自动覆盖未来变更。
