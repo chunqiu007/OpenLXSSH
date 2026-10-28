@@ -22,3 +22,11 @@ P7-FINAL-SECRET-DELTA-CHECK由独立只读审查者执行，主管读取结果�
 实际命令：限定git status/show/diff（no-optional-locks/no-ext-diff/no-textconv/no-renames）及Python标准库新增行扫描、路径/文本/zipnames检查，全部exit0。不运行App/build/签名/网络/Keychain，不读个人.ssh、公司资料、秘密环境、ignored日志或trace，不打印疑似内容。
 
 **结论：限定delta未发现新增真实秘密、lateanswer日志泄漏或敏感材料误入；不覆盖运行时、二进制内部、任意编码秘密或全Git历史，不将完整AC25标通过。**
+
+## host15真实集成收口的限定检查
+
+本轮相对 `a535624` 至 `fa5191d` 及相关文档提交的43个公开变更文本，按私钥块/常见API token标记规则检查为0；当前tracked路径无.build/.runtime/DerivedData、fixture password/phrase/private leaf、Keychain或签名材料误入。只记录路径/类型/行号，不输出疑似内容；未打开用户.ssh、真实fixture秘密、Keychain或任意ignored日志。
+
+显式复核App importAuthUIKey、authenticationUICancel、concurrentAuthenticationUI：phrase只有App固定安全输入路径/closedphase allowlist，记住nil，native securefield→target/action→同步submit，无print/logger/NSPasteboard/localizedDescription/直接respond出口；报告仅typed请求/会话/进程和分阶段读取/提交计数，不导出prompt/answer及摘要/长度。App原生测试stdout/stderr仅stat为空，未读其内容。短作用域mutablebuffer尽力清理不等Swift/UI全部副本零化。
+
+主管实际检查记录：`DerivedData/Verification/primary-final-public-exits-870cb79c-b4b7-49f7-b8c9-b6f511745412/`，含确切43文件SHA清单。此范围不覆盖全历史、任意编码、二进制内部、运行内存或所有ignored日志，不能作为全部秘密永不泄漏证明；旧候选内容检查也不自动覆盖未来正式产物。本轮无新正式分发包，最终正式候选仍须按其具体manifest/归档出口再验。

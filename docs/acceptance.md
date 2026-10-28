@@ -1,6 +1,6 @@
 # OpenLXSSH V1.0 — 验收总表
 
-当前状态：正式App/五生产包已有本地实现与分项证据，**整体验收未通过**。已授权隔离环境中，host15 SSH/SFTP四类认证、多提示/审批、真实2GiB/1000与异常已有分项证据；真实App按需读取、16MiB上传跨关SSH/隐藏、关窗继续取消、真正Quit继续取消及原生批上传下载/改名/审核删除均已主管验收。真实外层PTY/Vim12、公钥nested12、tmux10/htop、原生搜索/内存Bracketed Paste、双标签复用/自然断线历史保留与原生手动重连分项均通过；两MFA并发隔离核心成立，但原case因fixture清理失败仍PARTIAL，已exact恢复。历史失败不改写，见 `ENGINEERING_STATE.md` 和报告。正式macOS26双配置编译/钩子隔离不是目标运行。当前批冲突在source/offline准备；其余TUI、在途切标签/完整冲突与网络保活、人工内层密码OTP/IME/Finder/剪贴板、默认Keychain持久化、200/24h、正式发布与双机企业验收仍未满足。
+当前状态：**本轮host15受控分项已收口，OpenLXSSH V1.0整体验收仍未通过。** 真实SSH/SFTP四类认证、多提示/审批、2GiB/1000及异常已有分项证据；App上传跨关闭/隐藏、关窗/Quit、原生文件操作与批skip/rename/overwrite、正字节切标签、双标签/自然断线历史/手动重连、原生搜索/内存Bracketed Paste、加密key认证UI取消恢复/并发提示归属、真实预扫变化拒绝/原生信任管理，以及Vim/tmux/htop、公钥nested、正常保活+R2黑洞均经主管独立验收。当前App160tests/0failure、最终正式Debug/Release各一次arm64/min26静态编译/运行测试代码隔离通过，**不等macOS26运行或已发布Release**。原MFA fixture取消材料cleanupIncomplete、原黑洞control/-9等失败历史保留，不被恢复或后续通过追认。当前需满足的默认Keychain动作授权、目标mac26/200次/连续24h/Release压力资源、DeveloperID/具体产物Apple上传、双机/人工/企业和剩余工具合法条件见 `docs/release/acceptance-prerequisites.md`；不把这些必要门删除或以host15短测替代。
 
 当前检查点：P6B1/R1已有主管103tests/原生与签名回归；本轮五view有限渲染压力独立通过并提交ba4a2ec，见 `docs/reports/p7-app-output-stress.md`。正式Transport对抗发现的voucher检查与超时dead-name泄漏已最小修复，主管独立Release35/6/4/10/28/28及rights矩阵通过；最终C对应App105/Release/签名及退出回归已核，见 `docs/reports/p7-transport-adversarial.md`。真实网络与目标系统不因此通过。最新干净源8b63961/UUIDfdb05b4d Development内部候选已包含两修复并独立校验，仍Gatekeeper拒绝/未公证或安装；旧候选仅历史。下方阶段历史记录仅指当时状态，当前实现/委派以 `ENGINEERING_STATE.md` 为准。
 
@@ -89,7 +89,7 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | AC-22 | FILE-08～09 | 关闭 SSH 标签、切标签、隐藏 SFTP 面板后任务继续且可见；空闲连接可释放 | 进行中：原f85128checks真实关SSH/隐藏上传成功保留；新8f7d31checks真实16MiB上传655360B切B/983040B切A，双SSH与同job/service/host/gen身份不变，最终原service SHA匹配/8normalcloses/rescue0/精确清理主管独立通过。任务入口明确在完成后原生hide→open核同job可见，不声称在途入口已单独核验；mac26/完整多任务排列仍待。见 `docs/reports/app-real-transfer-survival.md`、`docs/reports/app-real-inflight-tab-switch.md` |
 | AC-23 | LIFE | 无传输时标签关闭、主窗口关闭和退出正确；隐藏/最小化保持连接；重开不恢复或触发认证 | 进行中：host15真实App显式testscan15首案实际SSH outerauth/ownedPID、无传输原生标签关闭closed/PIDnil、窗口awaitFilesclose、重开无SSH/SFTP恢复通过；defaultscan5认证前失败保留。隐藏/最小化/真实退出完整矩阵及mac26仍待。见 `docs/reports/app-real-ssh-sftp.md` |
 | AC-24 | LIFE、FILE-08 | 有传输时窗口关闭/退出均拦截；继续保留窗口，取消并关闭正确终止，文件不被静默破坏 | 进行中：真实host15 window9baf Continue→Cancel23checks/7checkpoint及Quit3a931 Continue→Cancel22checks/6checkpoint均通过。Quit preexit完整fsync/hook1-1后实际自行退出0/无forceddrain；均cancelled/actualworker-service-SSHdrain，retained准确声明、外层fixedCID核finalabsent再FD/inode/SHA精确清，7opens/6closes/shutdown1如实。主管独立验收，正式mac26/多任务完整矩阵仍待。见 `docs/reports/app-real-window-transfer.md`、`docs/reports/app-real-quit-transfer.md` |
-| AC-25 | SEC-02、AUTH、KEY | 源码、配置、数据库、参数、日志、测试截图和提交中没有秘密；测试不使用真实公司凭据 | 进行中：历史344tracked/index与显式出口已查；最终ba4a2ec/d331188限定15文件delta及fdb05b4d候选32文件/29文本未见实际秘密或敏感材料，未覆盖二进制内部/全历史/运行时/所有日志，不作全证明。见 `docs/reports/p7-secret-artifact-check.md` |
+| AC-25 | SEC-02、AUTH、KEY | 源码、配置、数据库、参数、日志、测试截图和提交中没有秘密；测试不使用真实公司凭据 | 进行中：历史344/候选出口检查边界保留；本轮相对a535624的43公开文本变更与当前tracked路径限定规则0命中，importAuthUIKey/单auth/concurrentAuth显式secret出口复核无prompt/answer/hash/长度/logger/argv泄露，harness及主管不读真实secret，原测试App日志仅stat空。主管 `primary-final-public-exits-870cb79c-b4b7-49f7-b8c9-b6f511745412`；不覆盖全历史/任意编码/二进制内部/内存/全部ignored日志，不作全证明，见 `docs/reports/p7-secret-artifact-check.md` |
 | AC-26 | SEC-04 | 固定依赖及传递依赖、许可证与来源记录；Sandbox/权限选择有证据，无关闭系统保护的绕过 | 进行中：正式五包/App锁图、原生输入/许可及实际候选链接来源已核；非Sandbox/Hardened Runtime/空权限决策见 `docs/adr/v1-runtime-permissions.md`。目标系统/最终发布权限回归未验，无系统保护修改，不标整体通过 |
 | AC-27 | 数据一致性 | 数据迁移、异常中断、重启、重复保存、Keychain/私钥删除引用失败均可恢复，不错配凭据 | 进行中：Core迁移/真实WAL异常退出/事务与共享引用、App补偿/清理重启有局部证据；App R1提交后清理语义和prepared恢复入口主管已复验。尚缺目标系统及整体认证/文件集成回归，未标通过。见 `docs/reports/p4-data-core.md`、`docs/reports/p4-security-core.md` |
 
@@ -125,4 +125,4 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 
 - 任何已知秘密泄漏、主机身份校验绕过、静默文件损坏、持续无界资源增长或无法安装运行的问题都阻止完成。
 - 一般界面细节记录并按影响处理，不无限扩张首版；必要功能或验证缺失不能包装成普通已知限制。
-- 整体结论：必要功能已有本地实现和分项审查，本轮Transport voucher/超时ownership修复及对应App回归已主管复核。真实互通、目标系统、长期、正式发布与外部人工验收未完成，无整体通过声明。
+- 整体结论：本轮host15受控真实集成分项、160项App回归和最终shipping D静态编译隔离均经主管独立通过，具体报告与失败历史保留。目标macOS26运行、200次/连续24h及Release真实压力/资源、默认Keychain真实持久化动作授权、正式DeveloperID/具体产物公证、双机/人工/企业及剩余工具运行条件未满足；整体未完成，当前等待必要条件，不能用本地分项或内部候选声明COMPLETE。

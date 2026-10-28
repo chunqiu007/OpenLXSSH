@@ -4,13 +4,23 @@
 
 ## 当前目标、范围与授权
 
-- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 CONTINUE。上传/关窗/Quit、外层PTY/Vim、独立公钥nested、GUI文件操作、tmux/htop、原生搜索/内存Bracketed Paste、真实双标签/自然断线手动重连分项已通过；当前补真实批冲突与正字节在途切标签。** 不虚构运行环境 Goal 状态变更。
+- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 BLOCKED于必要发布/目标平台与人工条件。本轮已确认范围内的host15受控分项和当前源码静态构建已收口，无活动工程师或测试进程；这不是整个产品完成。** 不虚构运行环境 Goal 状态变更。
 - 范围：四类直连 SSH/MFA、多标签、用户手动嵌套 SSH、直连 SFTP、主机/密钥/凭据管理、独立传输与窗口/退出保护。排除自动 ProxyJump、经跳板图形 SFTP、转发、自动重连/恢复。基线见 `docs/requirements.md`。
 - Primary 是唯一主管，主要编码交 software-engineer；工程师 DONE 不等主管验收。用户授权验收后的相关本地 Git 提交，没有 remote push、发布、生产连接或 Apple 公证上传授权。
 - 用户已明确批准官方 Docker Desktop、固定 Ubuntu ARM64/必要依赖、四认证及多提示隔离服务。宿主端口仅 127.0.0.1:22221～22225，不 LAN、不真实凭据/生产挂载、不宿主 sshd、不生产连接、不 Apple 上传。Agent 不代接受法律协议或输入系统凭据。不再重复“等待 Docker 授权”。
 - 许可与引擎条件已实际核验解除；公证需展示具体产物/Apple 目的地/用途后另获批准。公开 CredentialStore 持久化消费者当前仅 source/offline，未放行真实默认 file-based Keychain save/read/delete；测试事故开关不构成额外授权。
 
-## 目前最重要的新事实
+## 本轮最终检查点
+
+- 当前正式App源码分项提交 `fa5191d`；最新HostProbe实际160tests/0failure（旧156保留），仅测试配置min15，不冒目标系统。公开consumer保活17Python pure/83Swift实际断言及A正常＋R2 B黑洞真实门已审，提交 `4c89e23`。
+- 本轮真实分项主管独立验收：htop、原生双向搜索/53B内存Bracketed Paste、双标签复用/自然退出历史/原生手动重连、批skip→新batchrename与独立风险、批overwrite逐item风险、16MiB正字节在途切标签、加密私钥原生取消恢复、真实keyscan变化拒绝/原生信任管理恢复、双真实pending认证UI归属。
+- 最终shipping D对应 `fa5191d` 源码：Debug/Release各一次真实compile/Ld、arm64/min26/SDK26.2、19cmd全0/106输入/许可/系统动态库/运行测试代码隔离，主管独立复核通过。未运行min26、未签正式产品/打包/公证。Release字节SHA仍110b2…但实际WMO27输入/Ld1有原日志。
+- 本轮43个公开变更文本、当前tracked路径及显式secret消费者限定检查无秘密特征/误入运行凭据；不等全历史/任意编码/二进制/内存/所有ignored日志证明。原并发MFA cleanupIncomplete与原黑洞control/-9失败保持，恢复及后续通过不回写原结果。
+- 当前无active writer/runtime，批准22221～22225无listener，已核测试所属PID/FD/store清理。容器保留原已授权隔离状态，未开启宿主SSH或更改系统网络/电源。
+- 重新只按身份类型计数：Apple Development1、Developer ID Application0/Installer0；宿主仍macOS15.8.1/24H32。磁盘最近118GiB可用是瞬时观察，不沿用为新增安装批准。
+- 集中必要条件见 `docs/release/acceptance-prerequisites.md` 最后章节；整体仍缺目标mac26及正式200/24h/Release压力资源报告、默认Keychain真实动作放行、DeveloperID/具体产物Apple上传、双机/人工/企业验收及剩余工具合法运行条件。不得因再次“继续”默认补齐这些授权或平台。
+
+## 历史诊断与已验收过程（不代表当前未修）
 
 1. 原生 App 第二个真实上传案，在关闭 SSH/隐藏面板动作之前 SSH 已 failed/PID 不存在，而独立 SFTP 仍 running/720896 bytes。两个上传案均未通过，不能说关闭触发故障或跨关闭已验证。
 2. 系统 `/usr/bin/ssh` 同参数/同固定远端 printf，仅 `-T`/`-tt` 不同：无 PTY exit0/6.305s/52B ACK 精确匹配；强制 PTY exit255/15.792s/stdout0/stderr0。不是外层 timeout，不等认证拒绝。
@@ -96,7 +106,7 @@
 | KEEPALIVE-BLACKHOLE-PREP-A / BUILD-A / CAMPAIGN-A / CLOCK-R2 / R2-LIVE / agent_cef8d152-7e03-48fc-a57a-fbac0729e614（已验收提交） | 13pure+83Swift实际decoder/nonce/d185App2aace-helperb7d48copy/9obj39cmdstrict主管过；首A12.000103s225samples/freshACK/natural0/FD过，首B混进程clockcontrol失败/-9原PARTIAL与52hash保留。R2只3Python实际relayclock转发/失败cleanupACK+最小B-onlygate，17pure原13/consumer不变主审；新Bf2dff collectrelayconsumerarm各1/A重跑0，actualnatural255/failedlaunchFailed2.568177s/保守5.682587s/clockdiff1e-5；discard[2176,0]/drop[52,0]/forward不增[4101,4511]/9TCPsnap/firstclientEOF且backendnull/同remoteBridgePIDstart活至结果。consumerrelay自然0无signals/closedFD/5PIDgone/ports0/exactrunroot清、tombstone保留、fixture源App旧52不变。主管独立primary-keepalive-r2-pass-bd65b34c-699e-404c-9b56-ba55a662eed5，已4c89e23，报告 `docs/reports/real-keepalive-blackhole.md`，仅有限host15/2-2不数加密probe/mac26。 |
 | SHIPPING-FIXTURE-CONFIG-REGRESSION-C / agent_cef8d152-7e03-48fc-a57a-fbac0729e614（已验收冻结） | current3adbApp AUTH/trust源码Debug11.372s3compile/Ld1、Release21.421sWMO27/Ld1各一次，19cmd19log全0/noHOST_PROBEactualdefines，runtimeAuthTrustEvidence/hooks/BatchSwitchGate nm0纯types允许，106input/native1607license2PBXnotice/Info26系统链接及HostProbe15/Keepalive4保护通过。主管独立primary-shipping-fixture-c-452b2b7d-acac-4a3a-98b6-eb629599a6e7，报告追加C；无运行签名发布。 |
 | APP-REAL-CONCURRENT-AUTH-UI-PREP-A / LIVE-A / agent_cef8d152-7e03-48fc-a57a-fbac0729e614（已验收提交） | 376de160tests原156/49source14cmd/c558mainb0fhelperstrict主管过；唯一d25221checks/App6533自然0/29.7263s，A6559/B6594不同req/session/birth同tickpending，nativeA空securecancel/0manual0answer/B原request不变→nativeBsubmit1/manual1/原identityfreshACK/A不复活，import1。SFTPcredential0/双tabclosed/4PIDgone/portsstore清/fixture源bundle不变，relay6438 ownedTERM后0无KILL/8-8-0-0非自然退出；主管独立primary-app-concurrent-auth-pass-4f158532-30d2-4a14-a7d6-66be62ca2c9c，已fa5191d，报告 `docs/reports/app-real-concurrent-auth-ui.md`。共享同key/同秘密非differentsecret/MFA全矩阵。 |
-| SHIPPING-FIXTURE-CONFIG-REGRESSION-D / agent_cef8d152-7e03-48fc-a57a-fbac0729e614 | 最后current并发源码正式DebugRelease各1incrementalcompilelink/隔离，pureConcurrentGate允许metadata/整runtimeevidenceabsent，160tests仅复用，保护HostProbec558-b0f15files及Keepalive2aace-b7d4files/106源许可；onlyignored/cache写，不实现/签名/运行/打包，完成交主管集中必要条件汇报。 |
+| SHIPPING-FIXTURE-CONFIG-REGRESSION-D / agent_cef8d152-7e03-48fc-a57a-fbac0729e614（已验收冻结） | currentfa519源码Debug10.573s3compile/Ld1、Release21.513sWMO27/Ld1各一次/19cmd19logs0，arm64min26/实际noHOST_PROBE/整ConcurrentruntimeEvidence与hooks nm0纯Gate允许，106源/native1607lic2PBXnotice/Info26系统links及HostProbec558-b0f15/Keepalive2aace-b7d4保护过。只读inspection最初错按-filelist提取，改实际@SwiftFileList核27输入，不重build。主管独立primary-shipping-fixture-d-f1c13ad5-32d3-4a3b-83ed-df3b50e12c7c；160tests仅复用，no签名运行打包；所有执行者停写。 |
 | REMAINING-AUTONOMOUS-AC-ASSESS-A / agent_efdcaac5-23d9-4b20-a6fc-b45cfb47cbac | 只读完成，优先补真实GUI文件操作闭环与剩余TUI工具，不重已过项。外部门仍mac26/长测/DeveloperID公证/双机IMEFinder企业及默认Keychain真实动作授权 |
 
 | PUBLIC-CREDENTIAL-REVIEW-R1 / agent_12500230-e749-48c1-ada3-95f1f8b3869b | 三原缺陷主会话/原reviewer定向复审resolved；主管独立8pure及完整65Swift17Python29CLI/368快照12复用对象18命令/strict/inert0/0/2通过，仅离线准备，已本地提交6a65bb1。新f201 driver3526b308…；source/build冻结，禁止真实store/Keychain/SecItem/Docker/live。报告 `docs/reports/public-credential-store-preparation.md` |
@@ -121,10 +131,10 @@
 
 ## 当前环境、Git及产物
 
-- 实测宿主macOS15.8.1/24H32/arm64，Xcode26.3/17C529、SDK26.2/Swift6.2.4。正式App arm64/min26，HostProbe/独立消费者min15不能冒目标runtime。最新本地磁盘观察约42GiB可用，瞬时值不能沿用为下一安装许可。
+- 实测宿主macOS15.8.1/24H32/arm64，Xcode26.3/17C529、SDK26.2/Swift6.2.4。正式App arm64/min26，HostProbe/独立消费者min15不能冒目标runtime。最终本地磁盘观察约118GiB可用，瞬时值不能沿用为下一安装许可。
 - Docker Desktop4.97.0/build244584官方验签；DMG SHA256 94e4ccec4a035b7dcdf67cfff0520d4b46ee873ae04b155abc0d22b333cc90ad；Agent无sudo/accept-license。外部GUI后LicenseTermsVersion2/2CPU4096MiB/40GiB/AutoStartfalse，Engine实物一致。context desktop-linux固定unix:///Users/liuwenshuo/.docker/run/docker.sock，不建全局特权socket链接。
 - Ubuntu固定24.04 digest18b33ff…、rootimage7f633d33…、project openlxssh-fixture-61ed25328c13。keyonly已按A/B实证仅加AUDIT_WRITE重建为1253CID/MHU指纹（见上），原key-data/network保留；另外三个原CID/hostkeys/start未改，仍七cap。MINA2.20.0/commit2221febd…、image18c77956…/原CID不变。internal/noegress/readonly/no-new-privileges/capdropALL+按服务精确集合/资源受限/namedvolume无hostbind；HostConfig.PortBindings不冒称可达，有限opaque relay仅批准回环端口。
-- 分支 `development/p1-prototypes`；实际HEAD **3adb274**（真实keyscan knownchanged拒绝/native信任恢复），前 **3f4c211**（状态）、**cbc604a**（加密key原生取消恢复）、**dac9cfc**（shippingB/工具）、**793f472**（inflight）等。不宣称产品通过。当前cef唯一writer新KeepaliveAcceptance source/offline，App四源冻结；旧真实结果冻结，无active runtime。状态/验收/指南由主管维护，不覆盖writer。remote为空、未push。
+- 分支 `development/p1-prototypes`；最近状态提交 `07d74ce`、已验收App源 `fa5191d`、保活源 `4c89e23`；历史信任/认证/传输源分项均见报告。本文件最后更新将另作仅文档本地提交，不用文件内自引用追逐commit。当前无writer/runtime，全部工程师冻结；状态/验收/指南由主管维护，remote为空、未push。
 - 最近完整内部候选仍 `DerivedData/Distributions/0.1.0-1-8b6396199db2/fdb05b4d-a035-4040-8ded-5d549ffadb57/`，来源8b6396199db273493a438679df0020fa6ef7c3a4/dirty=false/version0.1.0 build1。arm64/min26/Development strict/runtime通过，Gatekeeper false/spctl3，未公证/上传/安装运行。ZIP7418092B/SHA256 fc927f568d50f67e8bd17a4c90f94fd666f41a3c1ba41a6d4317153755b7052e；tree499a0902be8e70b847d55b002813c748d43fc83813a0aaa0178b13b35fa45066；manifest4abd40c149a9bcd55c843bf040063d5876f005b06a9812468e32e0131fbcc63f。不能声称包含后续测试基础设施或报告。
 - 正式min26长期driver `Tests/StabilityAcceptance/.build/driver-71e5e2da-b345-4c4b-ab54-53b8d128209d/wrapper/OpenLXSSHStability.app`，driver66843ddc286375de474e9823ea7353cd7d77265b5e1a8bf1cbf8a009cf7f625a/helper31d0ee0ee9d357d7edd0bfaf129a9ae4b38334fd8955184f6afc049d685a0590；未运行200/24h，不降平台门。
 
@@ -138,9 +148,9 @@
 
 ## 剩余必要工作与外部条件
 
-- 本机可继续：现keyonly双encrypted原生并发提示归属最后小gate/当前源码收口；不重已过传输、标签、保活、终端、信任campaign。默认Keychain真实持久化需明确动作授权；完整App密码/OTP shell链若再测须先审目标cap7服务AUDIT_WRITE最小环境修正方案及fresh身份，不能outer-auth冒ready。PAM取消challenge自动卫生旧缺口保留，管理恢复非自动通过。工具合法运行条件单列，不把help/version当TUI。
+- 当前授权内的小范围host15自动分项已收口，不重已过campaign或为旧案改绿而重复执行。恢复后先核当前代码/实际环境，不从历史任务表的“准备/未覆盖”重开已过项。默认Keychain真实持久化仍需明确动作授权；若选择继续补完整App密码/OTP shell链，须先审目标cap7服务AUDIT_WRITE最小环境修正与fresh身份方案，不把现outer-auth冒ready。PAM取消材料自动卫生缺口保持，管理恢复非自动通过。
 - 当前已过host15有限分项：上传/window/Quit/外层PTYVim/公钥nested/原生文件与批skip-rename-overwrite/正字节切标签/tmux/htop/搜索memorypaste/双标签naturalmanualreconnect/认证cancel恢复/真实knownchanged原生管理及正常保活+R2黑洞、并发MFA核心。它们不自动变正式mac26验收。
 - 外部仍缺：macOS26真实运行；正式driver200次/五会话真实连续24h；DeveloperID Application/Installer当前0（仅Development1）、对应最终产物Apple上传批准；双机安装、人工IME/Finder/像素、企业允许环境。不能以缩数据/改时钟/HostProbe/多次短测替代。
 - 不创建Cron/OffPeak/常驻，不改电源/保护/宿主SSH，不因普通失败停止全部工作。仅必要信息/权限/无替代外部条件才BLOCKED；整体未完成时不得称COMPLETE。
 
-下一具体审点：cef最后shippingD currentfa519并发源码正式DebugRelease各1/19cmd/106源许可/HostProbe与Keepalive保护，纯ConcurrentGate允许metadata、runtimeEvidence和hooks隔离联合证据交主管审；不再实施或新增host15campaign。d252并发21checks已fa5191d，Keepalive4c89e23保留原Bcontrol/-9失败历史、其余已过分项冻结。之后集中外门/必要条件：mac26/200-24h/Release压力与资源测量、DeveloperID及具体产物Apple上传、双机企业/人工IMEFinderclipboard、默认Keychain真实动作授权和工具合法运行条件；AC04已有证据归类不新跑。完整App密码/OTP shellUI若继续需目标cap7最小环境修正方案，不能假称现outerauth=ready；当前产品NOT COMPLETE。
+恢复后的下一项由必要条件实际变化决定：取得Apple Silicon/macOS26设备后按正式min26 driver执行200次/连续24h及Release真实压力/资源和安装验收；取得默认Keychain一次性命名空间动作授权后才运行已冻结公开消费者；DeveloperID可用且最终产物明确后才生成正式候选并就该产物单独申请Apple上传。双机/IME/Finder/clipboard/企业内层秘密由用户安全操作；工具合法条件单列不补装/登录/出网。当前无待执行普通编译错误或未清本轮测试进程，无自动scheduled/常驻续建任务；Goal未完成，不宣布COMPLETE。

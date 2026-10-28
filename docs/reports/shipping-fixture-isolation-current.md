@@ -45,3 +45,17 @@ B后新增的认证UI与信任管理测试源码已在C中实际正式编译复�
 - 主管独立当前106输入/19log摘要/实际两次compile-Ld/当前binary-vtool26-nm/许可资源和两套测试App保护：`DerivedData/Verification/primary-shipping-fixture-c-452b2b7d-acac-4a3a-98b6-eb629599a6e7/`
 
 C仍无运行、签名、打包或公证，不把编译闭环写为发布通过。此后若再改App接线源码，C的哈希只代表当时审点，不自动覆盖未来变更。
+
+## 并发认证接线后的最终回归 D
+
+对应App源码 `fa5191d`，最终Debug/Release仍各一次真实incrementalcompile+Ld1，无重复构建。Debug10.573s实际三变更输入，Release21.513s按既有WMO27输入；19命令/19日志全部exit0，arm64/min26/SDK26.2、Info无fixture opt-in、源码条件＋实际无HOST_PROBE编译参数＋运行符号缺失联合通过。ConcurrentAuthEvidence/并发helper与旧hooks等运行代码absent，pureConcurrentGate metadata按源码范围允许保留。
+
+current106输入、native160/7许可、两实际PBXnotice/系统动态链接及HostProbe c558/b0f全15、Keepalive2aace/b7d全4文件保持。当前160tests只复用已审结果，不重跑。最终inspection最初期望-filelist未匹配，按真实@OpenLXSSH.SwiftFileList核27输入后通过，不修改产品/recipe或重构建。
+
+- D Debug SHA256 `97f4e8f2a1756e80e4f5e40e0ff4e3cabc63cf8b6ff1aff12bc37f608acd1f84`
+- D Release SHA256 `110b2e8fa7b03c62553eefdb58c08561cad9ee19823a94b5a9048a0b4d153439`，仍同旧字节但真实compile/Ld有记录
+- D证据 `DerivedData/AppRealIntegration/offline-853dd2e8-feff-4491-bc00-cf97bedfbfe4/shipping-fixture-d-0df7cbd3-c5e5-4f80-ac00-677f1dd23043/`
+- result `8af2368dedb95af84aeaf06a0dcb3749310eeca0d4d42450f081b007f7190e6f`，24证据manifest `dc4a2bdf3508800ccbd8c365638015ade6223e0d0a7fb759fb94c86cec6c009b`
+- 主管独立106当前源、19loghash、两binary/vtool26/nm运行隔离/otool系统链接、PBX许可资源、两套测试App保护：`DerivedData/Verification/primary-shipping-fixture-d-f1c13ad5-32d3-4a3b-83ed-df3b50e12c7c/`
+
+**D是本轮最终静态源码审点，不是正式签名、公证、Gatekeeper、macOS26运行或分发包验收。** 本轮到此不再新增host15测试phase，必要外部与人工条件集中见release前提清单。
