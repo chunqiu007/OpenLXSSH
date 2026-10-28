@@ -55,6 +55,6 @@
 4. **双机与人工/企业场景**：第二台Apple Silicon/macOS26安装、正常启动/升级/卸载说明；人工IME/组合输入、Finder/NSOpenPanel、真实剪贴板copy/paste与像素交互；公司允许环境四类适用认证/手机审批、内层密码/OTP。用户自行操作秘密，不提供给AI；记录构建/日期/覆盖范围，不采敏感终端录像。
 5. **剩余工具合法运行条件**：Docker日志需非秘密日志源和受限读取方案，不能挂宿主Docker socket/特权或开启认证日志；Claude Code需要合法账号/条款/网络条件，OpenCode无账号离线TUI仍未实测，不擅自补装、读取宿主配置或连provider。执行计划允许缺合法条件时记录限制，但不等help/version通过，见 `docs/reports/terminal-tool-runtime-prerequisites.md`。
 
-App并发提示归属仍在现有keyonly/cap8上做最后受限接线验证；不为此静默重建MFA服务。若后续要补App密码/OTP整条shell可用链，另三旧root服务仅cap7，应先审定目标服务最小AUDIT_WRITE方案/精确单服务重建及fresh CID/指纹绑定，而不是拿outer-auth事件冒shell-ready。
+App并发提示归属已在现有keyonly/cap8上用两真实加密私钥请求完成有限原生接线验证，不扩称不同秘密全排列或多轮MFA UI；不为此重建MFA服务。若后续要补App密码/OTP整条shell可用链，另三旧root服务仅cap7，应先审定目标服务最小AUDIT_WRITE方案/精确单服务重建及fresh CID/指纹绑定，而不是拿outer-auth事件冒shell-ready。
 
 本清单是必要条件记录，不是新增授权、范围删减或产品完成声明；当前实际已完成项与最新源码审点仍以 `ENGINEERING_STATE.md` / `docs/acceptance.md` 为准。
