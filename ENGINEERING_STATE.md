@@ -139,4 +139,4 @@
 - 外部仍缺：macOS26真实运行；正式driver200次/五会话真实连续24h；DeveloperID Application/Installer当前0（仅Development1）、对应最终产物Apple上传批准；双机安装、人工IME/Finder/像素、企业允许环境。不能以缩数据/改时钟/HostProbe/多次短测替代。
 - 不创建Cron/OffPeak/常驻，不改电源/保护/宿主SSH，不因普通失败停止全部工作。仅必要信息/权限/无替代外部条件才BLOCKED；整体未完成时不得称COMPLETE。
 
-下一具体审点：cef新KeepaliveAcceptance onlysource/offline（App四源freeze），同2/2 A正常control>=12s/B exactownconnection privatecontrol原子drop后自然ssh255、无先行proxyEOF/cancel/期限才可归因，源/绑定/纯state门先审再增量buildsign/有限live，不系统网络改动。Trust e689已3adb274/认证cbc604a，noactive runtime。shippingB仅793f472静态源，最终合适收口再回归，不冒新AUTH/trust已重编；工具条件不是实测。mac26/200-24h/DeveloperID上传/双机企业/人工及默认Keychain授权门不降低。
+下一具体审点：cef新KeepaliveAcceptance onlysource/offline（App四源freeze），同2/2 A正常>=12s/B exacttuple+ownedPIDbirth/token privatecontrol原子drop后自然ssh255/15s且无先行EOF/cancel/deadline。主管决定A可冻结旧pump；B独立进程所有accepted先小local boundedFORWARD，exactbind唯一目标才DROP，实际clearqueuedbytes计数+双向readdrop/noFIN，不旧pumphandoff/全局patch，不弱化queueproof；TCPmetadata优先SDK符号/准确lsof而非猜结构。源/纯检查先审再buildsign有限live，不系统网络改动。Trust已3adb274/状态bd7f0f4，noactive runtime；shippingB仅793f472静态源，AUTH/trust仍需合适最终回归。工具条件不是实测，mac26/200-24h/DeveloperID上传/双机企业/人工及默认Keychain授权门不降低。
