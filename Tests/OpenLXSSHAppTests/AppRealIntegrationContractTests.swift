@@ -3,6 +3,7 @@ import Foundation
 import XCTest
 #if HOST_PROBE
 import OpenLXSSHFiles
+import OpenLXSSHTrust
 #endif
 
 final class AppRealIntegrationContractTests: XCTestCase {
@@ -22,7 +23,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite", "transfer-survives-switch", "auth-ui-cancel"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite", "transfer-survives-switch", "auth-ui-cancel", "trust-change-recover"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -758,6 +759,61 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
         try observation.sample(elapsed: 2,connected: true,identityUnchanged: true,noChallenge: true)
         XCTAssertTrue(observation.complete); XCTAssertEqual(observation.samples,2)
     }
+    func testTrustChangeClosedTerminalOnlyPhaseUsesPlainFixtureKeyAndExactEndpoint() throws {
+        var value = object(); value["phase"] = "trust-change-recover"
+        XCTAssertEqual(try decode(value).selectedPhase,.trustChangeRecover)
+        XCTAssertTrue(AppRealIntegrationPhase.trustChangeRecover.isTerminalOnly); XCTAssertFalse(AppRealIntegrationPhase.trustChangeRecover.isTransfer)
+        XCTAssertEqual(AppRealIntegrationPhase.trustChangeRecover.fixturePrivateKeyName,"id_ed25519")
+        let actual = AppRealIntegrationContract.fingerprint, wrong = "SHA256:" + String(repeating: "A",count: 43)
+        XCTAssertTrue(AppRealTrustGate.distinctPublicRecords(host: "127.0.0.1",port: 22221,algorithm: "ssh-ed25519",wrongFingerprint: wrong,actualFingerprint: actual))
+        XCTAssertFalse(AppRealTrustGate.distinctPublicRecords(host: "127.0.0.1",port: 22221,algorithm: "ssh-ed25519",wrongFingerprint: actual,actualFingerprint: actual))
+        for (host,port,algorithm) in [("localhost",22221,"ssh-ed25519"),("127.0.0.1",22222,"ssh-ed25519"),("127.0.0.1",22221,"ssh-rsa")] {
+            XCTAssertFalse(AppRealTrustGate.distinctPublicRecords(host: host,port: port,algorithm: algorithm,wrongFingerprint: wrong,actualFingerprint: actual))
+        }
+    }
+    func testTrustRejectGateRequiresTypedFailureNoInteractivePIDOrPromptAndUnchangedPublicRecord() {
+        let id = UUID(), token = AppRealTrustGate.Token(tabID: id,sessionID: id,generation: 1), hash = String(repeating: "a",count: 64)
+        func gate(_ rejected: Bool = true,_ pid: Bool = false,_ auth: Bool = false,_ prompt: Bool = false,_ reconnect: Bool = true,
+                  _ after: String? = nil,_ exact: Bool = true,_ generation: UInt64 = 1) -> Bool {
+            AppRealTrustGate.rejected(trustRejected: rejected,ownedPIDSeen: pid,authSeen: auth,promptSeen: prompt,reconnectable: reconnect,
+                token: .init(tabID: token.tabID,sessionID: token.sessionID,generation: generation),beforeHash: hash,afterHash: after ?? hash,exactOldRecord: exact)
+        }
+        XCTAssertTrue(gate()); XCTAssertFalse(gate(false)); XCTAssertFalse(gate(true,true)); XCTAssertFalse(gate(true,false,true))
+        XCTAssertFalse(gate(true,false,false,true)); XCTAssertFalse(gate(true,false,false,false,false))
+        XCTAssertFalse(gate(true,false,false,false,true,String(repeating: "b",count: 64)))
+        XCTAssertFalse(gate(true,false,false,false,true,nil,false)); XCTAssertFalse(gate(true,false,false,false,true,nil,true,2))
+    }
+    func testTrustNativeReplacementDoesNotReconnectUntilExactNextGenerationAndACK() {
+        let id = UUID(), old = AppRealTrustGate.Token(tabID: id,sessionID: id,generation: 1), oldHash = String(repeating: "a",count: 64), newHash = String(repeating: "b",count: 64)
+        func replacement(current: AppRealTrustGate.Token? = nil,rejected: Bool = true,exact: Bool = true,count: Int = 1,
+                         hash: String? = nil,native: Bool = true) -> Bool {
+            AppRealTrustGate.replacement(before: old,current: current ?? old,stillRejected: rejected,recordsExactActual: exact,count: count,
+                oldHash: oldHash,newHash: hash ?? newHash,nativeConfirmed: native)
+        }
+        XCTAssertTrue(replacement()); XCTAssertFalse(replacement(current: .init(tabID: id,sessionID: id,generation: 2)))
+        XCTAssertFalse(replacement(rejected: false)); XCTAssertFalse(replacement(exact: false)); XCTAssertFalse(replacement(count: 2))
+        XCTAssertFalse(replacement(hash: oldHash)); XCTAssertFalse(replacement(native: false)); XCTAssertFalse(replacement(hash: "not-a-hash"))
+        let next = AppRealSessionsProtocol.Identity(tabID: id,sessionID: id,generation: 2,process: .init(pid: 111,parentPID: 99,startSeconds: 1,startMicroseconds: 0))
+        XCTAssertTrue(AppRealTrustGate.recovered(before: old,after: next,sameObjects: true,connected: true,shellACK: true,noPrompts: true))
+        for flags in [(false,true,true,true),(true,false,true,true),(true,true,false,true),(true,true,true,false)] {
+            XCTAssertFalse(AppRealTrustGate.recovered(before: old,after: next,sameObjects: flags.0,connected: flags.1,shellACK: flags.2,noPrompts: flags.3))
+        }
+        let same = AppRealSessionsProtocol.Identity(tabID: id,sessionID: id,generation: 1,process: next.process)
+        XCTAssertFalse(AppRealTrustGate.recovered(before: old,after: same,sameObjects: true,connected: true,shellACK: true,noPrompts: true))
+    }
+    #if HOST_PROBE
+    func testTrustHostPublicKeyUsesMatureParserForPublicSyntheticKeyAndRejectsMalformed() throws {
+        // Public RFC8032 test-vector key, not a fixture/server/private key.
+        let raw: [UInt8] = [0xd7,0x5a,0x98,0x01,0x82,0xb1,0x0a,0xb7,0xd5,0x4b,0xfe,0xd3,0xc9,0x64,0x07,0x3a,
+                            0x0e,0xe1,0x72,0xf3,0xda,0xa6,0x23,0x25,0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a]
+        let blob = Data([0,0,0,11]) + Data("ssh-ed25519".utf8) + Data([0,0,0,32]) + Data(raw)
+        let line = "ssh-ed25519 " + blob.base64EncodedString(), key = try HostPublicKey(openSSHPublicKey: line)
+        XCTAssertEqual(key.openSSH,line); XCTAssertEqual(key.algorithm,"ssh-ed25519"); XCTAssertNotEqual(key.fingerprint,AppRealIntegrationContract.fingerprint)
+        for invalid in [line + "\n"," "+line,"ssh-ed25519 not-base64","ssh-ed25519 AAAA","ssh-rsa "+blob.base64EncodedString()] {
+            XCTAssertThrowsError(try HostPublicKey(openSSHPublicKey: invalid))
+        }
+    }
+    #endif
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: false).action, .none)

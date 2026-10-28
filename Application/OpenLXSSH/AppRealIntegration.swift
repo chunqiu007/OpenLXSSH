@@ -457,6 +457,16 @@ struct AppRealSessionFailure: Error {
         let closedPID: Int32, ownedProcessGone: Bool
         let boundary = "Encrypted Ed25519 import validation reads the fixture phrase once in App memory; first challenge cancels WITHOUT answer/manual read; native reconnect secure-field submit reads once more. No prompt/answer/hash/length exported, no Keychain, no terminal prompt classification. Mutable buffers cleared best effort; Swift/UI copies are not completely zeroizable. Finite post-connect observation only, not macOS26/IME acceptance."
     }
+    struct TrustEvidence: Encodable {
+        struct Sample: Encodable { let elapsedSeconds: Double, state: String, ownedPIDPresent: Bool }
+        let host: String, port: Int, algorithm: String, wrongPublicKey: String, wrongFingerprint: String, actualPublicKey: String, actualFingerprint: String
+        let setupDecisionID: UUID, knownHashBeforeReject: String, knownHashAfterReject: String, knownHashAfterNativeReplacement: String
+        let failedToken: AppRealTrustGate.Token, tokenAfterNativeReplacement: AppRealTrustGate.Token, recoveredIdentity: AppRealSessionsProtocol.Identity
+        let rejectSamples: [Sample], ownedInteractivePIDSeenDuringReject: Bool, authSeenDuringReject: Bool, trustPromptSeenDuringReject: Bool
+        let nativeActions: [String], replacementVerifiedInitiallyDisabled: Bool, exactSingleReplacementRecord: Bool
+        let sameTabDriverSessionView: Bool, connectedAndFreshShellACK: Bool
+        let boundary = "Fresh App-only trust store intentionally seeded via public API with a different PUBLIC client key, not a server rotation. Real SystemHostKeyScanner detects mismatch BEFORE interactive SSH launch. Bounded polling observes owned interactive PID only, not keyscan children; cannot prove absence between samples. Recovery only via native trust management and manual reconnect; no API replacement confirmation."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -477,6 +487,7 @@ struct AppRealSessionFailure: Error {
         let batchConflicts: BatchEvidence?
         let batchOverwrite: OverwriteEvidence?
         let authenticationUI: AuthEvidence?
+        let trustChange: TrustEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -497,6 +508,7 @@ struct AppRealSessionFailure: Error {
     private var batchEvidence: BatchEvidence?
     private var overwriteEvidence: OverwriteEvidence?
     private var authEvidence: AuthEvidence?
+    private var trustEvidence: TrustEvidence?
     private var authImportPhraseReads = 0
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
@@ -558,6 +570,12 @@ struct AppRealSessionFailure: Error {
             }
             try check("host-saved-no-password", await model.saveHostSecurely(host, isNew: true, password: .manual))
             if isQuitPhase { quitHostID = host.id; quitKeyID = key.id }
+            let trustChange = input.contract.selectedPhase == .trustChangeRecover
+            let tab: SessionTab, driver: DirectSessionDriver
+            if trustChange {
+                let recovered = try await trustChangeRecover(host: host, publicClient: importedPublic.copyString)
+                tab = recovered.0; driver = recovered.1
+            } else {
             try await doubleClickHost()
             try await wait { !self.model.sessions.tabs.isEmpty }
             let trustDeadline = ProcessInfo.processInfo.systemUptime + 90
@@ -568,9 +586,11 @@ struct AppRealSessionFailure: Error {
                 guard ProcessInfo.processInfo.systemUptime < trustDeadline else { throw AppRealIntegrationFailure.timeout }
                 try await Task.sleep(for: .milliseconds(25))
             }
-            guard let tab = model.sessions.tabs.first else { throw AppRealIntegrationFailure.failedCheck }
+            guard let firstTab = model.sessions.tabs.first else { throw AppRealIntegrationFailure.failedCheck }
+            tab = firstTab
             if case .failed(let reason) = tab.state { throw AppRealSessionFailure(reason) }
-            guard tab.authentication == nil, let prompt = tab.trust.first, let driver = tab.driver as? DirectSessionDriver else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            guard tab.authentication == nil, let prompt = tab.trust.first, let direct = tab.driver as? DirectSessionDriver else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            driver = direct
             ssh = driver
             try check("actual-direct-driver", driver.session.token != nil)
             try check("exact-out-of-band-trust-match", input.contract.matchesTrust(host: prompt.host.address.value, port: Int(prompt.host.port.value), algorithm: prompt.algorithm, fingerprint: prompt.fingerprint))
@@ -588,11 +608,14 @@ struct AppRealSessionFailure: Error {
             actualPID = driver.session.ownedProcessID
             try check("actual-outer-auth-and-owned-pid", tab.state == .connected && driver.session.state == .connected && actualPID != nil)
             }
+            }
             let filesBefore = await facts.connectionAttempts
             try check("ssh-did-not-open-sftp", filesBefore == 0 && !model.files.visible)
             let terminalOnly = input.contract.selectedPhase.isTerminalOnly
             if authUI {
                 try check("auth-ui-native-tab-closed-no-sftp", model.sessions.tabs.isEmpty && driver.state == .closed && driver.session.ownedProcessID == nil)
+            } else if trustChange {
+                try check("trust-recovered-connected-before-native-close", tab.state == .connected && driver.state == .connected)
             } else if input.contract.selectedPhase == .sessionsReconnect {
                 sessionsEvidence = try await sessionsReconnect(a: tab, aDriver: driver)
                 sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
@@ -666,6 +689,118 @@ struct AppRealSessionFailure: Error {
         do { try await persistReport(failure: failure, removed: removed) } catch { exit(2) }
         let exitCode: Int32 = failure == nil ? 0 : 1
         RunLoop.main.perform { MainActor.assumeIsolated { () -> Void in exit(exitCode) } }
+    }
+    private func trustChangeRecover(host: HostConfiguration, publicClient: String) async throws -> (SessionTab, DirectSessionDriver) {
+        let line = input.hostKeyLine
+        let (wrong, actual) = try await Task.detached { (try HostPublicKey(openSSHPublicKey: publicClient), try HostPublicKey(openSSHPublicKey: line)) }.value
+        let endpoint = HostIdentity(address: try HostAddress(host.address), port: try SSHPort(host.port))
+        guard AppRealTrustGate.distinctPublicRecords(host: endpoint.address.value, port: Int(endpoint.port.value), algorithm: wrong.algorithm,
+            wrongFingerprint: wrong.fingerprint, actualFingerprint: actual.fingerprint), actual.openSSH == input.hostKeyLine else { throw AppRealIntegrationFailure.provenance }
+        let trust = try await model.sessionEnvironment.trustStore()
+        guard try await trust.records().isEmpty else { throw AppRealIntegrationFailure.isolation }
+        let evaluation = try await trust.evaluate(host: endpoint, key: wrong)
+        guard case .pending(let setup) = evaluation, setup.reason == .firstKey else { throw AppRealIntegrationFailure.failedCheck }
+        _ = try await trust.confirm(setup, displayedFingerprint: wrong.fingerprint) // Public wrong-record setup only, before first connection.
+        func exact(_ records: [TrustedHostKey], _ key: HostPublicKey) -> Bool { records.count == 1 && records[0].host == endpoint && records[0].key == key }
+        func knownHash() throws -> String { AppRealPrivateInput.sha(try AppRealPrivateInput.read(trust.knownHostsPath.value, limit: 8192)) }
+        guard exact(try await trust.records(), wrong) else { throw AppRealIntegrationFailure.failedCheck }
+        let beforeHash = try knownHash()
+        try await doubleClickHost(); try await wait { self.model.sessions.tabs.count == 1 }
+        guard let tab = model.sessions.tabs.first else { throw AppRealIntegrationFailure.failedCheck }
+        var samples: [TrustEvidence.Sample] = [], pidSeen = false, authSeen = false, promptSeen = false
+        let start = ProcessInfo.processInfo.systemUptime, deadline = start + 90
+        while true {
+            let driver = tab.driver as? DirectSessionDriver
+            pidSeen = pidSeen || driver?.session.ownedProcessID != nil
+            authSeen = authSeen || tab.authentication != nil
+            promptSeen = promptSeen || !tab.trust.isEmpty
+            let state: String
+            switch tab.state {
+            case .preparing: state = "preparing"
+            case .failed(.trustRejected): state = "trustRejected"
+            case .awaitingTrust: state = "awaitingTrust"
+            case .authenticating: state = "authenticating"
+            case .connectionPending: state = "connectionPending"
+            case .connected: state = "connected"
+            default: state = "other"
+            }
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            if samples.last?.state != state || (samples.last.map { elapsed - $0.elapsedSeconds >= 0.1 } ?? true) {
+                guard samples.count < 1000 else { throw AppRealIntegrationFailure.failedCheck }
+                samples.append(.init(elapsedSeconds: elapsed, state: state, ownedPIDPresent: driver?.session.ownedProcessID != nil))
+            }
+            guard !pidSeen, !authSeen, !promptSeen else { throw AppRealIntegrationFailure.failedCheck }
+            if tab.state == .failed(.trustRejected), driver?.state == .failed(.trustRejected), tab.canReconnect { break }
+            if case .failed(let reason) = tab.state, reason != .trustRejected { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard let driver = tab.driver as? DirectSessionDriver, let token = driver.token else { throw AppRealIntegrationFailure.failedCheck }
+        ssh = driver
+        let view = driver.terminal, session = driver.session
+        let failed = AppRealTrustGate.Token(tabID: tab.id, sessionID: token.sessionID, generation: token.generation)
+        let afterHash = try knownHash()
+        let rejectedRecords = try await trust.records()
+        try check("trust-real-system-scan-rejects-preseeded-public-key-mismatch", AppRealTrustGate.rejected(trustRejected: tab.state == .failed(.trustRejected),
+            ownedPIDSeen: pidSeen, authSeen: authSeen, promptSeen: promptSeen, reconnectable: tab.canReconnect && session.canReconnect,
+            token: failed, beforeHash: beforeHash, afterHash: afterHash, exactOldRecord: exact(rejectedRecords, wrong)))
+        var actions: [String] = []
+        func native(_ id: String) async throws { try await click(id); actions.append(id) }
+        try await native("trust.manage")
+        try await native("trust.manage.replace." + wrong.fingerprint)
+        try await type("trust.replacement.public", input.hostKeyLine); actions.append("trust.replacement.public")
+        try await native("trust.replacement.prepare")
+        try await wait { self.find("trust.replacement.verified", NSButton.self) != nil && self.find("trust.replacement.confirm", NSButton.self) != nil }
+        let initiallyDisabled = find("trust.replacement.confirm", NSButton.self)?.isEnabled == false
+        guard initiallyDisabled else { throw AppRealIntegrationFailure.failedCheck }
+        try await native("trust.replacement.verified"); try await native("trust.replacement.confirm")
+        let replacementDeadline = ProcessInfo.processInfo.systemUptime + 30
+        while !exact(try await trust.records(), actual) {
+            guard ProcessInfo.processInfo.systemUptime < replacementDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        guard let unchangedToken = driver.token else { throw AppRealIntegrationFailure.failedCheck }
+        let afterUI = AppRealTrustGate.Token(tabID: tab.id, sessionID: unchangedToken.sessionID, generation: unchangedToken.generation)
+        let replacementHash = try knownHash()
+        let replacementRecords = try await trust.records()
+        try check("trust-native-exact-replacement-only-no-implicit-reconnect", AppRealTrustGate.replacement(before: failed, current: afterUI,
+            stillRejected: tab.state == .failed(.trustRejected) && session.ownedProcessID == nil && tab.canReconnect,
+            recordsExactActual: exact(replacementRecords, actual), count: replacementRecords.count,
+            oldHash: afterHash, newHash: replacementHash, nativeConfirmed: actions.contains("trust.replacement.confirm")))
+        try await native("trust.manage.done"); try await wait { self.delegate.mainWindow?.attachedSheet == nil }
+        try await native("terminal.reconnect")
+        let connectDeadline = ProcessInfo.processInfo.systemUptime + 90
+        while tab.state != .connected || driver.state != .connected {
+            guard tab.authentication == nil, tab.trust.isEmpty else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if case .failed(let reason) = tab.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < connectDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let recovered = try SwitchSessions.identity(tab, driver)
+        actualPID = recovered.process.pid
+        let plan = try AppRealSessionsProtocol(nonce: input.contract.runID.replacingOccurrences(of: "-", with: ""))
+        try session.sendInput(plan.ackCommand(.aReconnected))
+        let ackDeadline = ProcessInfo.processInfo.systemUptime + 15
+        while try !plan.acknowledged(view.text, role: .aReconnected) {
+            guard tab.state == .connected, session.state == .connected, tab.authentication == nil, tab.trust.isEmpty,
+                  try SwitchSessions.identity(tab, driver) == recovered else { throw AppRealIntegrationFailure.failedCheck }
+            guard ProcessInfo.processInfo.systemUptime < ackDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let sameObjects = model.sessions.tabs.count == 1 && model.sessions.tabs.first === tab && tab.driver === driver && driver.session === session && driver.terminal === view
+        let ack = try plan.acknowledged(view.text, role: .aReconnected)
+        try check("trust-manual-reconnect-next-generation-actual-outer-auth-shell-ack", AppRealTrustGate.recovered(before: failed, after: recovered,
+            sameObjects: sameObjects, connected: tab.state == .connected && session.state == .connected, shellACK: ack,
+            noPrompts: tab.authentication == nil && tab.trust.isEmpty))
+        guard exact(try await trust.records(), actual), try knownHash() == replacementHash else { throw AppRealIntegrationFailure.failedCheck }
+        trustEvidence = TrustEvidence(host: endpoint.address.value, port: Int(endpoint.port.value), algorithm: actual.algorithm,
+            wrongPublicKey: wrong.openSSH, wrongFingerprint: wrong.fingerprint, actualPublicKey: actual.openSSH, actualFingerprint: actual.fingerprint,
+            setupDecisionID: setup.id, knownHashBeforeReject: beforeHash, knownHashAfterReject: afterHash, knownHashAfterNativeReplacement: replacementHash,
+            failedToken: failed, tokenAfterNativeReplacement: afterUI, recoveredIdentity: recovered, rejectSamples: samples,
+            ownedInteractivePIDSeenDuringReject: pidSeen, authSeenDuringReject: authSeen, trustPromptSeenDuringReject: promptSeen,
+            nativeActions: actions, replacementVerifiedInitiallyDisabled: initiallyDisabled, exactSingleReplacementRecord: true,
+            sameTabDriverSessionView: sameObjects, connectedAndFreshShellACK: ack)
+        return (tab, driver)
     }
     private func importAuthUIKey(_ source: String) async throws -> KeyCreationOutcome {
         var phrase = try AppRealPrivateInput.fixturePhrase(input.contract)
@@ -1502,7 +1637,7 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence, authenticationUI: authEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence, authenticationUI: authEvidence, trustChange: trustEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),

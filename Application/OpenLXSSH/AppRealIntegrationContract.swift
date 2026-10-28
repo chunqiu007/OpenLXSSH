@@ -56,9 +56,9 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch", authUICancel = "auth-ui-cancel"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch", authUICancel = "auth-ui-cancel", trustChangeRecover = "trust-change-recover"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel || self == .transferSurvivesSwitch }
-    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect || self == .authUICancel }
+    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect || self == .authUICancel || self == .trustChangeRecover }
     var fixturePrivateKeyName: String { self == .authUICancel ? "id_ed25519_encrypted" : "id_ed25519" }
 }
 struct AppRealTransferScope: Sendable {
@@ -233,6 +233,28 @@ struct AppRealAuthUIGate: Sendable {
     }
     static func completed(connected: Bool, shellACK: Bool, pendingNil: Bool, manualReads: Int, submittedAnswers: Int) -> Bool {
         connected && shellACK && pendingNil && manualReads == 1 && submittedAnswers == 1
+    }
+}
+struct AppRealTrustGate: Sendable {
+    struct Token: Codable, Equatable, Sendable { let tabID: UUID, sessionID: UUID; let generation: UInt64 }
+    static func distinctPublicRecords(host: String, port: Int, algorithm: String, wrongFingerprint: String, actualFingerprint: String) -> Bool {
+        host == "127.0.0.1" && port == 22221 && algorithm == "ssh-ed25519" && wrongFingerprint.hasPrefix("SHA256:") &&
+            actualFingerprint == AppRealIntegrationContract.fingerprint && wrongFingerprint != actualFingerprint
+    }
+    static func rejected(trustRejected: Bool, ownedPIDSeen: Bool, authSeen: Bool, promptSeen: Bool, reconnectable: Bool,
+                         token: Token, beforeHash: String, afterHash: String, exactOldRecord: Bool) -> Bool {
+        trustRejected && !ownedPIDSeen && !authSeen && !promptSeen && reconnectable && token.generation == 1 &&
+            beforeHash == afterHash && AppRealIntegrationContract.hex(beforeHash, count: 64) && exactOldRecord
+    }
+    static func replacement(before: Token, current: Token, stillRejected: Bool, recordsExactActual: Bool, count: Int,
+                            oldHash: String, newHash: String, nativeConfirmed: Bool) -> Bool {
+        before == current && stillRejected && recordsExactActual && count == 1 && oldHash != newHash &&
+            AppRealIntegrationContract.hex(oldHash, count: 64) && AppRealIntegrationContract.hex(newHash, count: 64) && nativeConfirmed
+    }
+    static func recovered(before: Token, after: AppRealSessionsProtocol.Identity, sameObjects: Bool, connected: Bool, shellACK: Bool,
+                          noPrompts: Bool) -> Bool {
+        before.generation < UInt64.max && before.tabID == after.tabID && before.sessionID == after.sessionID &&
+            after.generation == before.generation + 1 && after.isValid && sameObjects && connected && shellACK && noPrompts
     }
 }
 struct AppRealFileScope: Sendable {
