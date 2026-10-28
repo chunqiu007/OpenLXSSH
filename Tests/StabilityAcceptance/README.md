@@ -1,5 +1,15 @@
 # OpenLXSSH 有限稳定性验收驱动准备
 
+## macOS 26 接手：有界 FD 采样竞态修复
+
+原真实 200 次运行完成了 200 次认证及 20 次另计取消，但因 6 个短命 helper 的 PTY 指标不完整而最终 `resourceUnavailable`，仍是 **failed**，原 JSONL 不改写。旧行未保存 errno，不能追认为下面已确认的 EBADF 情况；后续必须使用修复后的新驱动重新执行必要验收。
+
+同一进程的 FD 可以在列表查询与 vnode 查询之间关闭。本机自有临时子进程实测：关闭后的 `proc_pidfdinfo` 返回零字节/EBADF，完整新列表不再含该 FD。新分类器仅在该精确错误、前后完整稳定的 PID/UID/PPID/birth、新列表完整有界且无重复并明确不含旧 FD 时，允许一次完整 FD/PTY 重采；不会把未知指标改为零。重采仍失败、权限错误、短读、未设置 errno、旧 errno、FD 仍在或身份变化均保持 incomplete。成功调用遗留的 errno 不作为失败依据。
+
+`fdListResamples` 为正值时记录一次重采；`confirmedGoneHelpers` 为正值时记录精确路径匹配 helper 的独立严格身份读取确认消失。二者是可选附加字段，旧 schema 1 行仍可解码。精确匹配 helper 的指标读取失败不再静默忽略：只有独立严格身份读取明确 GONE 才跳过，UNKNOWN、仍在、父进程不匹配均拒绝。原 cleanup 三态规则保持不变。
+
+`SamplingRaceRegressionTests.swift` 的 13 个新测试通过 C callback 注入覆盖上述正负分支；现有身份与清理 10 项回归继续保留。此修复仅影响验收工具，不修改生产 App/Transport，不代表 200 次或 24 小时验收已经通过。下文旧阶段的宿主、授权与执行记录作为历史保留。
+
 ## P7-STABILITY-DRIVER-BUILD-B：离线真实链接与 Development 签名
 
 状态仍为 **PARTIAL：真实 driver 产物准备，不是稳定性验收通过**。本任务允许使用已有 Apple Development 身份做本地离线签名；不创建证书/profile、不改 Keychain ACL/search list、不代答系统授权、不请求 Apple 时间戳、不上传公证。宿主仍是 macOS 15.8.1，**不运行 min26 driver 或 helper**，不 connect，不读官方 fixture `.runtime`、私钥/密码/Keychain 凭据，不启动服务、VM、长测或输出压力测试。

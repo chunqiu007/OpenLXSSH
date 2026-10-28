@@ -162,7 +162,8 @@ private enum SignatureGuard {
     func sample(event: EvidenceEvent = .sample, totals: CycleTotals? = nil) throws {
         let samples = try sampler.sample(sessionOwnedPIDs: active.compactMap(\.ownedPID))
         if samples.contains(where: { !$0.complete }) { metricsIncomplete = true }
-        try writer.append(EvidenceRow(event: event, totals: totals, resources: samples))
+        try writer.append(EvidenceRow(event: event, totals: totals, resources: samples,
+            confirmedGoneHelpers: sampler.confirmedGoneHelpers > 0 ? sampler.confirmedGoneHelpers : nil))
         lastSample = ClockReading.now().monotonic
     }
     func wait() async {

@@ -77,7 +77,7 @@ enum AppDataLocation: Sendable {
     }
 
     static func ensureAppParent(in parent: Int32) throws {
-        try AppFileSecurity.directory(parent, mode: nil)
+        try AppFileSecurity.applicationSupportParent(parent)
         if mkdirat(parent, "OpenLXSSH", 0o700) != 0 && errno != EEXIST { throw RepositoryError.unsafeDatabaseLocation }
         let fd = openat(parent, "OpenLXSSH", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw RepositoryError.unsafeDatabaseLocation }
@@ -86,7 +86,7 @@ enum AppDataLocation: Sendable {
         try AppFileSecurity.directory(fd, mode: nil)
         guard fchmod(fd, 0o700) == 0 else { throw RepositoryError.unsafeDatabaseLocation }
         try AppFileSecurity.directory(fd)
-        try AppFileSecurity.directory(parent, mode: nil)
+        try AppFileSecurity.applicationSupportParent(parent)
     }
 }
 

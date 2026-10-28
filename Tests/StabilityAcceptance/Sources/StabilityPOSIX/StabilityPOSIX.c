@@ -126,43 +126,135 @@ int stability_identity_read(pid_t pid, stability_process *out) {
     return stability_identity_read_using(pid, out, kernel_identity_query, NULL);
 }
 
-int stability_process_read(pid_t pid, stability_process *out) {
-    if (stability_identity_read(pid, out) != STABILITY_IDENTITY_PRESENT || out->uid != getuid()) return -1;
+static int kernel_process_query(pid_t pid, int flavor, uint64_t arg,
+                                 void *out, int size, void *context) {
+    (void)context;
+    return proc_pidinfo(pid, flavor, arg, out, size);
+}
+
+static int kernel_vnode_query(pid_t pid, int fd, struct vnode_fdinfowithpath *out, void *context) {
+    (void)context;
+    return proc_pidfdinfo(pid, fd, PROC_PIDFDVNODEPATHINFO, out, sizeof(*out));
+}
+
+static int same_metric_identity(const stability_process *a, const stability_process *b) {
+    return a->pid == b->pid && a->ppid == b->ppid && a->uid == b->uid &&
+        a->start_seconds == b->start_seconds && a->start_microseconds == b->start_microseconds;
+}
+
+static int stable_metric_identity(pid_t pid, const stability_process *expected,
+                                   stability_identity_query query, void *context) {
+    stability_process actual = {0};
+    return stability_identity_read_using(pid, &actual, query, context) == STABILITY_IDENTITY_PRESENT &&
+        same_metric_identity(expected, &actual);
+}
+
+enum { STABILITY_MAX_FDS = 4096 };
+
+static int metric_fd_list(pid_t pid, struct proc_fdinfo *fds,
+                           stability_process_query query, void *context) {
+    const int capacity = STABILITY_MAX_FDS * (int)sizeof(*fds);
+    errno = 0;
+    int required = query(pid, PROC_PIDLISTFDS, 0, NULL, 0, context);
+    if (required <= 0 || required > capacity) return -1;
+    errno = 0;
+    int bytes = query(pid, PROC_PIDLISTFDS, 0, fds, capacity, context);
+    // Size-only queries include spare capacity; actual complete records define
+    // this non-atomic observation. A full buffer may have been truncated.
+    if (bytes <= 0 || bytes >= capacity || bytes % (int)sizeof(*fds)) return -1;
+    int count = bytes / (int)sizeof(*fds);
+    for (int i = 0; i < count; ++i) {
+        if (fds[i].proc_fd < 0) return -1;
+        for (int j = 0; j < i; ++j) if (fds[j].proc_fd == fds[i].proc_fd) return -1;
+    }
+    return count;
+}
+
+int stability_process_read_using(pid_t pid, stability_process *out,
+                                 stability_identity_query identity_query,
+                                 stability_process_query process_query,
+                                 stability_vnode_query vnode_query, void *context) {
+    if (!out || !identity_query || !process_query || !vnode_query ||
+        stability_identity_read_using(pid, out, identity_query, context) != STABILITY_IDENTITY_PRESENT ||
+        out->uid != getuid()) return -1;
     out->metrics_complete = 1;
     struct proc_taskinfo task = {0};
-    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, sizeof(task)) == sizeof(task)) {
+    errno = 0;
+    if (process_query(pid, PROC_PIDTASKINFO, 0, &task, sizeof(task), context) == sizeof(task)) {
         out->rss_bytes = task.pti_resident_size; out->thread_count = task.pti_threadnum;
     } else out->metrics_complete = 0;
-    struct proc_fdinfo fds[4096];
-    int required = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
-    if (required <= 0 || required > (int)sizeof(fds)) out->metrics_complete = 0;
-    else {
-        int bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, sizeof(fds));
-        // The size-only query includes kernel spare capacity, not an exact FD
-        // count. Only the actual complete records returned by the read are FDs.
-        if (bytes <= 0 || bytes >= (int)sizeof(fds) || bytes % sizeof(struct proc_fdinfo)) out->metrics_complete = 0;
-        else {
-            out->fd_count = bytes / (int)sizeof(struct proc_fdinfo); out->pty_fd_count = 0;
-            for (int i = 0; i < out->fd_count; ++i) {
-                if (fds[i].proc_fdtype != PROX_FDTYPE_VNODE) continue;
-                struct vnode_fdinfowithpath vnode = {0};
-                if (proc_pidfdinfo(pid, fds[i].proc_fd, PROC_PIDFDVNODEPATHINFO, &vnode, sizeof(vnode)) != sizeof(vnode)) {
-                    out->metrics_complete = 0; out->pty_fd_count = -1; break;
+    struct proc_fdinfo fds[STABILITY_MAX_FDS];
+    int count = metric_fd_list(pid, fds, process_query, context);
+    if (count < 0) out->metrics_complete = 0;
+    else for (;;) {
+        out->fd_count = count; out->pty_fd_count = 0;
+        int retry = 0;
+        for (int i = 0; i < count; ++i) {
+            if (fds[i].proc_fdtype != PROX_FDTYPE_VNODE) continue;
+            int observed_fd = fds[i].proc_fd;
+            struct vnode_fdinfowithpath vnode = {0};
+            // libproc success need not clear errno. Inspect only this failed
+            // call's error; never inherit EBADF from a previous observation.
+            errno = 0;
+            int bytes = vnode_query(pid, observed_fd, &vnode, context), query_error = errno;
+            if (bytes != sizeof(vnode)) {
+                if (bytes == 0 && query_error == EBADF && out->fd_list_resamples == 0 &&
+                    stable_metric_identity(pid, out, identity_query, context)) {
+                    int fresh = metric_fd_list(pid, fds, process_query, context), still_present = 0;
+                    if (fresh >= 0) {
+                        for (int j = 0; j < fresh; ++j) if (fds[j].proc_fd == observed_fd) still_present = 1;
+                    }
+                    if (fresh >= 0 && !still_present && stable_metric_identity(pid, out, identity_query, context)) {
+                        // The old descriptor is demonstrably closed in this same
+                        // process. Measure the entire fresh list once; do not
+                        // turn an unknown old PTY value into a fabricated zero.
+                        count = fresh; out->fd_list_resamples = 1; retry = 1; break;
+                    }
                 }
-                const char *p = vnode.pvip.vip_path;
-                if (!strncmp(p, "/dev/ttys", 9) || !strncmp(p, "/dev/pty", 8) || !strcmp(p, "/dev/ptmx")) out->pty_fd_count++;
+                out->metrics_complete = 0; out->pty_fd_count = -1; break;
             }
+            const char *p = vnode.pvip.vip_path;
+            if (!memchr(p, '\0', sizeof(vnode.pvip.vip_path))) {
+                out->metrics_complete = 0; out->pty_fd_count = -1; break;
+            }
+            if (!strncmp(p, "/dev/ttys", 9) || !strncmp(p, "/dev/pty", 8) || !strcmp(p, "/dev/ptmx")) out->pty_fd_count++;
         }
+        if (!retry) break;
     }
-    stability_process after = {0};
-    if (stability_identity_read(pid, &after) != STABILITY_IDENTITY_PRESENT ||
-        out->pid != after.pid || out->ppid != after.ppid || out->uid != after.uid ||
-        out->start_seconds != after.start_seconds || out->start_microseconds != after.start_microseconds) return -1;
+    if (!stable_metric_identity(pid, out, identity_query, context)) return -1;
     return 0;
 }
 
-int stability_direct_helpers(pid_t known_ssh, const char *exact_helper, stability_process *out, int capacity) {
+int stability_process_read(pid_t pid, stability_process *out) {
+    return stability_process_read_using(pid, out, kernel_identity_query, kernel_process_query, kernel_vnode_query, NULL);
+}
+
+static int kernel_metric_query(pid_t pid, stability_process *out, void *context) {
+    (void)context;
+    return stability_process_read(pid, out);
+}
+
+int stability_helper_read_using(pid_t pid, pid_t expected_parent, stability_process *out,
+                                stability_metric_query metric_query,
+                                stability_identity_query identity_query, void *context) {
+    if (!out || !metric_query || !identity_query) return STABILITY_IDENTITY_UNKNOWN;
+    if (metric_query(pid, out, context) == 0) {
+        if (out->pid != pid || out->ppid != expected_parent || out->uid != getuid() ||
+            out->start_seconds == 0 || out->start_microseconds >= 1000000) return STABILITY_IDENTITY_UNKNOWN;
+        return STABILITY_IDENTITY_PRESENT; // Incomplete metrics still reach the failure latch.
+    }
+    stability_process identity = {0};
+    if (stability_identity_read_using(pid, &identity, identity_query, context) == STABILITY_IDENTITY_GONE) {
+        return STABILITY_IDENTITY_GONE;
+    }
+    return STABILITY_IDENTITY_UNKNOWN;
+}
+
+int stability_direct_helpers(pid_t known_ssh, const char *exact_helper, stability_process *out, int capacity,
+                              int *confirmed_gone) {
     // PROC_PPID_ONLY is not a machine-wide SSH-name scan. Never returns arbitrary descendants.
+    if (!confirmed_gone) return -1;
+    *confirmed_gone = 0;
     pid_t children[64];
     int n = proc_listpids(PROC_PPID_ONLY, (uint32_t)known_ssh, children, sizeof(children));
     if (n < 0 || n >= (int)sizeof(children) || capacity < 1) return -1;
@@ -171,7 +263,10 @@ int stability_direct_helpers(pid_t known_ssh, const char *exact_helper, stabilit
         char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
         stability_process child;
         if (children[i] <= 0 || proc_pidpath(children[i], path, sizeof(path)) <= 0 || strcmp(path, exact_helper)) continue;
-        if (stability_process_read(children[i], &child) || child.ppid != known_ssh) continue;
+        int status = stability_helper_read_using(children[i], known_ssh, &child,
+            kernel_metric_query, kernel_identity_query, NULL);
+        if (status == STABILITY_IDENTITY_GONE) { ++*confirmed_gone; continue; }
+        if (status != STABILITY_IDENTITY_PRESENT) return -1;
         if (count >= capacity) return -1;
         out[count++] = child;
     }

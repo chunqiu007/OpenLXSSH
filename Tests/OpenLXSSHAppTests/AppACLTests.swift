@@ -20,6 +20,102 @@ import OpenLXSSHSecurity
     private func expectFailure(_ operation: () async throws -> Void) async {
         do { try await operation(); XCTFail("Unsafe ACL accepted") } catch {}
     }
+    private func setSyntheticACL(_ url: URL, rule: String) throws {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        process.arguments = ["+a", rule, url.path]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw CocoaError(.fileWriteNoPermission) }
+        // Only synthetic test paths are changed or cleaned. Never alter the
+        // real Library/Application Support ACL to make the App start.
+        addTeardownBlock {
+            let cleanup = Process(); cleanup.executableURL = URL(fileURLWithPath: "/bin/chmod")
+            cleanup.arguments = ["-N", url.path]
+            cleanup.standardOutput = FileHandle.nullDevice; cleanup.standardError = FileHandle.nullDevice
+            try cleanup.run(); cleanup.waitUntilExit()
+        }
+    }
+    private func ACLBytes(_ descriptor: Int32) throws -> Data {
+        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { throw CocoaError(.fileReadUnknown) }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        let size = acl_size(acl)
+        guard size > 0, size <= 16 * 1024 else { throw CocoaError(.fileReadUnknown) }
+        var data = Data(count: size)
+        guard data.withUnsafeMutableBytes({ acl_copy_ext($0.baseAddress, acl, size) }) == size else { throw CocoaError(.fileReadUnknown) }
+        return data
+    }
+    func testSystemParentDeleteDenyAllowsPrivateAppChildWithoutChangingParentPolicy() throws {
+        let root = try directory(); try setSyntheticACL(root, rule: "everyone deny delete")
+        let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(fd, 0); defer { Darwin.close(fd) }
+        var before = stat(); XCTAssertEqual(fstat(fd, &before), 0)
+        let beforeACL = try ACLBytes(fd)
+        // The same real ACL is unsafe on App-owned storage, but a normal
+        // user-container protection must not prevent creating a private child.
+        XCTAssertThrowsError(try AppFileSecurity.requireNoACL(fd))
+        try AppDataLocation.ensureAppParent(in: fd)
+        let child = root.appendingPathComponent("OpenLXSSH")
+        let childFD = open(child.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(childFD, 0); defer { Darwin.close(childFD) }
+        XCTAssertNoThrow(try AppFileSecurity.directory(childFD))
+        let database = try OpenLXSSHDatabase(directory: child.appendingPathComponent("Data"))
+        try database.apply([.insertHost(HostConfiguration(name: "synthetic", address: "acl.invalid", username: "fixture"))])
+        XCTAssertEqual(try database.hosts().count, 1); try database.close()
+        try AppDataLocation.ensureAppParent(in: fd)
+        var after = stat(); XCTAssertEqual(fstat(fd, &after), 0)
+        XCTAssertEqual(before.st_mode, after.st_mode); XCTAssertEqual(before.st_uid, after.st_uid)
+        XCTAssertEqual(before.st_gid, after.st_gid); XCTAssertEqual(before.st_flags, after.st_flags)
+        XCTAssertEqual(before.st_dev, after.st_dev); XCTAssertEqual(before.st_ino, after.st_ino)
+        XCTAssertEqual(try ACLBytes(fd), beforeACL)
+    }
+    func testSystemParentACLOnlyAcceptsTheExactNoninheritingDeleteDeny() throws {
+        for rule in ["everyone allow read", "everyone allow delete", "everyone deny readattr",
+                     "everyone deny delete,writeattr", "everyone deny delete,file_inherit",
+                     "everyone deny delete,directory_inherit", "everyone deny delete,only_inherit,directory_inherit",
+                     "group:staff deny delete"] {
+            let root = try directory(); try setSyntheticACL(root, rule: rule)
+            let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            defer { Darwin.close(fd) }
+            // Some deny rules themselves prevent ACL metadata reads. That is
+            // a refusal case too, not evidence that no ACL is present.
+            let before = try? ACLBytes(fd)
+            XCTAssertThrowsError(try AppDataLocation.ensureAppParent(in: fd), rule)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("OpenLXSSH").path), rule)
+            XCTAssertEqual(try? ACLBytes(fd), before, rule)
+        }
+        let root = try directory(); try setSyntheticACL(root, rule: "everyone deny delete")
+        try setSyntheticACL(root, rule: "everyone allow read")
+        let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        defer { Darwin.close(fd) }
+        XCTAssertThrowsError(try AppDataLocation.ensureAppParent(in: fd))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("OpenLXSSH").path))
+    }
+    func testProtectiveDenyRemainsForbiddenForAppOwnedAndIsolatedDirectories() throws {
+        let root = try directory()
+        let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        defer { Darwin.close(fd) }
+        try AppDataLocation.ensureAppParent(in: fd)
+        let child = root.appendingPathComponent("OpenLXSSH")
+        try setSyntheticACL(child, rule: "everyone deny delete")
+        XCTAssertThrowsError(try AppDataLocation.ensureAppParent(in: fd))
+        let isolated = try directory(); try setSyntheticACL(isolated, rule: "everyone deny delete")
+        XCTAssertThrowsError(try AppDataLocation.isolated(isolated).databaseDirectory())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: isolated.appendingPathComponent("Data").path))
+    }
+    func testSystemParentQueryFailureWritableModeAndSymlinkChildAreRejected() throws {
+        XCTAssertThrowsError(try AppDataLocation.ensureAppParent(in: -1))
+        let root = try directory()
+        let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        defer { Darwin.close(fd) }
+        XCTAssertEqual(fchmod(fd, 0o770), 0)
+        XCTAssertThrowsError(try AppDataLocation.ensureAppParent(in: fd))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("OpenLXSSH").path))
+        XCTAssertEqual(fchmod(fd, 0o700), 0)
+        let target = try directory()
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("OpenLXSSH"), withDestinationURL: target)
+        XCTAssertThrowsError(try AppDataLocation.ensureAppParent(in: fd))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+    }
     func testPermissionIssuesExplainACLWithoutExposingSystemError() {
         let storage = AppIssue.sanitized(RepositoryError.unsafeDatabaseLocation)
         XCTAssertTrue(storage.message.contains("ACL")); XCTAssertTrue(storage.message.contains("不会静默删除"))

@@ -27,10 +27,14 @@ public struct ProcessSample: Codable, Sendable {
     public let ptyVnodeDescriptors: Int32
     public let kernelThreads: Int32
     public let complete: Bool
+    /// Present only when a closed-FD race caused one verified fresh-list sample.
+    /// Optional so existing schema-1 rows remain decodable without inventing data.
+    public let fdListResamples: Int32?
     fileprivate init(role: ProcessRole, value: stability_process) {
         self.role = role; identity = ProcessIdentity(value); rssBytes = value.rss_bytes
         fdDescriptors = value.fd_count; ptyVnodeDescriptors = value.pty_fd_count
         kernelThreads = value.thread_count; complete = value.metrics_complete == 1
+        fdListResamples = value.fd_list_resamples > 0 ? value.fd_list_resamples : nil
     }
 }
 
@@ -66,6 +70,7 @@ public enum ObservedProcessState: Equatable, Sendable {
 
 public final class ResourceSampler {
     public private(set) var scope: OwnedProcessScope
+    public private(set) var confirmedGoneHelpers = 0
     private let exactHelper: String
     private let cleanupRead: (Int32, inout stability_process) -> Int32
     public init(exactHelper: String) throws {
@@ -79,6 +84,7 @@ public final class ResourceSampler {
         self.scope = scope; exactHelper = ""; self.cleanupRead = cleanupRead
     }
     public func sample(sessionOwnedPIDs: [Int32]) throws -> [ProcessSample] {
+        confirmedGoneHelpers = 0
         var values: [ProcessSample] = []
         var own = stability_process()
         guard stability_process_read(scope.owner.pid, &own) == 0, ProcessIdentity(own) == scope.owner else {
@@ -91,8 +97,10 @@ public final class ResourceSampler {
             try scope.registerSSH(ProcessIdentity(ssh), sessionOwnedPID: pid)
             values.append(ProcessSample(role: .ssh, value: ssh))
             var children = [stability_process](repeating: stability_process(), count: 16)
-            let count = children.withUnsafeMutableBufferPointer { stability_direct_helpers(pid, exactHelper, $0.baseAddress, Int32($0.count)) }
+            var gone: Int32 = 0
+            let count = children.withUnsafeMutableBufferPointer { stability_direct_helpers(pid, exactHelper, $0.baseAddress, Int32($0.count), &gone) }
             guard count >= 0 else { throw StabilityError.resourceUnavailable }
+            confirmedGoneHelpers += Int(gone)
             var parentAfter = stability_process()
             guard stability_process_read(pid, &parentAfter) == 0, ProcessIdentity(parentAfter) == ProcessIdentity(ssh) else {
                 throw StabilityError.resourceUnavailable
@@ -180,11 +188,14 @@ public struct EvidenceRow: Encodable, Sendable {
     public let resources: [ProcessSample]?
     public let failure: StabilityError?
     public let timing: TimingEvidence?
+    public let confirmedGoneHelpers: Int?
     public init(event: EvidenceEvent, clock: ClockReading = .now(), status: EvidenceStatus = .running,
                 metadata: EvidenceMetadata? = nil, totals: CycleTotals? = nil,
-                resources: [ProcessSample]? = nil, failure: StabilityError? = nil, timing: TimingEvidence? = nil) {
+                resources: [ProcessSample]? = nil, failure: StabilityError? = nil, timing: TimingEvidence? = nil,
+                confirmedGoneHelpers: Int? = nil) {
         self.event = event; self.clock = clock; self.status = status; self.metadata = metadata
         self.totals = totals; self.resources = resources; self.failure = failure; self.timing = timing
+        self.confirmedGoneHelpers = confirmedGoneHelpers
     }
     public func encode(to encoder: Encoder) throws {
         var box = encoder.container(keyedBy: CodingKeys.self)
@@ -192,8 +203,9 @@ public struct EvidenceRow: Encodable, Sendable {
         try box.encodeIfPresent(metadata, forKey: .metadata); try box.encodeIfPresent(totals, forKey: .totals)
         try box.encodeIfPresent(resources, forKey: .resources); try box.encodeIfPresent(failure?.rawValue, forKey: .failure)
         try box.encodeIfPresent(timing, forKey: .timing)
+        try box.encodeIfPresent(confirmedGoneHelpers, forKey: .confirmedGoneHelpers)
     }
-    private enum CodingKeys: String, CodingKey { case event, clock, status, metadata, totals, resources, failure, timing }
+    private enum CodingKeys: String, CodingKey { case event, clock, status, metadata, totals, resources, failure, timing, confirmedGoneHelpers }
 }
 
 public final class BoundedEvidence {
