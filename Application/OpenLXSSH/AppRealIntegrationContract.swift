@@ -56,10 +56,12 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch", authUICancel = "auth-ui-cancel", trustChangeRecover = "trust-change-recover"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch", authUICancel = "auth-ui-cancel", trustChangeRecover = "trust-change-recover", concurrentAuthUI = "concurrent-auth-ui"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel || self == .transferSurvivesSwitch }
-    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect || self == .authUICancel || self == .trustChangeRecover }
-    var fixturePrivateKeyName: String { self == .authUICancel ? "id_ed25519_encrypted" : "id_ed25519" }
+    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect || self == .authUICancel || self == .trustChangeRecover || self == .concurrentAuthUI }
+    // One closed allowlist governs encrypted import/public material and private phrase access.
+    var allowsFixturePhrase: Bool { self == .authUICancel || self == .concurrentAuthUI }
+    var fixturePrivateKeyName: String { allowsFixturePhrase ? "id_ed25519_encrypted" : "id_ed25519" }
 }
 struct AppRealTransferScope: Sendable {
     static let sourceBytes: UInt64 = 16 * 1024 * 1024
@@ -233,6 +235,54 @@ struct AppRealAuthUIGate: Sendable {
     }
     static func completed(connected: Bool, shellACK: Bool, pendingNil: Bool, manualReads: Int, submittedAnswers: Int) -> Bool {
         connected && shellACK && pendingNil && manualReads == 1 && submittedAnswers == 1
+    }
+}
+struct AppRealConcurrentAuthGate: Sendable {
+    typealias Challenge = AppRealAuthUIGate.Challenge
+    enum State: String, Codable, Sendable { case authenticating, disconnectedNil, connected, other }
+    /// Public session/request metadata only, copied synchronously on MainActor.
+    struct Snapshot: Codable, Equatable, Sendable {
+        let tabID: UUID, sessionID: UUID, generation: UInt64
+        let process: AppRealSessionsProtocol.ProcessIdentity?
+        let requestID: UUID?
+        let requestMatchesToken: Bool, unknownMasked: Bool, state: State, trustEmpty: Bool, canReconnect: Bool
+        func sameSession(_ expected: Challenge) -> Bool {
+            tabID == expected.identity.tabID && sessionID == expected.identity.sessionID && generation == expected.identity.generation
+        }
+        func pending(_ expected: Challenge) -> Bool {
+            expected.identity.isValid && sameSession(expected) && process == expected.identity.process && requestID == expected.requestID &&
+                requestMatchesToken && unknownMasked && state == .authenticating && trustEmpty
+        }
+    }
+    struct Counts: Codable, Equatable, Sendable {
+        let importPhraseReads: Int
+        var aManualPhraseReads: Int, bManualPhraseReads: Int, aSubmittedAnswers: Int, bSubmittedAnswers: Int
+        var beforeAnswer: Bool { importPhraseReads == 1 && aManualPhraseReads == 0 && bManualPhraseReads == 0 && aSubmittedAnswers == 0 && bSubmittedAnswers == 0 }
+        var afterBAnswer: Bool { importPhraseReads == 1 && aManualPhraseReads == 0 && bManualPhraseReads == 1 && aSubmittedAnswers == 0 && bSubmittedAnswers == 1 }
+    }
+    static func barrier(_ a: Challenge, _ b: Challenge, currentA: Snapshot, currentB: Snapshot,
+                        distinctObjects: Bool, sameHostAndKey: Bool, counts: Counts) -> Bool {
+        AppRealSessionsProtocol.independent(a.identity, b.identity, distinctObjects: distinctObjects) && sameHostAndKey &&
+            a.requestID != b.requestID && a.identity.generation == 1 && b.identity.generation == 1 &&
+            (a.identity.process.startSeconds != b.identity.process.startSeconds || a.identity.process.startMicroseconds != b.identity.process.startMicroseconds) &&
+            currentA.pending(a) && currentB.pending(b) && counts.beforeAnswer
+    }
+    static func sheetBound(_ expected: Challenge, current: Snapshot, selectedTabID: UUID?, secureFieldEmpty: Bool) -> Bool {
+        current.pending(expected) && selectedTabID == expected.identity.tabID && secureFieldEmpty
+    }
+    static func remainsCancelled(_ a: Challenge, current: Snapshot, sameObjects: Bool, oldGone: Bool) -> Bool {
+        a.identity.isValid && current.sameSession(a) && sameObjects && oldGone && current.state == .disconnectedNil &&
+            current.process == nil && current.requestID == nil && current.trustEmpty && current.canReconnect
+    }
+    static func cancelledA(_ a: Challenge, _ b: Challenge, currentA: Snapshot, currentB: Snapshot,
+                           sameObjects: Bool, oldGone: Bool, counts: Counts) -> Bool {
+        remainsCancelled(a, current: currentA, sameObjects: sameObjects, oldGone: oldGone) && currentB.pending(b) && counts.beforeAnswer
+    }
+    static func completedB(_ a: Challenge, _ b: Challenge, currentA: Snapshot, currentB: Snapshot,
+                           sameObjects: Bool, oldGone: Bool, counts: Counts, freshACK: Bool) -> Bool {
+        remainsCancelled(a, current: currentA, sameObjects: sameObjects, oldGone: oldGone) && b.identity.isValid &&
+            currentB.sameSession(b) && currentB.process == b.identity.process && currentB.requestID == nil &&
+            currentB.state == .connected && currentB.trustEmpty && counts.afterBAnswer && freshACK
     }
 }
 struct AppRealTrustGate: Sendable {
@@ -683,7 +733,7 @@ enum AppRealPrivateInput {
         return bytes
     }
     static func fixturePhrase(_ contract: AppRealIntegrationContract) throws -> Data {
-        guard contract.selectedPhase == .authUICancel else { throw AppRealIntegrationFailure.authorization }
+        guard contract.selectedPhase.allowsFixturePhrase else { throw AppRealIntegrationFailure.authorization }
         var file = try read(contract.generation + "/key-passphrase.txt", limit: 1024)
         defer { file.resetBytes(in: 0..<file.count); file.removeAll() }
         return try AppRealAuthUIGate.phrasePayload(file)
@@ -764,7 +814,7 @@ struct AppRealPublicMaterial: Sendable {
         let publicKey = try AppRealPrivateInput.read(value.generation + "/id_ed25519.pub", limit: 4096)
         guard AppRealPrivateInput.sha(publicKey) == value.generationPublicKeySHA256 else { throw AppRealIntegrationFailure.provenance }
         var encryptedPublic: String?
-        if value.selectedPhase == .authUICancel {
+        if value.selectedPhase.allowsFixturePhrase {
             let bytes = try AppRealPrivateInput.read(value.generation + "/id_ed25519_encrypted.pub", limit: 4096)
             guard let text = String(data: bytes, encoding: .utf8), text.hasSuffix("\n"), !text.dropLast().contains(where: { $0.isNewline }) else { throw AppRealIntegrationFailure.provenance }
             let parts = text.dropLast().split(separator: " ", omittingEmptySubsequences: false)

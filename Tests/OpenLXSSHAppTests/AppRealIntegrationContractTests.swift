@@ -759,6 +759,98 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
         try observation.sample(elapsed: 2,connected: true,identityUnchanged: true,noChallenge: true)
         XCTAssertTrue(observation.complete); XCTAssertEqual(observation.samples,2)
     }
+    private func concurrentAuthChallenges() -> (AppRealAuthUIGate.Challenge, AppRealAuthUIGate.Challenge) {
+        func challenge(_ pid: Int32, _ birth: UInt64) -> AppRealAuthUIGate.Challenge {
+            .init(requestID: UUID(), identity: .init(tabID: UUID(), sessionID: UUID(), generation: 1,
+                process: .init(pid: pid, parentPID: 99, startSeconds: birth, startMicroseconds: 1)))
+        }
+        return (challenge(111, 1), challenge(222, 2))
+    }
+    private func concurrentAuthSnapshot(_ value: AppRealAuthUIGate.Challenge, state: AppRealConcurrentAuthGate.State = .authenticating,
+                                        tokenMatches: Bool = true, unknownMasked: Bool = true) -> AppRealConcurrentAuthGate.Snapshot {
+        .init(tabID: value.identity.tabID, sessionID: value.identity.sessionID, generation: value.identity.generation,
+            process: state == .disconnectedNil ? nil : value.identity.process, requestID: state == .authenticating ? value.requestID : nil,
+            requestMatchesToken: tokenMatches, unknownMasked: unknownMasked, state: state, trustEmpty: true, canReconnect: state == .disconnectedNil)
+    }
+    func testConcurrentAuthClosedPhaseSharesOnlyTwoAuthPhasesEncryptedAndPhraseAllowlist() throws {
+        var value = object(); value["phase"] = "concurrent-auth-ui"
+        XCTAssertEqual(try decode(value).selectedPhase, .concurrentAuthUI)
+        XCTAssertTrue(AppRealIntegrationPhase.concurrentAuthUI.isTerminalOnly); XCTAssertFalse(AppRealIntegrationPhase.concurrentAuthUI.isTransfer)
+        for name in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite", "transfer-survives-switch", "auth-ui-cancel", "trust-change-recover", "concurrent-auth-ui"] {
+            let phase = try XCTUnwrap(AppRealIntegrationPhase(rawValue: name))
+            let auth = phase == .authUICancel || phase == .concurrentAuthUI
+            XCTAssertEqual(phase.allowsFixturePhrase, auth)
+            XCTAssertEqual(phase.fixturePrivateKeyName, auth ? "id_ed25519_encrypted" : "id_ed25519")
+        }
+        XCTAssertEqual(try AppRealAuthUIGate.phrasePayload(Data("synthetic-only\n".utf8)), Data("synthetic-only".utf8))
+        XCTAssertThrowsError(try AppRealAuthUIGate.phrasePayload(Data("synthetic-only\r\n".utf8)))
+        value["phase"] = "concurrent-auth-ui-other"; XCTAssertThrowsError(try decode(value))
+        value["phase"] = "concurrent-auth-ui"; value["encryptedPublicSHA256"] = String(repeating: "a", count: 64)
+        XCTAssertThrowsError(try decode(value))
+    }
+    func testConcurrentAuthBarrierRequiresDistinctPendingInitialRequestsAndZeroManualAnswers() {
+        typealias Gate = AppRealConcurrentAuthGate
+        let (a, b) = concurrentAuthChallenges(), currentA = concurrentAuthSnapshot(a), currentB = concurrentAuthSnapshot(b)
+        let counts = Gate.Counts(importPhraseReads: 1, aManualPhraseReads: 0, bManualPhraseReads: 0, aSubmittedAnswers: 0, bSubmittedAnswers: 0)
+        func barrier(_ second: AppRealAuthUIGate.Challenge, _ sa: Gate.Snapshot, _ sb: Gate.Snapshot, _ c: Gate.Counts, distinct: Bool = true, sameKey: Bool = true) -> Bool {
+            Gate.barrier(a, second, currentA: sa, currentB: sb, distinctObjects: distinct, sameHostAndKey: sameKey, counts: c)
+        }
+        XCTAssertTrue(barrier(b, currentA, currentB, counts))
+        XCTAssertFalse(barrier(b, currentA, currentB, counts, distinct: false)); XCTAssertFalse(barrier(b, currentA, currentB, counts, sameKey: false))
+        let sameRequest = AppRealAuthUIGate.Challenge(requestID: a.requestID, identity: b.identity)
+        XCTAssertFalse(barrier(sameRequest, currentA, concurrentAuthSnapshot(sameRequest), counts))
+        let shared = AppRealAuthUIGate.Challenge(requestID: b.requestID, identity: a.identity)
+        XCTAssertFalse(barrier(shared, currentA, concurrentAuthSnapshot(shared), counts))
+        let sameBirth = AppRealAuthUIGate.Challenge(requestID: b.requestID, identity: .init(tabID: b.identity.tabID, sessionID: b.identity.sessionID,
+            generation: 1, process: .init(pid: 222, parentPID: 99, startSeconds: 1, startMicroseconds: 1)))
+        XCTAssertFalse(barrier(sameBirth, currentA, concurrentAuthSnapshot(sameBirth), counts))
+        let later = AppRealAuthUIGate.Challenge(requestID: b.requestID, identity: .init(tabID: b.identity.tabID, sessionID: b.identity.sessionID, generation: 2, process: b.identity.process))
+        XCTAssertFalse(barrier(later, currentA, concurrentAuthSnapshot(later), counts))
+        XCTAssertFalse(barrier(b, concurrentAuthSnapshot(a, state: .connected), currentB, counts))
+        XCTAssertFalse(barrier(b, currentA, concurrentAuthSnapshot(b, tokenMatches: false), counts))
+        XCTAssertFalse(barrier(b, currentA, concurrentAuthSnapshot(b, unknownMasked: false), counts))
+        var read = counts; read.bManualPhraseReads = 1
+        var submitted = counts; submitted.aSubmittedAnswers = 1
+        XCTAssertFalse(barrier(b, currentA, currentB, read)); XCTAssertFalse(barrier(b, currentA, currentB, submitted))
+    }
+    func testConcurrentAuthCancelARequiresBOriginalPendingAndSecureSheetCannotCrossToken() {
+        typealias Gate = AppRealConcurrentAuthGate
+        let (a, b) = concurrentAuthChallenges(), closedA = concurrentAuthSnapshot(a, state: .disconnectedNil), pendingB = concurrentAuthSnapshot(b)
+        let counts = Gate.Counts(importPhraseReads: 1, aManualPhraseReads: 0, bManualPhraseReads: 0, aSubmittedAnswers: 0, bSubmittedAnswers: 0)
+        XCTAssertTrue(Gate.cancelledA(a, b, currentA: closedA, currentB: pendingB, sameObjects: true, oldGone: true, counts: counts))
+        XCTAssertFalse(Gate.cancelledA(a, b, currentA: closedA, currentB: pendingB, sameObjects: true, oldGone: false, counts: counts))
+        XCTAssertFalse(Gate.cancelledA(a, b, currentA: concurrentAuthSnapshot(a), currentB: pendingB, sameObjects: true, oldGone: true, counts: counts))
+        let replaced = AppRealAuthUIGate.Challenge(requestID: UUID(), identity: b.identity)
+        XCTAssertFalse(Gate.cancelledA(a, b, currentA: closedA, currentB: concurrentAuthSnapshot(replaced), sameObjects: true, oldGone: true, counts: counts))
+        XCTAssertTrue(Gate.sheetBound(b, current: pendingB, selectedTabID: b.identity.tabID, secureFieldEmpty: true))
+        XCTAssertFalse(Gate.sheetBound(b, current: concurrentAuthSnapshot(a), selectedTabID: b.identity.tabID, secureFieldEmpty: true))
+        XCTAssertFalse(Gate.sheetBound(b, current: concurrentAuthSnapshot(b, tokenMatches: false), selectedTabID: b.identity.tabID, secureFieldEmpty: true))
+        XCTAssertFalse(Gate.sheetBound(b, current: pendingB, selectedTabID: a.identity.tabID, secureFieldEmpty: true))
+        XCTAssertFalse(Gate.sheetBound(b, current: pendingB, selectedTabID: b.identity.tabID, secureFieldEmpty: false))
+    }
+    func testConcurrentAuthBCompletionRequiresUniqueAnswerFreshACKAndAStillOriginalDisconnected() throws {
+        typealias Gate = AppRealConcurrentAuthGate
+        let (a, b) = concurrentAuthChallenges(), closedA = concurrentAuthSnapshot(a, state: .disconnectedNil), connectedB = concurrentAuthSnapshot(b, state: .connected)
+        let counts = Gate.Counts(importPhraseReads: 1, aManualPhraseReads: 0, bManualPhraseReads: 1, aSubmittedAnswers: 0, bSubmittedAnswers: 1)
+        func completed(_ sa: Gate.Snapshot, _ sb: Gate.Snapshot, _ c: Gate.Counts, ack: Bool = true) -> Bool {
+            Gate.completedB(a, b, currentA: sa, currentB: sb, sameObjects: true, oldGone: true, counts: c, freshACK: ack)
+        }
+        XCTAssertTrue(completed(closedA, connectedB, counts)); XCTAssertFalse(completed(closedA, connectedB, counts, ack: false))
+        XCTAssertFalse(completed(concurrentAuthSnapshot(a, state: .connected), connectedB, counts))
+        XCTAssertFalse(completed(closedA, concurrentAuthSnapshot(b), counts))
+        let newA = AppRealAuthUIGate.Challenge(requestID: UUID(), identity: .init(tabID: a.identity.tabID, sessionID: a.identity.sessionID, generation: 2, process: a.identity.process))
+        XCTAssertFalse(completed(concurrentAuthSnapshot(newA, state: .disconnectedNil), connectedB, counts))
+        let newB = AppRealAuthUIGate.Challenge(requestID: UUID(), identity: .init(tabID: b.identity.tabID, sessionID: b.identity.sessionID, generation: 2,
+            process: .init(pid: 333, parentPID: 99, startSeconds: 3, startMicroseconds: 1)))
+        XCTAssertFalse(completed(closedA, concurrentAuthSnapshot(newB, state: .connected), counts))
+        var duplicate = counts; duplicate.bSubmittedAnswers = 2
+        var crossed = counts; crossed.aSubmittedAnswers = 1
+        XCTAssertFalse(completed(closedA, connectedB, duplicate)); XCTAssertFalse(completed(closedA, connectedB, crossed))
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(connectedB)) as? [String: Any])
+        XCTAssertEqual(Set(encoded.keys), ["tabID", "sessionID", "generation", "process", "requestMatchesToken", "unknownMasked", "state", "trustEmpty", "canReconnect"])
+        let countFields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(counts)) as? [String: Any])
+        XCTAssertEqual(Set(countFields.keys), ["importPhraseReads", "aManualPhraseReads", "bManualPhraseReads", "aSubmittedAnswers", "bSubmittedAnswers"])
+    }
     func testTrustChangeClosedTerminalOnlyPhaseUsesPlainFixtureKeyAndExactEndpoint() throws {
         var value = object(); value["phase"] = "trust-change-recover"
         XCTAssertEqual(try decode(value).selectedPhase,.trustChangeRecover)

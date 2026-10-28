@@ -457,6 +457,18 @@ struct AppRealSessionFailure: Error {
         let closedPID: Int32, ownedProcessGone: Bool
         let boundary = "Encrypted Ed25519 import validation reads the fixture phrase once in App memory; first challenge cancels WITHOUT answer/manual read; native reconnect secure-field submit reads once more. No prompt/answer/hash/length exported, no Keychain, no terminal prompt classification. Mutable buffers cleared best effort; Swift/UI copies are not completely zeroizable. Finite post-connect observation only, not macOS26/IME acceptance."
     }
+    struct ConcurrentAuthEvidence: Encodable {
+        let aChallenge: AppRealAuthUIGate.Challenge, bChallenge: AppRealAuthUIGate.Challenge
+        let barrierA: AppRealConcurrentAuthGate.Snapshot, barrierB: AppRealConcurrentAuthGate.Snapshot
+        let barrierCounts: AppRealConcurrentAuthGate.Counts, afterCancelCounts: AppRealConcurrentAuthGate.Counts, completedCounts: AppRealConcurrentAuthGate.Counts
+        let sameTickBothPending: Bool, sameHostAndManagedKey: Bool, distinctTabDriverSessionView: Bool
+        let aSecureSheetBoundAndEmpty: Bool, aCancelledAndPIDGone: Bool, bOriginalRequestUnchangedAfterACancel: Bool
+        let bSecureSheetBoundAndEmpty: Bool, bOuterConnectedAndFreshShellACK: Bool, aRemainedDisconnected: Bool
+        let afterCancelA: AppRealConcurrentAuthGate.Snapshot, afterCancelB: AppRealConcurrentAuthGate.Snapshot
+        let completedA: AppRealConcurrentAuthGate.Snapshot, completedB: AppRealConcurrentAuthGate.Snapshot
+        let cancelledLastExitCode: Int32?, closedPIDs: [Int32], bothDriversClosedAndProcessesGone: Bool
+        let boundary = "Two actual encrypted-key unknown-masked requests sampled synchronously on MainActor. Import validation reads once; A cancels with no manual read/answer; only B reads once and submits once through native secure-field target/action. No prompt/secret/digest/length exported, no saved credential/Keychain/SFTP/clipboard, no MFA-service or macOS26 acceptance. Mutable buffers clear best effort; Swift/UI copies are not fully zeroizable."
+    }
     struct TrustEvidence: Encodable {
         struct Sample: Encodable { let elapsedSeconds: Double, state: String, ownedPIDPresent: Bool }
         let host: String, port: Int, algorithm: String, wrongPublicKey: String, wrongFingerprint: String, actualPublicKey: String, actualFingerprint: String
@@ -487,6 +499,7 @@ struct AppRealSessionFailure: Error {
         let batchConflicts: BatchEvidence?
         let batchOverwrite: OverwriteEvidence?
         let authenticationUI: AuthEvidence?
+        let concurrentAuthenticationUI: ConcurrentAuthEvidence?
         let trustChange: TrustEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
@@ -508,6 +521,7 @@ struct AppRealSessionFailure: Error {
     private var batchEvidence: BatchEvidence?
     private var overwriteEvidence: OverwriteEvidence?
     private var authEvidence: AuthEvidence?
+    private var concurrentAuthEvidence: ConcurrentAuthEvidence?
     private var trustEvidence: TrustEvidence?
     private var authImportPhraseReads = 0
     private var quitHooks = AppRealQuitHookGate()
@@ -536,7 +550,7 @@ struct AppRealSessionFailure: Error {
             try await wait { self.model.didLoad && !self.model.isLoading }
             try check("fresh-own-store-no-hosts-tabs-files", model.hosts.isEmpty && model.sessions.tabs.isEmpty && !model.files.visible && model.files.state == .disconnected)
             let initialAttempts = await facts.connectionAttempts; try check("no-sftp-at-start", initialAttempts == 0)
-            let authUI = input.contract.selectedPhase == .authUICancel
+            let authUI = input.contract.selectedPhase.allowsFixturePhrase
             let sourceKeyPath = input.contract.generation + "/" + input.contract.selectedPhase.fixturePrivateKeyName
             var originalKey = try AppRealPrivateInput.read(sourceKeyPath, limit: 32768)
             let originalSHA = AppRealPrivateInput.sha(originalKey) // In-memory only, never report this private-key digest.
@@ -595,7 +609,8 @@ struct AppRealSessionFailure: Error {
             try check("actual-direct-driver", driver.session.token != nil)
             try check("exact-out-of-band-trust-match", input.contract.matchesTrust(host: prompt.host.address.value, port: Int(prompt.host.port.value), algorithm: prompt.algorithm, fingerprint: prompt.fingerprint))
             try await click("terminal.trust"); try await click("trust.verified"); try await click("trust.accept")
-            if authUI { authEvidence = try await authenticationUICancel(tab: tab, driver: driver) }
+            if input.contract.selectedPhase == .authUICancel { authEvidence = try await authenticationUICancel(tab: tab, driver: driver) }
+            else if input.contract.selectedPhase == .concurrentAuthUI { concurrentAuthEvidence = try await concurrentAuthenticationUI(a: tab, aDriver: driver) }
             else {
             let connectedDeadline = ProcessInfo.processInfo.systemUptime + 90
             while tab.state != .connected {
@@ -910,6 +925,139 @@ struct AppRealSessionFailure: Error {
             importPhraseReads: authImportPhraseReads, firstCancelManualPhraseReads: firstManualReads, recoveryManualPhraseReads: manualReads, nativeSubmittedAnswers: submissions,
             outerConnectedAndFreshShellACK: connectedACK, noFurtherChallengeObservation: observation,
             closedPID: resumed.identity.process.pid, ownedProcessGone: SwitchSessions.gone(resumed.identity.process.pid))
+    }
+    private func concurrentAuthenticationUI(a: SessionTab, aDriver: DirectSessionDriver) async throws -> ConcurrentAuthEvidence {
+        typealias Gate = AppRealConcurrentAuthGate
+        let aSession = aDriver.session, aView = aDriver.terminal
+        var counts = Gate.Counts(importPhraseReads: authImportPhraseReads, aManualPhraseReads: 0, bManualPhraseReads: 0, aSubmittedAnswers: 0, bSubmittedAnswers: 0)
+        func snapshot(_ tab: SessionTab, _ driver: DirectSessionDriver) throws -> Gate.Snapshot {
+            guard tab.driver === driver, let token = driver.token, token.sessionID == driver.session.sessionID else { throw AppRealIntegrationFailure.failedCheck }
+            let state: Gate.State
+            if tab.state == .authenticating && driver.state == .authenticating { state = .authenticating }
+            else if tab.state == .disconnected(nil) && driver.state == .disconnected(nil) { state = .disconnectedNil }
+            else if tab.state == .connected && driver.state == .connected { state = .connected }
+            else { state = .other }
+            return Gate.Snapshot(tabID: tab.id, sessionID: token.sessionID, generation: token.generation,
+                process: try driver.session.ownedProcessID == nil ? nil : SwitchSessions.identity(tab, driver).process,
+                requestID: tab.authentication?.id, requestMatchesToken: tab.authentication?.token == token,
+                unknownMasked: tab.authentication?.kind == .unknownMasked, state: state, trustEmpty: tab.trust.isEmpty,
+                canReconnect: tab.canReconnect && driver.session.canReconnect)
+        }
+        func pending(_ tab: SessionTab, _ driver: DirectSessionDriver) async throws -> AppRealAuthUIGate.Challenge {
+            let deadline = ProcessInfo.processInfo.systemUptime + 90
+            while true {
+                guard tab.driver === driver, tab.trust.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+                if let prompt = tab.authentication {
+                    let challenge = AppRealAuthUIGate.Challenge(requestID: prompt.id, identity: try SwitchSessions.identity(tab, driver))
+                    guard try snapshot(tab, driver).pending(challenge) else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+                    return challenge
+                }
+                if case .failed(let reason) = tab.state { throw AppRealSessionFailure(reason) }
+                guard tab.state != .connected, ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        let firstA = try await pending(a, aDriver)
+        try await click("session.new")
+        try await wait { self.model.sessions.tabs.count == 2 && self.model.sessions.tabs.contains { $0.id != a.id && $0.driver != nil } }
+        guard let b = model.sessions.tabs.first(where: { $0.id != a.id }), let bDriver = b.driver as? DirectSessionDriver else { throw AppRealIntegrationFailure.failedCheck }
+        let bSession = bDriver.session, bView = bDriver.terminal
+        let firstB = try await pending(b, bDriver)
+        func sameObjects() -> Bool {
+            model.sessions.tabs.count == 2 && model.sessions.tabs.contains(where: { $0 === a }) && model.sessions.tabs.contains(where: { $0 === b }) &&
+                a.driver === aDriver && b.driver === bDriver && aDriver.session === aSession && bDriver.session === bSession && aDriver.terminal === aView && bDriver.terminal === bView
+        }
+        let distinct = a !== b && aDriver !== bDriver && aSession !== bSession && aView !== bView
+        let sameKey = a.hostID == b.hostID && a.host?.keyRef != nil && a.host?.keyRef == b.host?.keyRef &&
+            a.host?.authentication == .privateKey && b.host?.authentication == .privateKey && a.configuration != nil && a.configuration == b.configuration
+        // This synchronous MainActor block has no suspension: BOTH actual requests/states/PID births and zero-answer counters coexist.
+        let barrierA = try snapshot(a, aDriver), barrierB = try snapshot(b, bDriver), barrierCounts = counts
+        let barrier = Gate.barrier(firstA, firstB, currentA: barrierA, currentB: barrierB, distinctObjects: sameObjects() && distinct, sameHostAndKey: sameKey, counts: counts)
+        try check("concurrent-auth-same-tick-two-real-masked-requests-no-manual-answer", barrier)
+        actualPID = firstA.identity.process.pid
+        try await click("tab.select." + a.id.uuidString)
+        try check("concurrent-auth-native-select-a-both-original-requests", model.sessions.selectedTabID == a.id && sameObjects() && (try snapshot(a, aDriver)).pending(firstA) && (try snapshot(b, bDriver)).pending(firstB))
+        try await click("terminal.authenticate")
+        try await wait { self.find("authentication.answer", NSSecureTextField.self) != nil }
+        let aSheet = try Gate.sheetBound(firstA, current: snapshot(a, aDriver), selectedTabID: model.sessions.selectedTabID,
+            secureFieldEmpty: find("authentication.answer", NSSecureTextField.self)?.stringValue.isEmpty == true)
+        try check("concurrent-auth-a-secure-sheet-empty-bound-original-request", aSheet && delegate.mainWindow?.attachedSheet != nil && (try snapshot(b, bDriver)).pending(firstB))
+        try await click("authentication.cancel")
+        let cancelDeadline = ProcessInfo.processInfo.systemUptime + 90
+        while true {
+            guard sameObjects(), try snapshot(b, bDriver).pending(firstB) else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if aSession.ownedProcessID == nil, Gate.remainsCancelled(firstA, current: try snapshot(a, aDriver), sameObjects: sameObjects(), oldGone: SwitchSessions.gone(firstA.identity.process.pid)), delegate.mainWindow?.attachedSheet == nil { break }
+            if case .failed(let reason) = a.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < cancelDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let afterCancelA = try snapshot(a, aDriver), afterCancelB = try snapshot(b, bDriver), afterCancelCounts = counts
+        let cancelled = Gate.cancelledA(firstA, firstB, currentA: afterCancelA, currentB: afterCancelB, sameObjects: sameObjects(), oldGone: SwitchSessions.gone(firstA.identity.process.pid), counts: counts)
+        let cancelledExit = aSession.lastExitCode
+        try check("concurrent-auth-a-cancelled-no-answer-pid-gone-b-original-still-pending", cancelled)
+        func aStillCancelled() throws -> Bool { Gate.remainsCancelled(firstA, current: try snapshot(a, aDriver), sameObjects: sameObjects(), oldGone: SwitchSessions.gone(firstA.identity.process.pid)) }
+        try await click("tab.select." + b.id.uuidString)
+        guard try aStillCancelled(), try snapshot(b, bDriver).pending(firstB), model.sessions.selectedTabID == b.id else { throw AppRealIntegrationFailure.failedCheck }
+        try await click("terminal.authenticate")
+        try await wait { self.find("authentication.answer", NSSecureTextField.self) != nil && self.find("authentication.submit", NSButton.self)?.isEnabled == true }
+        let bSheet = try Gate.sheetBound(firstB, current: snapshot(b, bDriver), selectedTabID: model.sessions.selectedTabID,
+            secureFieldEmpty: find("authentication.answer", NSSecureTextField.self)?.stringValue.isEmpty == true)
+        try check("concurrent-auth-b-secure-sheet-empty-bound-original-request-a-still-cancelled", bSheet && delegate.mainWindow?.attachedSheet != nil && (try aStillCancelled()))
+        guard let field = find("authentication.answer", NSSecureTextField.self), field.target != nil, field.action != nil,
+              let submit = find("authentication.submit", NSButton.self), submit.isEnabled else { throw AppRealIntegrationFailure.nativeControl }
+        do {
+            var phrase = try AppRealPrivateInput.fixturePhrase(input.contract)
+            counts.bManualPhraseReads += 1
+            defer { phrase.resetBytes(in: 0..<phrase.count); phrase.removeAll() }
+            guard var text = String(data: phrase, encoding: .utf8), try snapshot(b, bDriver).pending(firstB), try aStillCancelled(),
+                  model.sessions.selectedTabID == b.id else { throw AppRealIntegrationFailure.failedCheck }
+            defer { text.removeAll(keepingCapacity: false); field.stringValue = "" }
+            // No suspension with a secret in the native field, and never read its secret value back.
+            field.stringValue = text
+            guard field.sendAction(field.action, to: field.target) else { throw AppRealIntegrationFailure.nativeControl }
+            submit.performClick(nil); counts.bSubmittedAnswers += 1
+        }
+        try await wait { self.delegate.mainWindow?.attachedSheet == nil }
+        let connectDeadline = ProcessInfo.processInfo.systemUptime + 90
+        while b.state != .connected || bDriver.state != .connected {
+            guard sameObjects(), try aStillCancelled(), b.authentication == nil, b.trust.isEmpty,
+                  try SwitchSessions.identity(b, bDriver) == firstB.identity else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if case .failed(let reason) = b.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < connectDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let plan = try AppRealSessionsProtocol(nonce: input.contract.runID.replacingOccurrences(of: "-", with: ""))
+        guard try !plan.acknowledged(bView.text, role: .bInitial) else { throw AppRealIntegrationFailure.failedCheck }
+        try bSession.sendInput(plan.ackCommand(.bInitial))
+        let ackDeadline = ProcessInfo.processInfo.systemUptime + 15
+        while true {
+            guard sameObjects(), try aStillCancelled(), b.state == .connected, bDriver.state == .connected, b.authentication == nil, b.trust.isEmpty,
+                  try SwitchSessions.identity(b, bDriver) == firstB.identity else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if try plan.acknowledged(bView.text, role: .bInitial) { break }
+            guard ProcessInfo.processInfo.systemUptime < ackDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let completedA = try snapshot(a, aDriver), completedB = try snapshot(b, bDriver)
+        let completed = try Gate.completedB(firstA, firstB, currentA: completedA, currentB: completedB, sameObjects: sameObjects(),
+            oldGone: SwitchSessions.gone(firstA.identity.process.pid), counts: counts, freshACK: plan.acknowledged(bView.text, role: .bInitial))
+        let aStayedCancelled = try aStillCancelled()
+        try check("concurrent-auth-only-b-native-submit-outer-connected-fresh-ack-a-not-revived", completed && aStayedCancelled)
+        actualPID = firstB.identity.process.pid
+        try await click("tab.close." + b.id.uuidString)
+        try await wait { self.model.sessions.tabs.count == 1 && self.model.sessions.tabs.first === a && bDriver.state == .closed && bSession.ownedProcessID == nil && SwitchSessions.gone(firstB.identity.process.pid) }
+        guard a.driver === aDriver, aSession.token?.generation == firstA.identity.generation, a.state == .disconnected(nil), a.authentication == nil, aSession.ownedProcessID == nil else { throw AppRealIntegrationFailure.failedCheck }
+        try await click("tab.close." + a.id.uuidString)
+        try await wait { self.model.sessions.tabs.isEmpty && aDriver.state == .closed && bDriver.state == .closed && aSession.ownedProcessID == nil && bSession.ownedProcessID == nil && SwitchSessions.gone(firstA.identity.process.pid) && SwitchSessions.gone(firstB.identity.process.pid) }
+        let released = aDriver.state == .closed && bDriver.state == .closed && aSession.ownedProcessID == nil && bSession.ownedProcessID == nil && SwitchSessions.gone(firstA.identity.process.pid) && SwitchSessions.gone(firstB.identity.process.pid)
+        sshReleased = released
+        try check("concurrent-auth-native-close-both-drivers-and-processes-released", released)
+        return ConcurrentAuthEvidence(aChallenge: firstA, bChallenge: firstB, barrierA: barrierA, barrierB: barrierB,
+            barrierCounts: barrierCounts, afterCancelCounts: afterCancelCounts, completedCounts: counts,
+            sameTickBothPending: barrier, sameHostAndManagedKey: sameKey, distinctTabDriverSessionView: distinct,
+            aSecureSheetBoundAndEmpty: aSheet, aCancelledAndPIDGone: cancelled, bOriginalRequestUnchangedAfterACancel: afterCancelB.pending(firstB),
+            bSecureSheetBoundAndEmpty: bSheet, bOuterConnectedAndFreshShellACK: completed, aRemainedDisconnected: aStayedCancelled,
+            afterCancelA: afterCancelA, afterCancelB: afterCancelB, completedA: completedA, completedB: completedB,
+            cancelledLastExitCode: cancelledExit, closedPIDs: [firstA.identity.process.pid, firstB.identity.process.pid], bothDriversClosedAndProcessesGone: released)
     }
     private func terminalSearchPaste(driver: DirectSessionDriver) async throws -> TerminalEvidence {
         let nonce = input.contract.runID.replacingOccurrences(of: "-", with: ""), plan = try AppRealTerminalProtocol(nonce: nonce)
@@ -1637,7 +1785,7 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence, authenticationUI: authEvidence, trustChange: trustEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence, authenticationUI: authEvidence, concurrentAuthenticationUI: concurrentAuthEvidence, trustChange: trustEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),
