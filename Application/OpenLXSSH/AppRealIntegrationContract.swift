@@ -56,9 +56,10 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts", batchOverwrite = "batch-overwrite", transferSurvivesSwitch = "transfer-survives-switch", authUICancel = "auth-ui-cancel"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel || self == .transferSurvivesSwitch }
-    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect }
+    var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect || self == .authUICancel }
+    var fixturePrivateKeyName: String { self == .authUICancel ? "id_ed25519_encrypted" : "id_ed25519" }
 }
 struct AppRealTransferScope: Sendable {
     static let sourceBytes: UInt64 = 16 * 1024 * 1024
@@ -199,6 +200,39 @@ struct AppRealSessionsProtocol: Sendable {
     }
     static func naturalDisconnect(disconnectedZero: Bool, lastExitCode: Int32?, ownedPID: Int32?, canReconnect: Bool, oldGone: Bool) -> Bool {
         disconnectedZero && lastExitCode == 0 && ownedPID == nil && canReconnect && oldGone
+    }
+}
+struct AppRealAuthUIGate: Sendable {
+    struct Observation: Codable, Sendable {
+        private(set) var samples = 0
+        private(set) var elapsedSeconds: Double = 0
+        mutating func sample(elapsed: Double, connected: Bool, identityUnchanged: Bool, noChallenge: Bool) throws {
+            guard elapsed.isFinite, elapsed >= 0, elapsed <= 10, samples < 256,
+                  (samples == 0 ? elapsed == 0 : elapsed > elapsedSeconds), connected && identityUnchanged && noChallenge else { throw AppRealIntegrationFailure.failedCheck }
+            samples += 1; elapsedSeconds = elapsed
+        }
+        var complete: Bool { samples >= 2 && elapsedSeconds >= 2 && elapsedSeconds <= 10 }
+    }
+    struct Challenge: Codable, Equatable, Sendable { let requestID: UUID; let identity: AppRealSessionsProtocol.Identity }
+    static func phrasePayload(_ file: Data) throws -> Data {
+        guard file.count >= 2, file.count <= 1024, file.last == 10 else { throw AppRealIntegrationFailure.unsafeInput }
+        let payload = Data(file.dropLast())
+        guard !payload.isEmpty, payload.count <= 1023, !payload.contains(where: { $0 == 0 || $0 == 10 || $0 == 13 }),
+              String(data: payload, encoding: .utf8) != nil else { throw AppRealIntegrationFailure.unsafeInput }
+        return payload
+    }
+    static func challenge(_ value: Challenge, authenticating: Bool, unknownMasked: Bool, currentIdentity: AppRealSessionsProtocol.Identity) -> Bool {
+        value.identity.isValid && value.identity == currentIdentity && authenticating && unknownMasked
+    }
+    static func cancelled(disconnectedNil: Bool, ownedPID: Int32?, pendingNil: Bool,
+                          canReconnect: Bool, oldGone: Bool, manualReads: Int, submittedAnswers: Int) -> Bool {
+        disconnectedNil && ownedPID == nil && pendingNil && canReconnect && oldGone && manualReads == 0 && submittedAnswers == 0
+    }
+    static func fresh(_ old: Challenge, _ new: Challenge, sameObjects: Bool, oldObservedGone: Bool) -> Bool {
+        old.requestID != new.requestID && AppRealSessionsProtocol.reconnected(old.identity, new.identity, sameObjects: sameObjects, oldObservedGone: oldObservedGone)
+    }
+    static func completed(connected: Bool, shellACK: Bool, pendingNil: Bool, manualReads: Int, submittedAnswers: Int) -> Bool {
+        connected && shellACK && pendingNil && manualReads == 1 && submittedAnswers == 1
     }
 }
 struct AppRealFileScope: Sendable {
@@ -584,6 +618,7 @@ struct AppRealIntegrationContract: Codable, Sendable {
 #if HOST_PROBE
 import CryptoKit
 import Darwin
+import OpenLXSSHSecurity
 
 /// Uses the existing App no-ACL policy. Traverses upstream paths by FD/O_NOFOLLOW;
 /// never resolves aliases into an otherwise forbidden path or opens .ssh/Keychain.
@@ -624,6 +659,12 @@ enum AppRealPrivateInput {
               before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec, before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
               before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { throw AppRealIntegrationFailure.unsafeInput }
         return bytes
+    }
+    static func fixturePhrase(_ contract: AppRealIntegrationContract) throws -> Data {
+        guard contract.selectedPhase == .authUICancel else { throw AppRealIntegrationFailure.authorization }
+        var file = try read(contract.generation + "/key-passphrase.txt", limit: 1024)
+        defer { file.resetBytes(in: 0..<file.count); file.removeAll() }
+        return try AppRealAuthUIGate.phrasePayload(file)
     }
     static func write(_ bytes: Data, parent: Int32, name: String) throws {
         guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else { throw AppRealIntegrationFailure.unsafeInput }
@@ -675,6 +716,7 @@ enum AppRealPrivateInput {
 struct AppRealPublicMaterial: Sendable {
     let contract: AppRealIntegrationContract
     let hostKeyLine: String
+    let encryptedPublicKey: String?
     static func load(_ path: String, buildEpoch: Double) throws -> Self {
         _ = try AppRealIntegrationContract.validateContractPath(path) // Reject arbitrary file BEFORE open.
         let bytes = try AppRealPrivateInput.read(path, limit: 8192), value = try AppRealIntegrationContract.decodeStrict(bytes)
@@ -699,7 +741,17 @@ struct AppRealPublicMaterial: Sendable {
               "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().dropLast() == value.expectedFingerprint else { throw AppRealIntegrationFailure.fingerprint }
         let publicKey = try AppRealPrivateInput.read(value.generation + "/id_ed25519.pub", limit: 4096)
         guard AppRealPrivateInput.sha(publicKey) == value.generationPublicKeySHA256 else { throw AppRealIntegrationFailure.provenance }
-        return Self(contract: value, hostKeyLine: "ssh-ed25519 " + fields[2])
+        var encryptedPublic: String?
+        if value.selectedPhase == .authUICancel {
+            let bytes = try AppRealPrivateInput.read(value.generation + "/id_ed25519_encrypted.pub", limit: 4096)
+            guard let text = String(data: bytes, encoding: .utf8), text.hasSuffix("\n"), !text.dropLast().contains(where: { $0.isNewline }) else { throw AppRealIntegrationFailure.provenance }
+            let parts = text.dropLast().split(separator: " ", omittingEmptySubsequences: false)
+            guard parts.count >= 2, parts[0] == "ssh-ed25519" else { throw AppRealIntegrationFailure.provenance }
+            let parsed = try PublicKey(parts.prefix(2).joined(separator: " "))
+            guard parsed.algorithm == .ed25519 else { throw AppRealIntegrationFailure.provenance }
+            encryptedPublic = parsed.copyString
+        }
+        return Self(contract: value, hostKeyLine: "ssh-ed25519 " + fields[2], encryptedPublicKey: encryptedPublic)
     }
 }
 #endif

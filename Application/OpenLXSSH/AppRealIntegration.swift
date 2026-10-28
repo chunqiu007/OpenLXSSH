@@ -448,6 +448,15 @@ struct AppRealSessionFailure: Error {
         let sameManagerServiceLifetime: Bool, connectionAttempts: Int, remoteRootAbsent: Bool, localDatasetRemoved: Bool
         let boundary = "One native apply-to-batch overwrite conflict; every item has its OWN explicit overwrite-non-CAS risk and path risk. Pre-answer zero progress/no completed items, no host-gate digest lease while risk is pending. Test picker; not Finder/macOS26/in-flight switching."
     }
+    struct AuthEvidence: Encodable {
+        let firstChallenge: AppRealAuthUIGate.Challenge, resumedChallenge: AppRealAuthUIGate.Challenge
+        let firstSecureSheetPresent: Bool, firstCancelledWithoutAnswer: Bool, firstPIDGone: Bool, pendingClearedAndReconnectable: Bool
+        let cancelledLastExitCode: Int32?, sameTabDriverSessionView: Bool, freshRequestBoundToNextGeneration: Bool
+        let importPhraseReads: Int, firstCancelManualPhraseReads: Int, recoveryManualPhraseReads: Int, nativeSubmittedAnswers: Int
+        let outerConnectedAndFreshShellACK: Bool, noFurtherChallengeObservation: AppRealAuthUIGate.Observation
+        let closedPID: Int32, ownedProcessGone: Bool
+        let boundary = "Encrypted Ed25519 import validation reads the fixture phrase once in App memory; first challenge cancels WITHOUT answer/manual read; native reconnect secure-field submit reads once more. No prompt/answer/hash/length exported, no Keychain, no terminal prompt classification. Mutable buffers cleared best effort; Swift/UI copies are not completely zeroizable. Finite post-connect observation only, not macOS26/IME acceptance."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -467,6 +476,7 @@ struct AppRealSessionFailure: Error {
         let sessionOperations: SessionsEvidence?
         let batchConflicts: BatchEvidence?
         let batchOverwrite: OverwriteEvidence?
+        let authenticationUI: AuthEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -486,6 +496,8 @@ struct AppRealSessionFailure: Error {
     private var sessionsEvidence: SessionsEvidence?
     private var batchEvidence: BatchEvidence?
     private var overwriteEvidence: OverwriteEvidence?
+    private var authEvidence: AuthEvidence?
+    private var authImportPhraseReads = 0
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
     private var quitFailureRecorded = false
@@ -512,18 +524,34 @@ struct AppRealSessionFailure: Error {
             try await wait { self.model.didLoad && !self.model.isLoading }
             try check("fresh-own-store-no-hosts-tabs-files", model.hosts.isEmpty && model.sessions.tabs.isEmpty && !model.files.visible && model.files.state == .disconnected)
             let initialAttempts = await facts.connectionAttempts; try check("no-sftp-at-start", initialAttempts == 0)
-            var originalKey = try AppRealPrivateInput.read(input.contract.generation + "/id_ed25519", limit: 32768)
+            let authUI = input.contract.selectedPhase == .authUICancel
+            let sourceKeyPath = input.contract.generation + "/" + input.contract.selectedPhase.fixturePrivateKeyName
+            var originalKey = try AppRealPrivateInput.read(sourceKeyPath, limit: 32768)
             let originalSHA = AppRealPrivateInput.sha(originalKey) // In-memory only, never report this private-key digest.
             originalKey.resetBytes(in: 0..<originalKey.count); originalKey.removeAll()
-            let key = try await model.security.createKey(.importFile(URL(fileURLWithPath: input.contract.generation + "/id_ed25519")), protection: .unencrypted, rememberPassphrase: nil)
+            let key: KeyCreationOutcome
+            if authUI { key = try await importAuthUIKey(sourceKeyPath) }
+            else { key = try await model.security.createKey(.importFile(URL(fileURLWithPath: sourceKeyPath)), protection: .unencrypted, rememberPassphrase: nil) }
             try check("production-key-import-committed", !key.cleanupPending)
             let importedPublic = try await model.security.publicKey(key.id)
-            let expectedPublic = try AppRealPrivateInput.read(input.contract.generation + "/id_ed25519.pub", limit: 4096)
-            guard let publicText = String(data: expectedPublic, encoding: .utf8) else { throw AppRealIntegrationFailure.provenance }
-            let publicFields = publicText.trimmingCharacters(in: .newlines).split(separator: " ")
-            try check("imported-key-matches-current-public-export", importedPublic.algorithm == .ed25519 && publicFields.count >= 2 &&
-                importedPublic.copyString == publicFields.prefix(2).joined(separator: " "))
-            try check("fixture-key-source-unmodified", try AppRealPrivateInput.sha(AppRealPrivateInput.read(input.contract.generation + "/id_ed25519", limit: 32768)) == originalSHA)
+            if authUI {
+                try check("imported-encrypted-key-matches-fixed-encrypted-public-export", importedPublic.algorithm == .ed25519 && importedPublic.copyString == input.encryptedPublicKey)
+                let managedPath = try await model.security.validatedPrivateKeyPath(key.id)
+                var managedBytes = try AppRealPrivateInput.read(managedPath, limit: 32768)
+                defer { managedBytes.resetBytes(in: 0..<managedBytes.count); managedBytes.removeAll() }
+                let metadata = try await model.repository.securityMetadata()
+                guard let managed = metadata.keys.first(where: { $0.id == key.id }) else { throw AppRealIntegrationFailure.provenance }
+                try check("encrypted-key-import-preserved-original-envelope-no-saved-credential", AppRealPrivateInput.sha(managedBytes) == originalSHA && managed.passphraseCredentialRef == nil)
+            } else {
+                let expectedPublic = try AppRealPrivateInput.read(input.contract.generation + "/id_ed25519.pub", limit: 4096)
+                guard let publicText = String(data: expectedPublic, encoding: .utf8) else { throw AppRealIntegrationFailure.provenance }
+                let publicFields = publicText.trimmingCharacters(in: .newlines).split(separator: " ")
+                try check("imported-key-matches-current-public-export", importedPublic.algorithm == .ed25519 && publicFields.count >= 2 &&
+                    importedPublic.copyString == publicFields.prefix(2).joined(separator: " "))
+            }
+            var sourceAfter = try AppRealPrivateInput.read(sourceKeyPath, limit: 32768)
+            try check("fixture-key-source-unmodified", AppRealPrivateInput.sha(sourceAfter) == originalSHA)
+            sourceAfter.resetBytes(in: 0..<sourceAfter.count); sourceAfter.removeAll()
             var host = HostConfiguration(name: "Local approved keyonly fixture", address: "127.0.0.1", port: 22221, username: "fixture", authentication: .privateKey, keyRef: key.id)
             if input.contract.selectedPhase == .sessionsReconnect {
                 host.keepaliveInterval = AppRealSessionsProtocol.keepaliveInterval; host.keepaliveCountMax = AppRealSessionsProtocol.keepaliveCountMax
@@ -547,6 +575,8 @@ struct AppRealSessionFailure: Error {
             try check("actual-direct-driver", driver.session.token != nil)
             try check("exact-out-of-band-trust-match", input.contract.matchesTrust(host: prompt.host.address.value, port: Int(prompt.host.port.value), algorithm: prompt.algorithm, fingerprint: prompt.fingerprint))
             try await click("terminal.trust"); try await click("trust.verified"); try await click("trust.accept")
+            if authUI { authEvidence = try await authenticationUICancel(tab: tab, driver: driver) }
+            else {
             let connectedDeadline = ProcessInfo.processInfo.systemUptime + 90
             while tab.state != .connected {
                 if let pending = tab.trust.first, !input.contract.matchesTrust(host: pending.host.address.value, port: Int(pending.host.port.value), algorithm: pending.algorithm, fingerprint: pending.fingerprint) { throw AppRealIntegrationFailure.fingerprint }
@@ -557,10 +587,13 @@ struct AppRealSessionFailure: Error {
             }
             actualPID = driver.session.ownedProcessID
             try check("actual-outer-auth-and-owned-pid", tab.state == .connected && driver.session.state == .connected && actualPID != nil)
+            }
             let filesBefore = await facts.connectionAttempts
             try check("ssh-did-not-open-sftp", filesBefore == 0 && !model.files.visible)
             let terminalOnly = input.contract.selectedPhase.isTerminalOnly
-            if input.contract.selectedPhase == .sessionsReconnect {
+            if authUI {
+                try check("auth-ui-native-tab-closed-no-sftp", model.sessions.tabs.isEmpty && driver.state == .closed && driver.session.ownedProcessID == nil)
+            } else if input.contract.selectedPhase == .sessionsReconnect {
                 sessionsEvidence = try await sessionsReconnect(a: tab, aDriver: driver)
                 sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
             } else if terminalOnly {
@@ -585,7 +618,7 @@ struct AppRealSessionFailure: Error {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
                 if isQuitPhase { return } // Native termination owns the only store closes and final reply.
                 sshReleased = driver.session.state == .closed && driver.session.ownedProcessID == nil
-            } else if input.contract.selectedPhase != .sessionsReconnect {
+            } else if input.contract.selectedPhase != .sessionsReconnect && !authUI {
                 try await click("tab.close." + tab.id.uuidString)
                 try await wait { self.model.sessions.tabs.isEmpty && driver.session.state == .closed && driver.session.ownedProcessID == nil }
                 sshReleased = true
@@ -633,6 +666,115 @@ struct AppRealSessionFailure: Error {
         do { try await persistReport(failure: failure, removed: removed) } catch { exit(2) }
         let exitCode: Int32 = failure == nil ? 0 : 1
         RunLoop.main.perform { MainActor.assumeIsolated { () -> Void in exit(exitCode) } }
+    }
+    private func importAuthUIKey(_ source: String) async throws -> KeyCreationOutcome {
+        var phrase = try AppRealPrivateInput.fixturePhrase(input.contract)
+        authImportPhraseReads += 1
+        defer { phrase.resetBytes(in: 0..<phrase.count); phrase.removeAll() }
+        return try await model.security.createKey(.importFile(URL(fileURLWithPath: source)), protection: .passphrase(SecretBytes(phrase)), rememberPassphrase: nil)
+    }
+    private func authenticationUICancel(tab: SessionTab, driver: DirectSessionDriver) async throws -> AuthEvidence {
+        let view = driver.terminal, session = driver.session
+        var manualReads = 0, submissions = 0
+        func sameObjects() -> Bool { model.sessions.tabs.count == 1 && model.sessions.tabs.first === tab && tab.driver === driver && driver.session === session && driver.terminal === view }
+        func pending() async throws -> (SessionAuthenticationPrompt, AppRealAuthUIGate.Challenge) {
+            let deadline = ProcessInfo.processInfo.systemUptime + 90
+            while true {
+                guard sameObjects(), tab.trust.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+                if let prompt = tab.authentication {
+                    let identity = try SwitchSessions.identity(tab, driver)
+                    let challenge = AppRealAuthUIGate.Challenge(requestID: prompt.id, identity: identity)
+                    guard prompt.token == driver.token, AppRealAuthUIGate.challenge(challenge,
+                        authenticating: tab.state == .authenticating && driver.state == .authenticating,
+                        unknownMasked: prompt.kind == .unknownMasked, currentIdentity: identity) else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+                    return (prompt, challenge)
+                }
+                if case .failed(let reason) = tab.state { throw AppRealSessionFailure(reason) }
+                guard tab.state != .connected, ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        let (firstPrompt, first) = try await pending()
+        actualPID = first.identity.process.pid
+        try await click("terminal.authenticate")
+        try await wait { self.find("authentication.answer", NSSecureTextField.self) != nil }
+        guard tab.authentication?.id == firstPrompt.id, tab.authentication?.token == firstPrompt.token,
+              find("authentication.answer", NSSecureTextField.self)?.stringValue.isEmpty == true else { throw AppRealIntegrationFailure.failedCheck }
+        try check("auth-ui-first-real-masked-challenge-secure-sheet", true)
+        try await click("authentication.cancel")
+        try await wait { tab.state == .disconnected(nil) && driver.state == .disconnected(nil) && session.ownedProcessID == nil && tab.authentication == nil && tab.canReconnect && session.canReconnect && SwitchSessions.gone(first.identity.process.pid) && self.delegate.mainWindow?.attachedSheet == nil }
+        let cancelledExit = session.lastExitCode, oldGone = SwitchSessions.gone(first.identity.process.pid)
+        let firstManualReads = manualReads, firstSubmissions = submissions
+        let cancelled = AppRealAuthUIGate.cancelled(disconnectedNil: tab.state == .disconnected(nil) && session.state == .disconnected(nil),
+            ownedPID: session.ownedProcessID, pendingNil: tab.authentication == nil, canReconnect: tab.canReconnect && session.canReconnect,
+            oldGone: oldGone, manualReads: manualReads, submittedAnswers: submissions)
+        try check("auth-ui-native-cancel-no-answer-manual-read-old-process-gone", cancelled && sameObjects() && driver.token == firstPrompt.token)
+        try await click("terminal.reconnect")
+        let (secondPrompt, resumed) = try await pending()
+        let fresh = AppRealAuthUIGate.fresh(first, resumed, sameObjects: sameObjects(), oldObservedGone: oldGone)
+        try check("auth-ui-native-reconnect-fresh-masked-request-next-generation", fresh)
+        try await click("terminal.authenticate")
+        try await wait { self.find("authentication.answer", NSSecureTextField.self) != nil }
+        guard tab.authentication?.id == secondPrompt.id, tab.authentication?.token == secondPrompt.token,
+              try SwitchSessions.identity(tab, driver) == resumed.identity else { throw AppRealIntegrationFailure.failedCheck }
+        // Only this App process reads the exact fixture leaf. The native secure field owns
+        // unavoidable SwiftUI/String copies until normal submit+dismiss clears them.
+        do {
+            var phrase = try AppRealPrivateInput.fixturePhrase(input.contract)
+            defer { phrase.resetBytes(in: 0..<phrase.count); phrase.removeAll() }
+            manualReads += 1
+            guard var text = String(data: phrase, encoding: .utf8), let field = find("authentication.answer", NSSecureTextField.self) else { throw AppRealIntegrationFailure.unsafeInput }
+            defer { text.removeAll(keepingCapacity: false) }
+            let submitID = "authentication.submit"
+            try await wait { self.find(submitID, NSButton.self)?.isEnabled == true }
+            guard tab.authentication?.id == secondPrompt.id, tab.authentication?.token == secondPrompt.token,
+                  let submit = find(submitID, NSButton.self), submit.isEnabled else { throw AppRealIntegrationFailure.failedCheck }
+            defer { field.stringValue = "" }
+            field.stringValue = text; field.sendAction(field.action, to: field.target)
+            submit.performClick(nil); submissions += 1
+        }
+        try await wait { self.delegate.mainWindow?.attachedSheet == nil }
+        let deadline = ProcessInfo.processInfo.systemUptime + 90
+        while tab.state != .connected || session.state != .connected {
+            guard sameObjects(), tab.authentication == nil, tab.trust.isEmpty else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            if case .failed(let reason) = tab.state { throw AppRealSessionFailure(reason) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        guard try SwitchSessions.identity(tab, driver) == resumed.identity else { throw AppRealIntegrationFailure.failedCheck }
+        actualPID = resumed.identity.process.pid
+        let plan = try AppRealSessionsProtocol(nonce: input.contract.runID.replacingOccurrences(of: "-", with: ""))
+        try session.sendInput(plan.ackCommand(.aReconnected))
+        let ackDeadline = ProcessInfo.processInfo.systemUptime + 15
+        while try !plan.acknowledged(view.text, role: .aReconnected) {
+            guard tab.state == .connected, session.state == .connected, tab.authentication == nil,
+                  try SwitchSessions.identity(tab, driver) == resumed.identity else { throw AppRealIntegrationFailure.unexpectedAuthentication }
+            guard ProcessInfo.processInfo.systemUptime < ackDeadline else { throw AppRealIntegrationFailure.timeout }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let connectedACK = AppRealAuthUIGate.completed(connected: tab.state == .connected && session.state == .connected,
+            shellACK: try plan.acknowledged(view.text, role: .aReconnected), pendingNil: tab.authentication == nil,
+            manualReads: manualReads, submittedAnswers: submissions)
+        try check("auth-ui-single-native-answer-real-outer-auth-and-fresh-ack", connectedACK)
+        var observation = AppRealAuthUIGate.Observation()
+        let start = ProcessInfo.processInfo.systemUptime
+        func sample(_ elapsed: Double) throws {
+            try observation.sample(elapsed: elapsed, connected: tab.state == .connected && session.state == .connected,
+                identityUnchanged: sameObjects() && (try SwitchSessions.identity(tab, driver)) == resumed.identity,
+                noChallenge: tab.authentication == nil && tab.trust.isEmpty)
+        }
+        try sample(0)
+        while ProcessInfo.processInfo.systemUptime - start < 2 { try await Task.sleep(for: .milliseconds(50)); try sample(ProcessInfo.processInfo.systemUptime - start) }
+        try check("auth-ui-finite-postconnect-no-extra-challenge", observation.complete)
+        try await click("tab.close." + tab.id.uuidString)
+        try await wait { self.model.sessions.tabs.isEmpty && driver.state == .closed && session.ownedProcessID == nil && SwitchSessions.gone(resumed.identity.process.pid) }
+        sshReleased = true
+        return AuthEvidence(firstChallenge: first, resumedChallenge: resumed, firstSecureSheetPresent: true,
+            firstCancelledWithoutAnswer: firstSubmissions == 0 && cancelled, firstPIDGone: oldGone, pendingClearedAndReconnectable: cancelled,
+            cancelledLastExitCode: cancelledExit, sameTabDriverSessionView: fresh, freshRequestBoundToNextGeneration: fresh,
+            importPhraseReads: authImportPhraseReads, firstCancelManualPhraseReads: firstManualReads, recoveryManualPhraseReads: manualReads, nativeSubmittedAnswers: submissions,
+            outerConnectedAndFreshShellACK: connectedACK, noFurtherChallengeObservation: observation,
+            closedPID: resumed.identity.process.pid, ownedProcessGone: SwitchSessions.gone(resumed.identity.process.pid))
     }
     private func terminalSearchPaste(driver: DirectSessionDriver) async throws -> TerminalEvidence {
         let nonce = input.contract.runID.replacingOccurrences(of: "-", with: ""), plan = try AppRealTerminalProtocol(nonce: nonce)
@@ -1360,7 +1502,7 @@ struct AppRealSessionFailure: Error {
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, transferSwitch: switchEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence, batchOverwrite: overwriteEvidence, authenticationUI: authEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),

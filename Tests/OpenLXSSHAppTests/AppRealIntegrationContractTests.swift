@@ -22,7 +22,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite", "transfer-survives-switch"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts", "batch-overwrite", "transfer-survives-switch", "auth-ui-cancel"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -688,6 +688,76 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
         XCTAssertFalse(gate.before(waiting,a: a,b: b,bothConnectedAndSameObjects: true,selected: aID,target: bID))
     }
     #endif
+    func testAuthUIClosedPhaseSelectsOnlyEncryptedKeyWithoutChangingOtherPhases() throws {
+        var value = object(); value["phase"] = "auth-ui-cancel"
+        XCTAssertEqual(try decode(value).selectedPhase, .authUICancel)
+        XCTAssertTrue(AppRealIntegrationPhase.authUICancel.isTerminalOnly); XCTAssertFalse(AppRealIntegrationPhase.authUICancel.isTransfer)
+        XCTAssertEqual(AppRealIntegrationPhase.authUICancel.fixturePrivateKeyName, "id_ed25519_encrypted")
+        for phase in [AppRealIntegrationPhase.readOnly,.terminalSearchPaste,.sessionsReconnect,.fileOperations,.batchConflicts,.batchOverwrite,.transferSurvivesClose,.transferSurvivesSwitch,.windowContinueCancel,.quitContinueCancel] {
+            XCTAssertEqual(phase.fixturePrivateKeyName, "id_ed25519")
+        }
+        value["phase"] = "auth-ui-any-key"; XCTAssertThrowsError(try decode(value))
+        value = object(); value["encryptedPublicSHA256"] = String(repeating: "a", count: 64)
+        XCTAssertThrowsError(try decode(value)) // Existing contract schema remains closed.
+    }
+    func testAuthUIFixturePhraseRemovesOnlyOneFinalLFAndRejectsMalformedPayload() throws {
+        // Public synthetic dummy bytes only; never reads a fixture generation.
+        let dummy = Data("synthetic-not-a-fixture-value".utf8)
+        XCTAssertEqual(try AppRealAuthUIGate.phrasePayload(dummy + Data([10])), dummy)
+        XCTAssertEqual(try AppRealAuthUIGate.phrasePayload(Data(" leading and trailing \n".utf8)), Data(" leading and trailing ".utf8))
+        XCTAssertEqual(try AppRealAuthUIGate.phrasePayload(Data(repeating: 120,count: 1023) + Data([10])).count, 1023)
+        for invalid in [Data(),Data([10]),dummy,dummy + Data([13,10]),dummy + Data([10,10]),Data([120,0,10]),
+                        Data([120,10,121,10]),Data([255,10]),Data(repeating: 120,count: 1024) + Data([10])] {
+            XCTAssertThrowsError(try AppRealAuthUIGate.phrasePayload(invalid))
+        }
+    }
+    func testAuthUIChallengeCancelAndFreshRecoveryRequireActualBoundGenerationAndNoFirstAnswer() throws {
+        let id = UUID(), oldProcess = AppRealSessionsProtocol.ProcessIdentity(pid: 111,parentPID: 99,startSeconds: 1,startMicroseconds: 0)
+        let initial = AppRealSessionsProtocol.Identity(tabID: id,sessionID: id,generation: 1,process: oldProcess)
+        let old = AppRealAuthUIGate.Challenge(requestID: UUID(),identity: initial)
+        XCTAssertTrue(AppRealAuthUIGate.challenge(old,authenticating: true,unknownMasked: true,currentIdentity: initial))
+        XCTAssertFalse(AppRealAuthUIGate.challenge(old,authenticating: false,unknownMasked: true,currentIdentity: initial))
+        XCTAssertFalse(AppRealAuthUIGate.challenge(old,authenticating: true,unknownMasked: false,currentIdentity: initial))
+        func cancelled(_ disconnected: Bool = true,_ pid: Int32? = nil,_ pending: Bool = true,_ reconnect: Bool = true,
+                       _ gone: Bool = true,_ reads: Int = 0,_ answers: Int = 0) -> Bool {
+            AppRealAuthUIGate.cancelled(disconnectedNil: disconnected,ownedPID: pid,pendingNil: pending,canReconnect: reconnect,
+                oldGone: gone,manualReads: reads,submittedAnswers: answers)
+        }
+        XCTAssertTrue(cancelled()); XCTAssertFalse(cancelled(false)); XCTAssertFalse(cancelled(true,111))
+        XCTAssertFalse(cancelled(true,nil,false)); XCTAssertFalse(cancelled(true,nil,true,false))
+        XCTAssertFalse(cancelled(true,nil,true,true,false)); XCTAssertFalse(cancelled(true,nil,true,true,true,1))
+        XCTAssertFalse(cancelled(true,nil,true,true,true,0,1))
+        let next = AppRealSessionsProtocol.Identity(tabID: id,sessionID: id,generation: 2,
+            process: .init(pid: 222,parentPID: 99,startSeconds: 2,startMicroseconds: 0))
+        let new = AppRealAuthUIGate.Challenge(requestID: UUID(),identity: next)
+        XCTAssertTrue(AppRealAuthUIGate.fresh(old,new,sameObjects: true,oldObservedGone: true))
+        XCTAssertFalse(AppRealAuthUIGate.fresh(old,new,sameObjects: false,oldObservedGone: true))
+        XCTAssertFalse(AppRealAuthUIGate.fresh(old,new,sameObjects: true,oldObservedGone: false))
+        XCTAssertFalse(AppRealAuthUIGate.fresh(old,.init(requestID: old.requestID,identity: next),sameObjects: true,oldObservedGone: true))
+        XCTAssertFalse(AppRealAuthUIGate.challenge(old,authenticating: true,unknownMasked: true,currentIdentity: next))
+        XCTAssertFalse(AppRealAuthUIGate.fresh(old,.init(requestID: UUID(),identity: initial),sameObjects: true,oldObservedGone: true))
+        let json = try JSONEncoder().encode(new), encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+        XCTAssertEqual(Set(encoded.keys),["requestID","identity"])
+        for forbidden in ["prompt","answer","phrase","hash","length"] { XCTAssertFalse(String(decoding: json,as: UTF8.self).contains(forbidden)) }
+    }
+    func testAuthUIConnectedRequiresFreshACKAndExactlyOneNativeAnswerAndFiniteNoChallengeSamples() throws {
+        XCTAssertTrue(AppRealAuthUIGate.completed(connected: true,shellACK: true,pendingNil: true,manualReads: 1,submittedAnswers: 1))
+        for flags in [(false,true,true),(true,false,true),(true,true,false)] {
+            XCTAssertFalse(AppRealAuthUIGate.completed(connected: flags.0,shellACK: flags.1,pendingNil: flags.2,manualReads: 1,submittedAnswers: 1))
+        }
+        for (reads,answers) in [(0,1),(1,0),(2,1),(1,2)] {
+            XCTAssertFalse(AppRealAuthUIGate.completed(connected: true,shellACK: true,pendingNil: true,manualReads: reads,submittedAnswers: answers))
+        }
+        var observation = AppRealAuthUIGate.Observation()
+        XCTAssertThrowsError(try observation.sample(elapsed: 1,connected: true,identityUnchanged: true,noChallenge: true))
+        try observation.sample(elapsed: 0,connected: true,identityUnchanged: true,noChallenge: true)
+        XCTAssertThrowsError(try observation.sample(elapsed: 0.5,connected: true,identityUnchanged: true,noChallenge: false))
+        XCTAssertThrowsError(try observation.sample(elapsed: .nan,connected: true,identityUnchanged: true,noChallenge: true))
+        XCTAssertThrowsError(try observation.sample(elapsed: 0.5,connected: false,identityUnchanged: true,noChallenge: true))
+        XCTAssertThrowsError(try observation.sample(elapsed: 0.5,connected: true,identityUnchanged: false,noChallenge: true))
+        try observation.sample(elapsed: 2,connected: true,identityUnchanged: true,noChallenge: true)
+        XCTAssertTrue(observation.complete); XCTAssertEqual(observation.samples,2)
+    }
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: false).action, .none)
