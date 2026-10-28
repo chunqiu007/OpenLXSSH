@@ -1,6 +1,9 @@
 import Darwin
 import Foundation
 import XCTest
+#if HOST_PROBE
+import OpenLXSSHFiles
+#endif
 
 final class AppRealIntegrationContractTests: XCTestCase {
     private let id = "12345678-1234-1234-1234-123456789abc"
@@ -19,7 +22,7 @@ final class AppRealIntegrationContractTests: XCTestCase {
     }
     func testClosedPhaseDefaultsToOldReadOnlyAndRejectsUnknownPhase() throws {
         XCTAssertEqual(try decode(object()).selectedPhase, .readOnly)
-        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect"] {
+        for phase in ["read-only", "transfer-survives-close", "window-continue-cancel", "quit-continue-cancel", "file-operations", "terminal-search-paste", "sessions-reconnect", "batch-conflicts"] {
             var value = object(); value["phase"] = phase
             XCTAssertEqual(try decode(value).selectedPhase.rawValue, phase)
         }
@@ -429,6 +432,125 @@ print(json.dumps({'sha256':hashlib.sha256(payload).hexdigest(),
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any])
         XCTAssertEqual(Set(json.keys), ["samples", "elapsedSeconds"])
     }
+    func testBatchClosedScopePayloadFormulaAndExactDeleteRejectsUnknowns() throws {
+        var value = object(); value["phase"] = "batch-conflicts"
+        XCTAssertEqual(try decode(value).selectedPhase, .batchConflicts)
+        XCTAssertFalse(AppRealIntegrationPhase.batchConflicts.isTransfer); XCTAssertFalse(AppRealIntegrationPhase.batchConflicts.isTerminalOnly)
+        let scope = try AppRealBatchScope(runID: id)
+        XCTAssertEqual(scope.root, "/fixture/home/openlxssh-app-batch-" + id)
+        XCTAssertThrowsError(try AppRealBatchScope(runID: "latest")); XCTAssertThrowsError(try AppRealBatchScope(runID: id.uppercased()))
+        for (name, size) in [("a.bin", 4096), ("b.bin", 8192)] {
+            let seed = try scope.payload(name, fresh: false), fresh = try scope.payload(name, fresh: true)
+            XCTAssertEqual(seed.count, size); XCTAssertEqual(fresh.count, size); XCTAssertNotEqual(seed, fresh)
+            let formula = Data(("OpenLXSSH batch " + id + " Seed/" + name + "\n").utf8)
+            XCTAssertEqual(seed.prefix(formula.count), formula)
+            XCTAssertEqual(seed, Data((0..<size).map { formula[$0 % formula.count] }))
+        }
+        XCTAssertThrowsError(try scope.payload("../outside", fresh: true))
+        XCTAssertTrue(scope.allowsRisk(Data((scope.root + "/a.bin").utf8)))
+        XCTAssertFalse(scope.allowsRisk(Data(scope.root.utf8))); XCTAssertFalse(scope.allowsRisk(Data((scope.root + "/unknown").utf8)))
+        let expected = (AppRealBatchScope.names + [AppRealBatchScope.alternate]).map { (Data((scope.root + "/" + $0).utf8), "file") } + [(Data(scope.root.utf8), "directory")]
+        XCTAssertTrue(scope.exactDelete(expected, issues: 0)); XCTAssertFalse(scope.exactDelete(expected, issues: 1))
+        XCTAssertFalse(scope.exactDelete(expected + [expected[0]], issues: 0)); XCTAssertFalse(scope.exactDelete(Array(expected.dropLast()), issues: 0))
+        XCTAssertFalse(scope.exactDelete([(Data("/outside".utf8), "file")] + Array(expected.dropFirst()), issues: 0))
+    }
+    #if HOST_PROBE
+    private func batchJob(scope: AppRealBatchScope, host: UUID, service: UUID, local: UUID, batch: UUID, name: String,
+                          jobID: UUID = UUID(), generation: UUID = UUID(), state: TransferJobState = .queued, bytes: UInt64 = 0,
+                          pending: AppRealBatchGate.Decision? = nil, item: TransferItemResult? = nil) throws -> AppRealBatchGate.Snapshot {
+        .init(id: jobID, generation: generation, retryOf: nil, request: .init(hostID: host.uuidString, batchID: batch,
+            source: .init(serviceID: local, path: try RemotePath("/" + name)), destination: .init(serviceID: service, path: try RemotePath(scope.root + "/" + name))),
+            state: state, transferredBytes: bytes, cancellationRequested: false, pendingDecision: pending, error: nil, items: item.map { [$0] } ?? [])
+    }
+    func testBatchAdmissionRejectsWrongBatchHostPathDuplicateAndStaleGeneration() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID()
+        let a = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin")
+        let b = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "b.bin")
+        var gate = AppRealBatchGate(); try gate.admit([a,b], stage: .seed, scope: scope, hostID: host, serviceID: service)
+        XCTAssertEqual(gate.jobs.count, 2); XCTAssertTrue(gate.current(a))
+        XCTAssertThrowsError(try gate.admit([a,b], stage: .skip, scope: scope, hostID: host, serviceID: service))
+        for values in [[a,a], [a], [a,try batchJob(scope: scope, host: host, service: service, local: local, batch: UUID(), name: "b.bin")],
+                       [a,try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "unknown")]] {
+            var fresh = AppRealBatchGate(); XCTAssertThrowsError(try fresh.admit(values, stage: .seed, scope: scope, hostID: host, serviceID: service))
+        }
+        var wrong = AppRealBatchGate(); XCTAssertThrowsError(try wrong.admit([a,b], stage: .seed, scope: scope, hostID: UUID(), serviceID: service))
+        let stale = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin", jobID: a.id)
+        XCTAssertFalse(gate.current(stale))
+    }
+    func testBatchDecisionRejectsStaleDuplicateWrongTypeAndRiskDoesNotImplyConflict() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID(), jobID = UUID(), generation = UUID()
+        let a = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin", jobID: jobID, generation: generation)
+        let b = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "b.bin")
+        var gate = AppRealBatchGate(); try gate.admit([a,b], stage: .skip, scope: scope, hostID: host, serviceID: service)
+        let question = TransferDecisionQuestion.conflict(.init(source: a.request.source.path, destination: a.request.destination.path, existing: .init(kind: .regular, size: 4096)))
+        let request = AppRealBatchGate.Decision(id: UUID(), jobID: jobID, generation: generation, question: question)
+        let waiting = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin", jobID: jobID, generation: generation, state: .waitingConflict, pending: request)
+        XCTAssertThrowsError(try gate.decision(request, job: waiting, stage: .skip, scope: scope, risk: true))
+        XCTAssertThrowsError(try gate.decision(request, job: waiting, stage: .rename, scope: scope, risk: false))
+        let stale = AppRealBatchGate.Decision(id: UUID(), jobID: jobID, generation: UUID(), question: question)
+        XCTAssertThrowsError(try gate.decision(stale, job: waiting, stage: .skip, scope: scope, risk: false))
+        try gate.decision(request, job: waiting, stage: .skip, scope: scope, risk: false)
+        XCTAssertThrowsError(try gate.decision(request, job: waiting, stage: .skip, scope: scope, risk: false))
+        let risk = AppRealBatchGate.Decision(id: UUID(), jobID: jobID, generation: generation, question: .risk(.remotePathChecksAreNotAtomic(path: a.request.destination.path)))
+        let riskJob = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin", jobID: jobID, generation: generation, state: .waitingRisk, pending: risk)
+        try gate.decision(risk, job: riskJob, stage: .skip, scope: scope, risk: true)
+        XCTAssertEqual(gate.decisions.count, 2)
+        let unknown = AppRealBatchGate.Decision(id: UUID(), jobID: jobID, generation: generation, question: .risk(.remotePathChecksAreNotAtomic(path: try RemotePath(scope.root + "/unknown"))))
+        let unknownJob = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin", jobID: jobID, generation: generation, state: .waitingRisk, pending: unknown)
+        XCTAssertThrowsError(try gate.decision(unknown, job: unknownJob, stage: .skip, scope: scope, risk: true))
+    }
+    func testBatchTerminalSkipRequiresBothSkippedZeroBytesNoPendingOrRetainedTemp() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID(), batch = UUID()
+        let original = try AppRealBatchScope.names.map { try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: $0) }
+        var gate = AppRealBatchGate(); try gate.admit(original, stage: .skip, scope: scope, hostID: host, serviceID: service)
+        func ended(_ value: AppRealBatchGate.Snapshot, state: TransferJobState = .skipped, bytes: UInt64 = 0, retained: RemotePath? = nil) throws -> AppRealBatchGate.Snapshot {
+            let item = TransferItemResult(source: value.request.source.path, destination: value.request.destination.path, state: .skipped, retainedTemporary: retained)
+            return try batchJob(scope: scope, host: host, service: service, local: local, batch: batch,
+                name: String(decoding: value.request.source.path.name!.bytes, as: UTF8.self), jobID: value.id, generation: value.generation, state: state, bytes: bytes, item: item)
+        }
+        let a = try ended(original[0]), b = try ended(original[1]); XCTAssertTrue(gate.terminal([a,b], stage: .skip, scope: scope))
+        for state in [TransferJobState.succeeded, .failed, .cancelled, .completedWithSkips, .waitingConflict] {
+            XCTAssertFalse(gate.terminal([try ended(original[0], state: state),b], stage: .skip, scope: scope))
+        }
+        XCTAssertFalse(gate.terminal([try ended(original[0], bytes: 1),b], stage: .skip, scope: scope))
+        XCTAssertFalse(gate.terminal([try ended(original[0], retained: RemotePath(scope.root + "/.openlxssh-transfer.keep.part")),b], stage: .skip, scope: scope))
+        XCTAssertFalse(gate.terminal([a,a], stage: .skip, scope: scope)); XCTAssertFalse(gate.terminal([a], stage: .skip, scope: scope))
+        let pending = AppRealBatchGate.Decision(id: UUID(), jobID: a.id, generation: a.generation,
+            question: .risk(.remotePathChecksAreNotAtomic(path: a.request.destination.path)))
+        let withPending = try batchJob(scope: scope, host: host, service: service, local: local, batch: batch, name: "a.bin",
+            jobID: a.id, generation: a.generation, state: .skipped, pending: pending, item: a.items[0])
+        XCTAssertFalse(gate.terminal([withPending,b], stage: .skip, scope: scope))
+    }
+    func testBatchNewRenameBatchMustSucceedAtAlternateAndHaveDistinctBatchIdentity() throws {
+        let scope = try AppRealBatchScope(runID: id), host = UUID(), service = UUID(), local = UUID()
+        var gate = AppRealBatchGate()
+        let seedBatch = UUID(), skipBatch = UUID(), renameBatch = UUID()
+        let seed = try AppRealBatchScope.names.map { try batchJob(scope: scope, host: host, service: service, local: local, batch: seedBatch, name: $0) }
+        let skip = try AppRealBatchScope.names.map { try batchJob(scope: scope, host: host, service: service, local: local, batch: skipBatch, name: $0) }
+        try gate.admit(seed, stage: .seed, scope: scope, hostID: host, serviceID: service)
+        try gate.admit(skip, stage: .skip, scope: scope, hostID: host, serviceID: service)
+        let rename = try batchJob(scope: scope, host: host, service: service, local: local, batch: renameBatch, name: "a.bin")
+        try gate.admit([rename], stage: .rename, scope: scope, hostID: host, serviceID: service)
+        XCTAssertEqual(gate.jobs.count, 5); XCTAssertEqual(Set(gate.batches.values).count, 3)
+        func result(_ destination: RemotePath, _ state: TransferJobState = .succeeded, _ bytes: UInt64 = 4096) throws -> AppRealBatchGate.Snapshot {
+            let item = TransferItemResult(source: rename.request.source.path, destination: destination, state: .succeeded(bytes: bytes), retainedTemporary: nil)
+            return try batchJob(scope: scope, host: host, service: service, local: local, batch: renameBatch, name: "a.bin",
+                jobID: rename.id, generation: rename.generation, state: state, bytes: bytes, item: item)
+        }
+        let alternate = try RemotePath(scope.root + "/" + AppRealBatchScope.alternate)
+        XCTAssertTrue(gate.terminal([try result(alternate)], stage: .rename, scope: scope))
+        XCTAssertFalse(gate.terminal([try result(rename.request.destination.path)], stage: .rename, scope: scope))
+        XCTAssertFalse(gate.terminal([try result(alternate, .skipped, 0)], stage: .rename, scope: scope))
+        XCTAssertFalse(gate.terminal([try result(alternate, .succeeded, 4095)], stage: .rename, scope: scope))
+        for fresh in [false, true] {
+            for name in AppRealBatchScope.names {
+                let data = try scope.payload(name, fresh: fresh)
+                XCTAssertEqual(AppRealPrivateInput.sha(data), AppRealPrivateInput.sha(try scope.payload(name, fresh: fresh)))
+                XCTAssertNotEqual(AppRealPrivateInput.sha(data), AppRealPrivateInput.sha(try scope.payload(name, fresh: !fresh)))
+            }
+        }
+    }
+    #endif
     func testDefaultValidateAndHelpArePureParsingWithoutExistingFiles() throws {
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: true).action, .none)
         XCTAssertEqual(try AppRealIntegrationArguments.parse([], hostProbe: false).action, .none)

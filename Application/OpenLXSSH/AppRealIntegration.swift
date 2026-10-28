@@ -229,6 +229,62 @@ final class AppRealOwnedStore: @unchecked Sendable {
         }
         fileOperationsEntries.removeAll()
     }
+    private var batchEntries: [String: (device: dev_t, inode: ino_t, sha: String?)] = [:]
+    func prepareBatch(_ scope: AppRealBatchScope) throws -> (seed: [URL], fresh: [URL]) {
+        guard batchEntries.isEmpty else { throw AppRealIntegrationFailure.isolation }
+        for folder in ["Seed", "Fresh"] {
+            guard mkdirat(held, folder, 0o700) == 0 else { throw AppRealIntegrationFailure.isolation }
+            let fd = openat(held, folder, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw AppRealIntegrationFailure.isolation }; defer { Darwin.close(fd) }
+            try AppFileSecurity.directory(fd); var info = stat()
+            guard fstat(fd, &info) == 0 else { throw AppRealIntegrationFailure.isolation }
+            batchEntries[folder] = (info.st_dev, info.st_ino, nil)
+            for name in AppRealBatchScope.names {
+                let data = try scope.payload(name, fresh: folder == "Fresh")
+                try AppRealPrivateInput.write(data, parent: fd, name: name)
+                let file = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                guard file >= 0 else { throw AppRealIntegrationFailure.isolation }; defer { Darwin.close(file) }
+                try AppFileSecurity.regularFile(file)
+                guard fstat(file, &info) == 0 else { throw AppRealIntegrationFailure.isolation }
+                batchEntries[folder + "/" + name] = (info.st_dev, info.st_ino, AppRealPrivateInput.sha(data))
+            }
+        }
+        return (AppRealBatchScope.names.map { url.appendingPathComponent("Seed/" + $0) }, AppRealBatchScope.names.map { url.appendingPathComponent("Fresh/" + $0) })
+    }
+    func verifyBatch(_ scope: AppRealBatchScope) throws -> [AppRealFileDigest] {
+        guard batchEntries.count == 6 else { throw AppRealIntegrationFailure.cleanup }
+        var digests: [AppRealFileDigest] = []
+        for folder in ["Seed", "Fresh"] {
+            let parent = try AppRealPrivateInput.directory(url.appendingPathComponent(folder).path); defer { Darwin.close(parent) }
+            var before = stat()
+            guard let expected = batchEntries[folder], fstat(parent, &before) == 0, before.st_dev == expected.device,
+                  before.st_ino == expected.inode, Set(try children(parent)) == Set(AppRealBatchScope.names) else { throw AppRealIntegrationFailure.cleanup }
+            for name in AppRealBatchScope.names {
+                let relative = folder + "/" + name, data = try AppRealPrivateInput.read(url.appendingPathComponent(relative).path, limit: 8192)
+                var info = stat()
+                guard let entry = batchEntries[relative], fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                      info.st_dev == entry.device, info.st_ino == entry.inode, data == (try scope.payload(name, fresh: folder == "Fresh")),
+                      AppRealPrivateInput.sha(data) == entry.sha else { throw AppRealIntegrationFailure.cleanup }
+                digests.append(AppRealFileDigest(relativePathBase64: Data(relative.utf8).base64EncodedString(), bytes: data.count, sha256: AppRealPrivateInput.sha(data)))
+            }
+        }
+        return digests
+    }
+    func cleanupBatch(_ scope: AppRealBatchScope) throws {
+        _ = try verifyBatch(scope)
+        for folder in ["Seed", "Fresh"] {
+            let parent = try AppRealPrivateInput.directory(url.appendingPathComponent(folder).path); defer { Darwin.close(parent) }
+            for name in AppRealBatchScope.names {
+                var info = stat(); guard let entry = batchEntries[folder + "/" + name],
+                    fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_dev == entry.device, info.st_ino == entry.inode,
+                    unlinkat(parent, name, 0) == 0 else { throw AppRealIntegrationFailure.cleanup }
+            }
+            var info = stat(); guard let entry = batchEntries[folder], try children(parent).isEmpty,
+                fstatat(held, folder, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_dev == entry.device, info.st_ino == entry.inode,
+                unlinkat(held, folder, AT_REMOVEDIR) == 0 else { throw AppRealIntegrationFailure.cleanup }
+        }
+        batchEntries.removeAll()
+    }
     func cleanupEmptyStore() throws {
         var info = stat()
         guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_dev == device, info.st_ino == inode else { throw AppRealIntegrationFailure.cleanup }
@@ -348,6 +404,20 @@ struct AppRealSessionFailure: Error {
         let allDriversClosed: Bool, allOwnedProcessesGone: Bool, noSFTPOrCredentials: Bool
         let boundary = "Finite two-tab real SSH case; native reuse/switch/manual reconnect, natural outer exit0, retained history. Keepalive CONFIGURATION MAPPING ONLY, not blackhole/liveness proof. No clipboard/IME/macOS26/indefinite no-auto-reconnect claim."
     }
+    struct BatchEvidence: Encodable {
+        struct Decision: Encodable {
+            let stage: AppRealBatchScope.Stage, jobID: UUID, generation: UUID, batchID: UUID, decisionID: UUID
+            let question: String, pathBase64: String, nativeReply: String, applyToBatch: Bool
+        }
+        struct TerminalJob: Encodable { let identity: AppRealBatchGate.Job; let state: String; let bytes: UInt64; let pending: Bool; let retainedTemporaryCount: Int }
+        let serviceID: UUID, hostID: UUID, lifetime: UUID, serverBinding: String
+        let seedJobs: [TerminalJob], skippedJobs: [TerminalJob], renamedJobs: [TerminalJob]
+        let decisions: [Decision], localManifest: [AppRealFileDigest]
+        let seededRemote: [AppRealFileDigest], afterSkipRemote: [AppRealFileDigest], finalRemote: [AppRealFileDigest]
+        let deletePlanID: UUID, deletedPathsBase64: [String]
+        let sameManagerServiceLifetime: Bool, connectionAttempts: Int, remoteRootAbsent: Bool, localDatasetRemoved: Bool
+        let boundary = "Native upload+conflict batch-skip then NEW batch single-item transfer rename; independent exact risk dialogs. Test picker, not Finder. No overwrite/in-flight switch/clipboard/macOS26 claim."
+    }
     struct Report: Encodable {
         let taskID = "APP-REAL-KEYONLY-PREP-A", kind = "HostProbe-native-real-keyonly"
         let productRuntimeVerified = false, testMinimumOS = "15.0"
@@ -364,6 +434,7 @@ struct AppRealSessionFailure: Error {
         let fileOperations: FileOperationsEvidence?
         let terminalOperations: TerminalEvidence?
         let sessionOperations: SessionsEvidence?
+        let batchConflicts: BatchEvidence?
         let failedStage: AppRealTransferStage?
         let diagnostics: AppRealTransferDiagnostics?
         let remainingOwnedRemotePathsBase64: [String]
@@ -380,6 +451,7 @@ struct AppRealSessionFailure: Error {
     private var fileOperationsEvidence: FileOperationsEvidence?
     private var terminalEvidence: TerminalEvidence?
     private var sessionsEvidence: SessionsEvidence?
+    private var batchEvidence: BatchEvidence?
     private var quitHooks = AppRealQuitHookGate()
     private var quitTimer: Timer?
     private var quitFailureRecorded = false
@@ -473,6 +545,7 @@ struct AppRealSessionFailure: Error {
             }
             let manager = model.files.manager
             if input.contract.selectedPhase == .fileOperations { fileOperationsEvidence = try await fileOperations() }
+            if input.contract.selectedPhase == .batchConflicts { batchEvidence = try await batchConflicts() }
             if input.contract.selectedPhase.isTransfer {
                 transferEvidence = try await transferSurvivesClose(tab: tab, driver: driver)
                 if isQuitPhase { return } // Native termination owns the only store closes and final reply.
@@ -490,7 +563,7 @@ struct AppRealSessionFailure: Error {
             }
             let finalManager = await manager.snapshot(), closedFiles = await facts.closedServices
             try check("window-close-awaited-files", finalManager.isClosed && closedFiles == (terminalOnly ? 0 : 1))
-            if input.contract.selectedPhase == .transferSurvivesClose {
+            if input.contract.selectedPhase == .transferSurvivesClose || input.contract.selectedPhase == .batchConflicts {
                 let open = await facts.openHandleCount(), forced = await facts.shutdownClosedHandles
                 let opens = await facts.successfulOpens, closes = await facts.successfulCloses
                 try check("transfer-public-handles-closed-without-shutdown-rescue", open == 0 && forced == 0 && opens == closes)
@@ -900,12 +973,176 @@ struct AppRealSessionFailure: Error {
             approvedDeletePlanIDs: plans, deletedPathsBase64: deleted, unselectedNeighborSHA256Before: neighborBefore.sha256,
             unselectedNeighborSHA256After: neighborAfter.sha256, remoteRootAbsent: true, localKnownSourceAndDownloadsRemoved: true)
     }
+    private func batchConflicts() async throws -> BatchEvidence {
+        let scope = try AppRealBatchScope(runID: input.contract.runID), dataset = try store.prepareBatch(scope)
+        let localManifest = try store.verifyBatch(scope), root = try RemotePath(scope.root), home = try RemotePath("/fixture/home")
+        let manager = model.files.manager, initial = try model.files.transferContext(upload: false), bindings = await facts.bindings
+        guard (await manager.snapshot()).jobs.isEmpty, bindings.count == 1, let binding = bindings.first else { throw AppRealIntegrationFailure.failedCheck }
+        var gate = AppRealBatchGate(), decisions: [BatchEvidence.Decision] = []
+        func sameService() async throws {
+            let current = try model.files.transferContext(upload: false)
+            guard model.files.manager === manager, current.serviceID == initial.serviceID, current.hostID == initial.hostID,
+                  current.lifetime == initial.lifetime, await facts.bindings == bindings, await facts.connectionAttempts == 1 else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        func browse(_ path: RemotePath) async throws {
+            try await type("files.path", String(decoding: path.bytes, as: UTF8.self)); try await click("files.go")
+            try await wait { self.model.files.path == path && !self.model.files.busy || self.model.files.issue != nil }
+            guard model.files.issue == nil, model.files.state == .ready else { throw AppRealIntegrationFailure.failedCheck }
+            try await sameService()
+        }
+        try check("batch-fixed-home-one-original-service", model.files.path == home)
+        try await click("files.mkdir"); try await type("files.operation.name", String(decoding: root.name!.bytes, as: UTF8.self))
+        try await click("files.mkdir.risk"); try await click("files.operation.confirm")
+        try await wait { !self.model.files.busy && self.model.files.entries.contains { $0.name == root.name } || self.model.files.issue != nil }
+        guard await facts.ownedPaths()[root.bytes] == true, model.files.issue == nil else { throw AppRealIntegrationFailure.failedCheck }
+        try await browse(root); try check("batch-new-owned-root-empty", model.files.entries.isEmpty)
+        try await click("files.probe.prepare"); try await wait { self.model.files.probeReview != nil && !self.model.files.busy }
+        guard let probe = model.files.probeReview, probe.plan.parent == root else { throw AppRealIntegrationFailure.failedCheck }
+        try await click("files.probe.review"); try await click("files.probe.approve"); try await click("files.probe.execute")
+        try await wait { self.model.files.lastProbeResult != nil && !self.model.files.busy }
+        guard let result = model.files.lastProbeResult, result.passed, result.retainedPaths.isEmpty else { throw AppRealIntegrationFailure.failedCheck }
+        let context = try model.files.transferContext(upload: true)
+        guard context.confirmation?.serverBinding.uuidString == binding else { throw AppRealIntegrationFailure.failedCheck }
+        func jobs(_ ids: [UUID]) async throws -> [TransferJobSnapshot] {
+            let all = await manager.snapshot().jobs
+            guard all.count == gate.jobs.count, Set(all.map(\.id)) == Set(gate.jobs.map(\.id)), all.allSatisfy({ gate.current(.actual($0)) }) else { throw AppRealIntegrationFailure.failedCheck }
+            return all.filter { ids.contains($0.id) }
+        }
+        func upload(_ urls: [URL], stage: AppRealBatchScope.Stage) async throws -> [UUID] {
+            try await sameService(); let previous = Set(gate.jobs.map(\.id))
+            model.files.pathPicker.testSelection = urls; try await click("files.upload")
+            let deadline = ProcessInfo.processInfo.systemUptime + 30
+            while true {
+                let all = await manager.snapshot().jobs, added = all.filter { !previous.contains($0.id) }
+                guard all.count <= previous.count + urls.count else { throw AppRealIntegrationFailure.failedCheck }
+                if added.count == urls.count {
+                    try gate.admit(added.map(AppRealBatchGate.Snapshot.actual), stage: stage, scope: scope, hostID: context.hostID, serviceID: context.serviceID)
+                    return added.map(\.id)
+                }
+                guard model.files.issue == nil, ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        func reply(_ job: TransferJobSnapshot, stage: AppRealBatchScope.Stage, risk: Bool) async throws {
+            guard let request = job.pendingDecision else { throw AppRealIntegrationFailure.failedCheck }
+            try gate.decision(.actual(request), job: .actual(job), stage: stage, scope: scope, risk: risk)
+            let current = try await jobs([job.id])
+            guard current.first?.pendingDecision == request else { throw AppRealIntegrationFailure.failedCheck }
+            try await click("transfer.decision." + job.id.uuidString)
+            let path: RemotePath, answer: String, apply: Bool
+            if risk {
+                guard case .risk(.remotePathChecksAreNotAtomic(let value)) = request.question else { throw AppRealIntegrationFailure.failedCheck }
+                path = value; answer = "transfer.risk.accept"; apply = false
+                try await click(answer)
+            } else {
+                guard case .conflict(let conflict) = request.question else { throw AppRealIntegrationFailure.failedCheck }
+                path = conflict.destination
+                if stage == .skip {
+                    guard !decisions.contains(where: { $0.stage == .skip && $0.question == "conflict" }) else { throw AppRealIntegrationFailure.failedCheck }
+                    try await click("transfer.conflict.batch"); answer = "transfer.conflict.skip"; apply = true; try await click(answer)
+                } else {
+                    guard stage == .rename, !decisions.contains(where: { $0.stage == .rename && $0.question == "conflict" }) else { throw AppRealIntegrationFailure.failedCheck }
+                    try await type("transfer.conflict.name", AppRealBatchScope.alternate); answer = "transfer.conflict.rename"; apply = false; try await click(answer)
+                }
+            }
+            try await wait { self.delegate.mainWindow?.attachedSheet == nil }
+            guard (try await jobs([job.id])).first?.pendingDecision?.id != request.id else { throw AppRealIntegrationFailure.failedCheck }
+            decisions.append(BatchEvidence.Decision(stage: stage, jobID: job.id, generation: job.generation, batchID: job.request.batchID,
+                decisionID: request.id, question: risk ? "remotePathChecksAreNotAtomic" : "conflict", pathBase64: path.bytes.base64EncodedString(), nativeReply: answer, applyToBatch: apply))
+        }
+        func finish(_ ids: [UUID], stage: AppRealBatchScope.Stage) async throws -> [TransferJobSnapshot] {
+            let deadline = ProcessInfo.processInfo.systemUptime + 120
+            while true {
+                try await sameService(); let current = try await jobs(ids)
+                for job in current where job.pendingDecision != nil {
+                    guard let pending = job.pendingDecision else { throw AppRealIntegrationFailure.failedCheck }
+                    if case .risk = pending.question { try await reply(job, stage: stage, risk: true) }
+                    else { try await reply(job, stage: stage, risk: false) }
+                }
+                if current.count == ids.count && current.allSatisfy({ !$0.state.isActive }) {
+                    guard gate.terminal(current.map(AppRealBatchGate.Snapshot.actual), stage: stage, scope: scope) else { throw AppRealIntegrationFailure.failedCheck }; return current
+                }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw AppRealIntegrationFailure.timeout }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        func manifest(_ names: [String]) async throws -> [AppRealFileDigest] {
+            try await sameService()
+            return try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
+                guard Set(try await service.list(root, token: token).map { $0.name.bytes }) == Set(names.map { Data($0.utf8) }) else { throw AppRealIntegrationFailure.failedCheck }
+                var result: [AppRealFileDigest] = []
+                for name in names {
+                    let path = try root.appending(FileName(name)), size = try AppRealBatchScope.size(name == AppRealBatchScope.alternate ? AppRealBatchScope.names[0] : name)
+                    let attr = try await service.lstat(path, token: token)
+                    guard attr.kind == .regular, attr.size == UInt64(size) else { throw AppRealIntegrationFailure.failedCheck }
+                    let handle = try await service.open(path, mode: .read, token: token)
+                    do {
+                        var bytes = Data()
+                        while true {
+                            let chunk = try await service.read(handle, maxBytes: 8192, token: token)
+                            if chunk.isEmpty { break }; bytes += chunk
+                            guard bytes.count <= size else { throw AppRealIntegrationFailure.failedCheck }
+                        }
+                        try await service.closeHandle(handle)
+                        guard bytes.count == size else { throw AppRealIntegrationFailure.failedCheck }
+                        result.append(AppRealFileDigest(relativePathBase64: Data(name.utf8).base64EncodedString(), bytes: size, sha256: AppRealPrivateInput.sha(bytes)))
+                    } catch { try? await service.closeHandle(handle); throw error }
+                }
+                return result
+            }
+        }
+        let seedIDs = try await upload(dataset.seed, stage: .seed), seedJobs = try await finish(seedIDs, stage: .seed)
+        let seeded = try await manifest(AppRealBatchScope.names)
+        for digest in seeded {
+            guard let name = Data(base64Encoded: digest.relativePathBase64).flatMap({ String(data: $0, encoding: .utf8) }),
+                  digest.sha256 == AppRealPrivateInput.sha(try scope.payload(name, fresh: false)) else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        try check("batch-native-seed-two-succeeded-original-digests", seedJobs.count == 2)
+        let skipIDs = try await upload(dataset.fresh, stage: .skip), skipped = try await finish(skipIDs, stage: .skip)
+        let afterSkip = try await manifest(AppRealBatchScope.names)
+        try check("batch-native-apply-skip-two-zero-byte-jobs-originals-unchanged", afterSkip == seeded && decisions.filter { $0.stage == .skip && $0.question == "conflict" }.count == 1)
+        let renameIDs = try await upload([dataset.fresh[0]], stage: .rename), renamed = try await finish(renameIDs, stage: .rename)
+        let final = try await manifest(AppRealBatchScope.names + [AppRealBatchScope.alternate])
+        try check("batch-new-batch-single-transfer-rename-originals-preserved", Array(final.prefix(2)) == seeded && final.last?.sha256 == AppRealPrivateInput.sha(try scope.payload(AppRealBatchScope.names[0], fresh: true)) && decisions.filter { $0.stage == .rename && $0.question == "conflict" }.count == 1)
+        guard gate.jobs.count == 5, Set(gate.batches.values).count == 3, (try store.verifyBatch(scope)) == localManifest else { throw AppRealIntegrationFailure.failedCheck }
+        try check("batch-all-five-immutable-jobs-three-distinct-batches-local-sources-unchanged", true)
+        try await browse(home)
+        try await wait { self.find("files.entries", NSTableView.self) != nil }
+        guard let table = find("files.entries", NSTableView.self), let row = model.files.entries.firstIndex(where: { $0.name == root.name }), table.numberOfRows == model.files.entries.count else { throw AppRealIntegrationFailure.nativeControl }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); try await Task.sleep(for: .milliseconds(100))
+        try await click("files.delete"); try await click("files.delete.prepare")
+        try await wait { self.model.files.deleteReview != nil && !self.model.files.busy }
+        guard let review = model.files.deleteReview, review.serviceID == context.serviceID, review.plan.root == root,
+              review.plan.canExecute, review.plan.linkPolicy == .reject,
+              scope.exactDelete(review.plan.items.map { ($0.path.bytes, $0.action == .removeFile ? "file" : $0.action == .removeEmptyDirectory ? "directory" : "link") }, issues: review.plan.issues.count) else { throw AppRealIntegrationFailure.cleanup }
+        try await click("files.delete.review"); try await click("files.delete.acknowledge"); try await click("files.delete.execute")
+        try await wait { self.model.files.lastDeleteReport?.planID == review.id && !self.model.files.busy }
+        guard let deletion = model.files.lastDeleteReport, deletion.allSucceeded,
+              Set(deletion.items.map { $0.path.bytes }) == Set(review.plan.items.map { $0.path.bytes }) else { throw AppRealIntegrationFailure.cleanup }
+        try await sameService()
+        try await manager.withServiceOperation(serviceID: context.serviceID, hostID: context.hostID.uuidString) { service, token in
+            do { _ = try await service.lstat(root, token: token); throw AppRealIntegrationFailure.cleanup }
+            catch let error as FileServiceError where error.kind == .notFound { }
+        }
+        guard await facts.ownedPaths().isEmpty else { throw AppRealIntegrationFailure.cleanup }
+        try store.cleanupBatch(scope)
+        try check("batch-native-reviewed-delete-exact-root-and-local-dataset-clean", true)
+        func evidence(_ jobs: [TransferJobSnapshot]) -> [BatchEvidence.TerminalJob] {
+            jobs.map { BatchEvidence.TerminalJob(identity: .init(.actual($0)), state: $0.state.rawValue, bytes: $0.transferredBytes,
+                pending: $0.pendingDecision != nil, retainedTemporaryCount: $0.retainedTemporaryPaths.count) }
+        }
+        return BatchEvidence(serviceID: context.serviceID, hostID: context.hostID, lifetime: context.lifetime, serverBinding: binding,
+            seedJobs: evidence(seedJobs), skippedJobs: evidence(skipped), renamedJobs: evidence(renamed), decisions: decisions,
+            localManifest: localManifest, seededRemote: seeded, afterSkipRemote: afterSkip, finalRemote: final, deletePlanID: review.id,
+            deletedPathsBase64: deletion.items.map { $0.path.bytes.base64EncodedString() }, sameManagerServiceLifetime: true,
+            connectionAttempts: await facts.connectionAttempts, remoteRootAbsent: true, localDatasetRemoved: true)
+    }
     private func persistReport(failure: String?, removed: Bool) async throws {
         let report = await Report(scanSeconds: options.scanSeconds, passed: failure == nil, failureCode: failure, checks: checks,
             actualOwnedSSHPID: actualPID, sshClosedAndPIDReleased: sshReleased, filesConnectionAttempts: facts.connectionAttempts,
             returnedProductionServices: facts.returnedProductionServices, actualLists: facts.lists, filesCloseAwaited: facts.closedServices,
             actualListRawNames: facts.latestListRawNames, forbiddenCredentialCalls: credentials.forbiddenCalls, localStoreRemoved: removed,
-            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence,
+            phase: input.contract.selectedPhase.rawValue, transfer: transferEvidence, windowTransfer: windowEvidence, quitTransfer: quitEvidence, fileOperations: fileOperationsEvidence, terminalOperations: terminalEvidence, sessionOperations: sessionsEvidence, batchConflicts: batchEvidence,
             failedStage: failure != nil && input.contract.selectedPhase.isTransfer ? transferDiagnostics.stage : nil,
             diagnostics: input.contract.selectedPhase.isTransfer ? transferDiagnostics : nil,
             remainingOwnedRemotePathsBase64: facts.ownedPaths().keys.map { $0.base64EncodedString() }.sorted(),

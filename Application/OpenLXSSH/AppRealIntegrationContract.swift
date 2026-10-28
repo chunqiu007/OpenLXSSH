@@ -56,7 +56,7 @@ enum AppRealIntegrationFailure: String, Error {
     case arguments, authorization, contract, unsafeInput, provenance, fingerprint, signature, isolation, timeout, nativeControl, unexpectedAuthentication, failedCheck, cleanup, transferCompletedBeforeLifecycleAction
 }
 enum AppRealIntegrationPhase: String, Codable, Sendable {
-    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect"
+    case readOnly = "read-only", transferSurvivesClose = "transfer-survives-close", windowContinueCancel = "window-continue-cancel", quitContinueCancel = "quit-continue-cancel", fileOperations = "file-operations", terminalSearchPaste = "terminal-search-paste", sessionsReconnect = "sessions-reconnect", batchConflicts = "batch-conflicts"
     var isTransfer: Bool { self == .transferSurvivesClose || self == .windowContinueCancel || self == .quitContinueCancel }
     var isTerminalOnly: Bool { self == .terminalSearchPaste || self == .sessionsReconnect }
 }
@@ -226,6 +226,107 @@ struct AppRealFileScope: Sendable {
             && entries.allSatisfy { expected[$0.0] == $0.1 }
     }
 }
+struct AppRealBatchScope: Sendable {
+    enum Stage: String, Codable, Sendable { case seed, skip, rename }
+    let runID: String
+    init(runID: String) throws {
+        guard let id = UUID(uuidString: runID), id.uuidString.lowercased() == runID else { throw AppRealIntegrationFailure.contract }
+        self.runID = runID
+    }
+    var root: String { "/fixture/home/openlxssh-app-batch-" + runID }
+    static let names = ["a.bin", "b.bin"], alternate = "alternate-a.bin"
+    static func size(_ name: String) throws -> Int {
+        guard let index = names.firstIndex(of: name) else { throw AppRealIntegrationFailure.contract }; return (index + 1) * 4096
+    }
+    func payload(_ name: String, fresh: Bool) throws -> Data {
+        let count = try Self.size(name), seed = Data(("OpenLXSSH batch " + runID + (fresh ? " Fresh/" : " Seed/") + name + "\n").utf8)
+        var data = Data(); while data.count < count { data.append(seed.prefix(min(seed.count, count - data.count))) }; return data
+    }
+    func allowsRisk(_ path: Data) -> Bool { (Self.names + [Self.alternate]).contains { path == Data((root + "/" + $0).utf8) } }
+    func exactDelete(_ items: [(Data, String)], issues: Int) -> Bool {
+        let expected = Dictionary(uniqueKeysWithValues: (Self.names + [Self.alternate]).map { (Data((root + "/" + $0).utf8), "file") } + [(Data(root.utf8), "directory")])
+        return issues == 0 && items.count == 4 && Set(items.map(\.0)).count == 4 && items.allSatisfy { expected[$0.0] == $0.1 }
+    }
+}
+#if HOST_PROBE
+import OpenLXSSHFiles
+
+struct AppRealBatchGate: Sendable {
+    struct Decision: Equatable, Sendable {
+        let id: UUID, jobID: UUID, generation: UUID
+        let question: TransferDecisionQuestion
+        static func actual(_ value: TransferDecisionRequest) -> Self { .init(id: value.id, jobID: value.jobID, generation: value.generation, question: value.question) }
+    }
+    struct Snapshot: Sendable {
+        let id: UUID, generation: UUID, retryOf: UUID?
+        let request: TransferRequest, state: TransferJobState, transferredBytes: UInt64, cancellationRequested: Bool
+        let pendingDecision: Decision?, error: FileServiceError?, items: [TransferItemResult]
+        var retainedTemporaryPaths: [RemotePath] { items.compactMap(\.retainedTemporary) }
+        static func actual(_ value: TransferJobSnapshot) -> Self {
+            .init(id: value.id, generation: value.generation, retryOf: value.retryOf, request: value.request, state: value.state,
+                transferredBytes: value.transferredBytes, cancellationRequested: value.cancellationRequested,
+                pendingDecision: value.pendingDecision.map(Decision.actual), error: value.error, items: value.items)
+        }
+    }
+    struct Job: Codable, Equatable, Sendable {
+        let id: UUID, generation: UUID, batchID: UUID, sourceServiceID: UUID, destinationServiceID: UUID
+        let hostID: String, sourceBase64: String, destinationBase64: String
+        init(_ job: Snapshot) {
+            id = job.id; generation = job.generation; batchID = job.request.batchID; hostID = job.request.hostID
+            sourceServiceID = job.request.source.serviceID; destinationServiceID = job.request.destination.serviceID
+            sourceBase64 = job.request.source.path.bytes.base64EncodedString(); destinationBase64 = job.request.destination.path.bytes.base64EncodedString()
+        }
+    }
+    private(set) var jobs: [Job] = []
+    private(set) var batches: [AppRealBatchScope.Stage: UUID] = [:]
+    private(set) var decisions: Set<UUID> = []
+    mutating func admit(_ values: [Snapshot], stage: AppRealBatchScope.Stage, scope: AppRealBatchScope, hostID: UUID, serviceID: UUID) throws {
+        let names = stage == .rename ? [AppRealBatchScope.names[0]] : AppRealBatchScope.names
+        guard batches[stage] == nil, values.count == names.count, Set(values.map(\.id)).count == values.count,
+              Set(values.map(\.generation)).count == values.count, Set(values.map { $0.request.batchID }).count == 1,
+              let first = values.first, !batches.values.contains(first.request.batchID),
+              Set(values.map { $0.request.source.serviceID }).count == 1,
+              Set(values.map { $0.request.source.path.bytes }) == Set(names.map { Data(("/" + $0).utf8) }),
+              values.allSatisfy({ value in
+                  !jobs.contains { $0.id == value.id || $0.generation == value.generation } && value.retryOf == nil &&
+                  value.request.hostID == hostID.uuidString && value.request.destination.serviceID == serviceID &&
+                  value.request.source.serviceID != serviceID && value.request.kind == .file &&
+                  value.request.destination.path.bytes == Data(scope.root.utf8) + value.request.source.path.bytes
+              }) else { throw AppRealIntegrationFailure.failedCheck }
+        batches[stage] = first.request.batchID; jobs += values.map(Job.init)
+    }
+    func current(_ job: Snapshot) -> Bool { jobs.contains(Job(job)) && job.request.kind == .file && job.retryOf == nil && !job.cancellationRequested }
+    mutating func decision(_ request: Decision, job: Snapshot, stage: AppRealBatchScope.Stage,
+                           scope: AppRealBatchScope, risk: Bool) throws {
+        guard current(job), batches[stage] == job.request.batchID, job.pendingDecision == request,
+              request.jobID == job.id, request.generation == job.generation, !decisions.contains(request.id) else { throw AppRealIntegrationFailure.failedCheck }
+        if risk {
+            guard job.state == .waitingRisk, case .risk(.remotePathChecksAreNotAtomic(let path)) = request.question,
+                  path == job.request.destination.path || (stage == .rename && path.bytes == Data((scope.root + "/" + AppRealBatchScope.alternate).utf8)),
+                  scope.allowsRisk(path.bytes) else { throw AppRealIntegrationFailure.failedCheck }
+        } else {
+            guard stage != .seed, job.state == .waitingConflict, case .conflict(let conflict) = request.question,
+                  conflict.source == job.request.source.path, conflict.destination == job.request.destination.path,
+                  conflict.existing.kind == .regular, let name = job.request.source.path.name,
+                  conflict.existing.size == UInt64(try AppRealBatchScope.size(String(decoding: name.bytes, as: UTF8.self))) else { throw AppRealIntegrationFailure.failedCheck }
+        }
+        decisions.insert(request.id)
+    }
+    func terminal(_ values: [Snapshot], stage: AppRealBatchScope.Stage, scope: AppRealBatchScope) -> Bool {
+        let expected = jobs.filter { $0.batchID == batches[stage] }
+        guard values.count == (stage == .rename ? 1 : 2), values.count == expected.count,
+              Set(values.map(\.id)) == Set(expected.map(\.id)) else { return false }
+        return values.allSatisfy { job in
+            guard current(job), job.pendingDecision == nil, job.error == nil, job.retainedTemporaryPaths.isEmpty, job.items.count == 1,
+                  let item = job.items.first, item.source == job.request.source.path else { return false }
+            if stage == .skip { return job.state == .skipped && job.transferredBytes == 0 && item.state == .skipped && item.destination == job.request.destination.path }
+            let target = stage == .rename ? Data((scope.root + "/" + AppRealBatchScope.alternate).utf8) : job.request.destination.path.bytes
+            guard let name = job.request.source.path.name, let size = try? AppRealBatchScope.size(String(decoding: name.bytes, as: UTF8.self)) else { return false }
+            return job.state == .succeeded && job.transferredBytes == UInt64(size) && item.state == .succeeded(bytes: UInt64(size)) && item.destination.bytes == target
+        }
+    }
+}
+#endif
 struct AppRealFileDigest: Codable, Equatable, Sendable {
     let relativePathBase64: String
     let bytes: Int

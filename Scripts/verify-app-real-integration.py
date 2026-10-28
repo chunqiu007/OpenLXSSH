@@ -59,7 +59,7 @@ def build(reuse_diagnostic=False):
     env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': str(work / 'home'), 'LANG': 'C', 'LC_ALL': 'C',
            'TMPDIR': str(work / 'tmp') + '/', 'CLANG_MODULE_CACHE_PATH': str(work / 'clang-cache'),
            'SWIFTPM_MODULECACHE_OVERRIDE': str(work / 'module-cache'), 'PYTHONDONTWRITEBYTECODE': '1', 'GIT_OPTIONAL_LOCKS': '0'}
-    record = {'taskID': 'APP-REAL-SESSIONS-RECONNECT-PREP-A' if reuse_diagnostic else 'APP-REAL-TRANSFER-PREP-A', 'liveExecuted': False, 'fixtureRead': False, 'dockerInvoked': False,
+    record = {'taskID': 'APP-REAL-BATCH-CONFLICT-PREP-A' if reuse_diagnostic else 'APP-REAL-TRANSFER-PREP-A', 'liveExecuted': False, 'fixtureRead': False, 'dockerInvoked': False,
               'resolutionRequested': False, 'status': 'building', 'startedAt': time.time()}
     commands = []
     inputs = [ROOT / 'OpenLXSSH.xcodeproj/project.pbxproj', ROOT / 'OpenLXSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved',
