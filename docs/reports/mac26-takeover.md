@@ -113,3 +113,11 @@ spctl实际exit3/Gatekeeper拒绝，未notary或上传，未安装/运行该新�
 200审查后旧relay42333正常TERM/exit0，898accepted/0rejected/898finished/cleanup_failed0，端口释放；没有重跑旧测试。新relay55592为90000秒有限进程，严格身份及日志见新6F5F0F5C目录handoff-30b90068-42f6-41dd-9de2-1bc9fc9b4905.json。driver55678/UID501/birth1793246237.956792复用cdf47ac冻结来源，10-29 11:58:21.102844+0800五会话认证后计时。主管通过既有严格identity C库另核driver/五直属SSH/relay，后续多个完整样本确认五SSH；记录primary-start-review.json。最早预计10-30 11:58:21以后，最终仍需86400实际awake/continuous及wall/连续性/资源/cleanup证据。没有改时钟、电源或建立保活。
 
 用户明确选择独立定时任务后，实际创建`openlxssh-24h-terra`：ACTIVE/local原工作区/gpt-6.1-terra/medium/每30分钟，工具及保存配置均核对。只监测本轮身份与原证据；正常安静，不重复启动或测试，新异常/结束才通知，完成该用途后停用。新DeveloperID候选的实际helper挑战及公证/双机人工验收留待长测后，不在24h期间启动同bundle正式App。整体仍未完成。
+
+## 五会话长测中断调查（2026-10-29 23:25）
+
+6F5F0F5C原始证据1026行（start1/connected1/sample1024），最后21:36:35.842；connected至末样本awake/continuous34694.635287秒、wall34694.739441秒，仅约9h38m14.739秒，未达到86400。主管独立逐行核原六身份及完整指标，无坏点，最大样本awake间隔34.251798秒；这些证据不能填补缺少的end/cleanup。原JSONL SHA256 f953594a6ff270d0bd0c0e4eb6b9c5e4887011ff4eee266f6d58f8a72daadcb3，原数据和五个session目录保留。严格identity查询driver/五SSH/relay均GONE，批准端口无监听；不是正常cleanup已证。
+
+Terra在22:00发现中断，写observer-final-review.json并实际暂停openlxssh-24h-terra。原执行工程师对自己拥有的session24279/9307各查询一次均Unknown process id；两个console仅启动文本，无退出码/信号/result/relay-stopped。系统统一日志在21:37:00.365记录driver55678 termination reported by proc_exit，21:37:05.515 ChatGPT退出，21:37:05.705重新spawn ChatGPT72402。宿主uptime连续，pmset限定窗口未见Sleep/Wake；原keyonly容器ed38148af68e仍healthy、StartedAt仍10-28、OOMKilled=false。时间对应提示桌面端重启关联，但缺退出信号/父链终止原因，不能断言已证因果或SSH产品Bug。
+
+独立记录在该原始目录primary-interruption-review-4ff301ea-6bf0-4718-beb0-658b0e694f11.json、primary-system-exit-6b153fbf-fd6a-4ee6-8a04-ef50197eaaf7.json、exit-session-check-c9cc139f-6938-4c72-b3fb-6fa8f9a9beca.json。没有发送信号、删除残留、更改产品或重跑；下一步确认21:37桌面端操作，改善有限测试进程存续与退出证据，再运行全新连续24h。原200通过及已验分项仍有效。
