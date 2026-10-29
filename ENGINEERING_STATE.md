@@ -4,16 +4,18 @@
 
 ## 当前权威检查点（2026-10-29，CONTINUE）
 
-- 正式产品代码仍来自3ee3a68的1.0.0/build3；当前HEAD cdf47ac只新增长测工具串行准备及验收/指南记录，没有改产品认证或终端实现。后续源审/本地提交允许，不推送/生产连接/Apple上传。
+- 新200+20已完成并独立复核：6FE08664案424行/2538.540682秒、200auth/20cancel/220closed、695资源样本全complete，全部closed与cleanup均FD5/PTY0，driver47157已不在、sessions目录消失。closed RSS前20均37573427B/后20均36481434B，无本案持续增长证据；仅driver/所观察SSH与helper范围，不宣称SwiftTask全数或App零泄漏。报告primary-200-review-4d820158-588c-49eb-a310-2abb34fe0c8b.json。旧失败不改。relay42333已正常TERM/exit0，accepted898/rejected0/finished898/cleanup_failed0，原端口释放。只读pmset当前AC sleep0/displaysleep0，未更改电源设置。
+
+- 正式产品代码仍来自3ee3a68的1.0.0/build3；候选来源4616677相对产品基线只包含长测工具串行准备及验收/指南记录，没有改产品认证或终端实现。后续源审/本地提交允许，不推送/生产连接/Apple上传。
 - 成本分工：主管处理复杂诊断与关键小修；常规测试/构建/回查明确指定gpt-6.1-terra / medium。本轮两Terra已实际完成有限GUI资源、28项测试、干净源driver构建/验证；没有需交ZCode的大规模代码任务。
 - 正式五会话有限场景与退出观测已独立审过，125.139 MiB均/125.516峰（App+SSH RSS）、公开输出峰135.438 MiB，五SSH正常退役，App暖态FD16/PTY0。原突发第五扫描失败仍PARTIAL，未确证拒绝原因，未改产品或扩中继限额。
-- 唯一新driver-c12524dc已实际开始200+20：PID47157/PPID47156/UID501/birth1793243488.663325，2026-10-29 11:11:28+0800，Terra session45463，原始stability-6FE08664-AE01-4700-B38F-095D47829596/evidence.jsonl位于既有DerivedData/Takeover/mac26-8834149cacad467585fd03a34f6379ec。source cdf47ac dirty=false，主helper hash/163源快照/严格签名已核，root另静态复核。测试正在执行，不能先标通过。24h尚未启动，旧回查已删除。
+- 唯一实际24h已启动：2026-10-29 11:58:21.102844+0800五会话connected，driver55678/PPID55677/UID501/birth1793246237.956792，Terra session24279；relay55592/PPID55591/UID501/birth1793246174.567155/session9307，max-duration90000。新原始目录stability-6F5F0F5C-4663-4D0F-AD5A-250FAAD0F4A8（仍在既有Takeover根），handoff-30b90068-42f6-41dd-9de2-1bc9fc9b4905.json记录完整命令/日志/身份，主管primary-start-review.json实际核driver+五SSH+relay严格身份及后续样本完整。source cdf47ac dirty=false/163源核过，未重建。最早墙钟预计2026-10-30 11:58:21，最终以真实三钟/连续会话/cleanup检查为准，当前RUNNING，不能提前标通过。
 - post-close leaks274项/9232B保留。主管自建仅17行标准SwiftUI公开控件对照（无任何产品导入/SSH/用户数据）在相同宿主也复现：baseline288项/14400B，12次展开收起后317项/15728B，并出现13个AXObserverCookie及NSArray增长；原App244NSArray+30AXObserverCookie。这是独立于SSH代码的UI/观察路径复现，不宣称原App无泄漏或最终OS归因已证；作为系统UI/自动化相关局限留档，不无根据重写产品。对照45520已正常退出，原数据不改。
 - 正式App私钥MFA三轮及密码MFA三轮均已进入真实shell并有唯一公开marker；独立密码MFA SFTP也已就绪、列出根目录21项。新SFTP session b552fc09c6fff1467f984650：connect1793243113395ms、A首次见1793243129355、A/B/C提交1793243180491/3183865/3187087、zero空通知立即确认1793243189371；ready明确观察1793243258734仅145.339s上界，不能当首次就绪耗时。原过期/缺C/超时案仍PARTIAL。fixture LoginGraceTime90，原脚本C后额外等待10秒可能撞窗口，但无总时序不能确证；只改测试动作等待/空通知即时确认，没有改产品/服务器超时或安全规则。所有精确本地/服务器挑战清理，新认证自然扫掉原过期残留，原失败不改绿。
-- MFA测试后正式App正常退出，200期间禁止正常App/API消费者同跑。运行时独占交Terra测试工程师，完成后先主管审查200原结果，再启动唯一实际五会话24h。
-- 用户已明确批准长测后使用独立定时任务、gpt-6.1-terra/medium、每30分钟（可产生独立任务记录）。项目ID6ecb2326-68f3-4568-b9b0-18f3703560a1；只在真实长测开始且身份/证据记录后创建，结束停用，健康时安静。
-- 用户已明确批准现有1.0.0/build3候选的DeveloperID签名和Apple时间戳请求（不上传App/私钥），不含公证上传。允许Terra现有配方执行并静态验证；签后具体ZIP/摘要/Apple目的地仍须单独确认，不能因当前许可自动notary。
-- key-kbd新gen4ba4ddb1aa91/22223/FPzzZ9B7L8srAQFmIettj3r/r1XwuSSfvZFAs8K2SmWvE；password-kbd genfcdd0ef62707/22224/FPM89ZPAwqBO3k4+50seWt4j0oCpqAamqWCicE+q1hibc。唯一有限relay42333/session56672仍在，当前MFA已退出并已交接200执行者。不得同时运行正式App与stability wrapper。
+- MFA测试后正式App正常退出；200已完成，现24h期间禁止正常App/API消费者同跑。运行时由唯一soak持有，不进行产品修改/新测试。DeveloperID新签名的实际helper认证挑战留待长测后验证，不能以无口令keyonly替代动态helper门。
+- 用户已明确批准长测后使用独立定时任务、gpt-6.1-terra/medium、每30分钟（可产生独立任务记录）。项目ID6ecb2326-68f3-4568-b9b0-18f3703560a1；真实启动并主管复核后已创建独立cron openlxssh-24h-terra，工具及保存配置均确认ACTIVE、gpt-6.1-terra/medium、每30分钟、local原目录。健康时安静，仅新异常/结束/必要人工通知，完成本轮收口后停用；旧heartbeat未恢复。
+- 用户已明确批准现有1.0.0/build3候选的DeveloperID签名和Apple时间戳请求（不上传App/私钥），不含公证上传。允许Terra现有配方执行并静态验证；签后具体ZIP/摘要/Apple目的地仍须单独确认，不能因当前许可自动notary。 新DeveloperID候选已按4616677干净源唯一生成：DerivedData/Distributions/1.0.0-3-4616677a3edc/89cfceaa-a6fb-45fd-8f67-07d430438ef0，ZIP e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8/7318818B。Terra配方及manifest复核0；主管另逐个核主/helper anchor+identifier/DeveloperID/同Team/Runtime/时间戳字段，均通过。主管最初-R少内联等号导致命令语法失败，修正记录在primary-developer-id-review.json，不当签名失败。spctl3仍拒绝，未安装/运行此签名新候选，notarized/uploaded=false。
+- key-kbd新gen4ba4ddb1aa91/22223/FPzzZ9B7L8srAQFmIettj3r/r1XwuSSfvZFAs8K2SmWvE；password-kbd genfcdd0ef62707/22224/FPM89ZPAwqBO3k4+50seWt4j0oCpqAamqWCicE+q1hibc。原有限relay42333/session56672已正常退出，当前仅新90000秒relay55592保留供24h。不得同时运行正式App与stability wrapper。
 - 已允许仅自建一次性Keychain测试；DeveloperID证书现可用，签名时间戳已获本轮明确批准，具体最终产物公证授权仍待按文档处理；第二台Mac/人工IME/Finder/企业及内层密码OTP仍需用户记录。以下各节是此前证据，状态冲突以本节及未来真实结果为准。
 
 ## 后续检查点（2026-10-29）

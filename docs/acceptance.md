@@ -1,6 +1,6 @@
 # OpenLXSSH V1.0 — 验收总表
 
-**接手更新（2026-10-28）：** 宿主macOS26.7.1，精确OpenSSH10.3兼容门及默认扫描10秒已审。真实一次性Keychain公开API生命周期/无授权人工回退已过；正式build3正常安装首次启动、UI记住→SSH登录→忘记→人工认证、中文粘贴、独立SFTP36B往返摘要一致、退出重开0会话已有新证据。首轮200计数完成但资源指标未知，最终failed仍保留，新工具采样与串行准备修复已审，200/24h未通过。正式Release资源测量正在执行；Developer ID证书已就绪，未公证。下文host15为历史基线，不因升级或局部通过改绿所有AC；以 `docs/reports/mac26-takeover.md` 和 `ENGINEERING_STATE.md` 接手章节为准。
+**接手更新（2026-10-29）：** 宿主macOS26.7.1，精确OpenSSH10.3兼容门及默认扫描10秒已审。真实一次性Keychain公开API生命周期/无授权人工回退已过；正式build3正常安装首次启动、UI记住→SSH登录→忘记→人工认证、中文粘贴、独立SFTP36B往返摘要一致、退出重开0会话已有新证据。首轮200计数完成但资源指标未知，最终failed仍保留，新工具采样与串行准备修复已审，新200+20真实驱动范围已通过（原失败仍保留），24h已真实启动、尚未完成；正式Release有限五会话/输出资源测量已审。Developer ID签名和Apple时间戳已完成，未公证。下文host15为历史基线，不因升级或局部通过改绿所有AC；以 `docs/reports/mac26-takeover.md` 和 `ENGINEERING_STATE.md` 接手章节为准。
 
 当前状态：**本轮host15受控分项已收口，OpenLXSSH V1.0整体验收仍未通过。** 真实SSH/SFTP四类认证、多提示/审批、2GiB/1000及异常已有分项证据；App上传跨关闭/隐藏、关窗/Quit、原生文件操作与批skip/rename/overwrite、正字节切标签、双标签/自然断线历史/手动重连、原生搜索/内存Bracketed Paste、加密key认证UI取消恢复/并发提示归属、真实预扫变化拒绝/原生信任管理，以及Vim/tmux/htop、公钥nested、正常保活+R2黑洞均经主管独立验收。当前App160tests/0failure、最终正式Debug/Release各一次arm64/min26静态编译/运行测试代码隔离通过，**不等macOS26运行或已发布Release**。原MFA fixture取消材料cleanupIncomplete、原黑洞control/-9等失败历史保留，不被恢复或后续通过追认。当前需满足的默认Keychain动作授权、目标mac26/200次/连续24h/Release压力资源、DeveloperID/具体产物Apple上传、双机/人工/企业和剩余工具合法条件见 `docs/release/acceptance-prerequisites.md`；不把这些必要门删除或以host15短测替代。
 
@@ -99,12 +99,12 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 
 | 验收 ID | 场景 | 必要证据 | 当前状态 / 证据 |
 | --- | --- | --- | --- |
-| AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | 待外部条件：最终Transport修复对应新driver-71e5e2da已重建/Development严格静态签名并主管独立record核验；准备offline34+6+12已有证据。隔离服务器现已就绪，正式driver仍要求macOS26；首轮新系统真实200auth/20cancel/220close已执行但6点指标未知，exit1保持failed；修复后的driver-a215d18a准备完成，待新必要验收，不降低或删检查过关。见 `docs/reports/p7-stability-driver-preparation.md` |
-| AC-29 | 5 个独立普通 SSH 会话真实连续运行 24 小时 | 实际起止时间、有效连接时长、采样、负载和错误；不以短测、改时钟或重启拼接冒充 | 待外部条件：有限真实驱动/连续计时判定已准备，不是长测；隔离服务已就绪，macOS26运行条件已具备，五会话24h仍未启动；已准临时回查将在真实启动后激活 |
+| AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | macOS26正式驱动范围通过：cdf47ac/driver-c12524dc，新6FE08664案424行、2538.541秒、200auth/20cancel/220closed、695资源样本完整；每次closed及cleanup均FD5/PTY0，末20次closed RSS均低于前20次，driver退出且sessions目录消失。主管独立报告primary-200-review-4d820158-588c-49eb-a310-2abb34fe0c8b.json。仅观察所属SSH/精确helper，kernel threads不冒充Swift任务，非完整App对象普查；旧1A8BB3F2案仍failed。 |
+| AC-29 | 5 个独立普通 SSH 会话真实连续运行 24 小时 | 实际起止时间、有效连接时长、采样、负载和错误；不以短测、改时钟或重启拼接冒充 | 正在执行，尚未通过：6F5F0F5C案2026-10-29 11:58:21+0800真实五会话connected，driver55678及五SSH/relay55592严格身份主管已核，后续完整样本保持五SSH；预计最早10-30 11:58以后。独立cron openlxssh-24h-terra实际gpt-6.1-terra/medium每30分钟回查，结束后复核连续时长/资源/cleanup并停用，不拼接或重跑。 |
 | AC-30 | 大量输出与快速标签切换 | 声明输入速率/持续时间；队列有界、UI 可响应，渲染与输入正确，停止压力后能恢复 | 进行中：五真实view/逻辑driver有限渲染输入压力，主管105tests及原生76检查/22轮、每view814108 bytes、heartbeat377.93ms、停止后恢复通过；不是SSH/PTY/Release性能验收，真实负载待环境。见 `docs/reports/p7-app-output-stress.md` |
 | AC-31 | 大文件和多文件传输 | 默认至少 2 GiB 单文件及 1,000 个小文件测试集，记录往返摘要、速度、峰值内存、取消/断线结果；资源不够时报告实际限制 | 进行中：真实2GiB/1000及Unicode四manifest、双向25%取消/权限/链接/服务能力/资源已核；主管R1新16MiB断连闭环通过；独立有界真实远端ENOSPC/write4+errno28/noOOM/原件保全及恢复通过。正式App/mac26/完整能力边界仍待，非整体通过。见 `docs/reports/real-sftp-file-acceptance.md`、`docs/reports/real-sftp-disconnect.md`、`docs/reports/real-sftp-disk-full.md` |
 | AC-32 | 关闭主窗口或退出后资源检查 | 无不应存在的所属 ssh/认证辅助进程、文件连接、PTY/FD 或终端对象 | 进行中：App关闭/退出Local任务及五view压力后closed/disposed5、weak0、warm/closedFD16；Transport超时泄漏已修且主管Release rights归零/子进程回收通过，见 `docs/reports/p7-transport-adversarial.md`。真实SSH/SFTP及macOS26整体资源仍未验 |
-| PERF-R | 空闲 <200 MB、5 普通会话 <500 MB 的努力目标 | Release、相同负载和计量方式，App＋所属子进程；记录均值/峰值/趋势与未达原因，属于报告项 | 未完成目标测量：HostProbe有限Local TimeProfiler/Leaks采样有局部证据，Allocations exit20无trace、Leaks空表不能推零泄漏，leaks-atExit短时0仅替代结果；非Release5真实会话。见 `docs/reports/p7-local-instruments.md` |
+| PERF-R | 空闲 <200 MB、5 普通会话 <500 MB 的努力目标 | Release、相同负载和计量方式，App＋所属子进程；记录均值/峰值/趋势与未达原因，属于报告项 | 有限Release目标测量已完成：正式build3五SSH持续319.87秒，App+SSH RSS均125.139/峰125.516 MiB；输出/切标签峰135.438 MiB，关闭后FD16/PTY0。RSS相加重复计算共享页，不能当footprint或24h趋势。Instruments三类有限attach通过；post-close真实leaks274项/9232B保留，标准SwiftUI对照复现相同AX/NSArray类增长，不证明零泄漏。见mac26接手报告。 |
 
 2 GiB 与 1,000 文件是执行基准的初始定义，不扩大产品功能；环境不足时不能直接将较小样本记为完整通过。基准中记录机器内存、macOS/SDK、版本、历史行数、终端尺寸、服务器配置、采样间隔与测量方法。共享内存计量与子进程汇总口径保持一致，避免单一数字误导。
 

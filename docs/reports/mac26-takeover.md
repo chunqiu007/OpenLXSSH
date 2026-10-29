@@ -97,3 +97,19 @@ recovery至closed包含最后关闭过渡，不把全168秒当5会话；closed�
 新唯一driver-c12524dc已于11:11:28+0800开始200+20，PID47157/UID501/birth1793243488.663325，stability-6FE08664-AE01-4700-B38F-095D47829596/evidence.jsonl，尚未结束不先标通过；relay42333原7200s预算在启动时尚余57m52s，四服务/FP/材料身份经当前核对。24h尚未启动；用户明确选择未来独立Terra/medium每30分钟监测，须在真实长测启动后创建。
 
 用户另明确批准当前同产品源码build3候选DeveloperID签名/Apple时间戳请求，不含公证上传；下一步骤仅现有配方生成与静态验证，不运行App干扰200，也不上传Apple公证。
+
+## DeveloperID候选（仍未公证）
+
+用户批准的签名/时间戳动作由Terra唯一运行既有配方完成，source4616677 dirty=false，产品源相较3ee3a68无差异；1.0.0/build3、arm64/min26、严格DeveloperID/同Team/Runtime/无权限，时间戳字段存在。新89cfceaa目录ZIP e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8、7318818B，App canonical-tree46904aed06a5f02942add8cf510c4229c8a528e0c3c8c02a1c6ce919cca12cd0。主d13a3629c8c0c07b420828e598b6d4b4af829fd332ccafe045e016bc9d47553a、helperffc38c2a198057769677d383e697789cae9faf67fad0480bcccfeed88415d554。配方及只读manifest核验各exit0，主管独立代码身份/锚/同Team/Runtime/时间戳检查0；原主管内联requirement缺等号的语法失败保留，不是签名失败。
+
+spctl实际exit3/Gatekeeper拒绝，未notary或上传，未安装/运行该新签名候选。200正在另一冻结driver进行，不把此静态包核验当整体通过。具体App/ZIP的公证批准与登录条件仍须最后处理。
+
+## 新200次验收收口（2026-10-29）
+
+唯一driver-c12524dc/cdf47ac于11:11:28启动，11:53:47实际结束。6FE08664原始证据424行，200次outer-auth、20次额外取消、220次关闭，最终completedDriverScope；wall2538.540682秒、awake/continuous2538.529963秒。主管独立读取全部行，695资源样本完整，所有closed及cleanup仅driver、FD5/PTY0，末20次closed RSS均36481434B低于前20次37573427B；PID47157已不在，精确sessions目录消失。独立报告`DerivedData/Takeover/mac26-8834149cacad467585fd03a34f6379ec/primary-200-review-4d820158-588c-49eb-a310-2abb34fe0c8b.json`，原JSONL SHA256 `9a479fc431a2f249978b4f9a5c28a4d5055238dc2b3646f8b1aa7af050c782fd`。这是正式Transport驱动范围通过，不是完整App/Swift任务计数、MFA或24h通过。旧failed200原样保留。
+
+## 唯一五会话24h启动与回查（2026-10-29）
+
+200审查后旧relay42333正常TERM/exit0，898accepted/0rejected/898finished/cleanup_failed0，端口释放；没有重跑旧测试。新relay55592为90000秒有限进程，严格身份及日志见新6F5F0F5C目录handoff-30b90068-42f6-41dd-9de2-1bc9fc9b4905.json。driver55678/UID501/birth1793246237.956792复用cdf47ac冻结来源，10-29 11:58:21.102844+0800五会话认证后计时。主管通过既有严格identity C库另核driver/五直属SSH/relay，后续多个完整样本确认五SSH；记录primary-start-review.json。最早预计10-30 11:58:21以后，最终仍需86400实际awake/continuous及wall/连续性/资源/cleanup证据。没有改时钟、电源或建立保活。
+
+用户明确选择独立定时任务后，实际创建`openlxssh-24h-terra`：ACTIVE/local原工作区/gpt-6.1-terra/medium/每30分钟，工具及保存配置均核对。只监测本轮身份与原证据；正常安静，不重复启动或测试，新异常/结束才通知，完成该用途后停用。新DeveloperID候选的实际helper挑战及公证/双机人工验收留待长测后，不在24h期间启动同bundle正式App。整体仍未完成。
