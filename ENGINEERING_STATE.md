@@ -1,8 +1,10 @@
 # OpenLXSSH — 工程状态
 
-更新：2026-10-28（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
+更新：2026-10-30（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
 ## 当前权威检查点（2026-10-29，CONTINUE）
+
+- **2026-10-30交付检查点：已公证可安装ZIP已生成并独立验证，整体人工验收仍待。** 用户告知profile OpenLXSSH-notary就绪后，Terra仅对已批准原ZIP提交一次；Apple submission422351c8-24a7-4b1a-9e94-57d552a2c954为Accepted，官方log statusCode0/issues=null/原上传SHA一致。独占Notarization/notary-5a0f9dad-3ef6-46fb-9a64-4c2b82e7fddd保留意图、命令、退出和Apple原日志；原候选/App/manifest未改。最终final/OpenLXSSH-1.0.0-build3-macOS-arm64.zip，7320217B、SHA256 52a29df7e1a6b4bb59b73e6e628340afbdcab2be6161ada9c55c7c2f0bcd3eca；附票据App树8222a1346a422f3d3bc0779a84ed8fe928d45c42199cc842cded7ea20c780efd。主/helper编译代码摘要不变，仅新增1716B非可执行票据Contents/CodeResources；现有候选布局检查不支持该附票据布局，故不改通用白名单，而逐节点核原树完全一致+唯一新增票据，并分别验证ZIP/签名/票据/Gatekeeper。主管另独立解压最终ZIP、核完整树/代码、strict/stapler/spctl均0且source=Notarized Developer ID，记录Takeover/final-package-review-534878b3-2bf9-401e-aae6-3313d64f9ed6。用该解压副本正常替换安装~/Applications/OpenLXSSH.app并保留旧版回退，安装后完整树及三项校验再过，CUA正常打开4测试主机/0标签/0传输，无绕过系统保护。只剩第二台Mac/人工IME-Finder-剪贴板/企业及内层SSH等明确人工验收；不把Apple接受当这些已完成。Terra已正常UI清理4条本轮fixture主机和2个无引用导入测试密钥副本，源fixture文件不动；主管另CUA确认0主机/0标签/0传输，PID78075/UID501/birth1793289597.579913为已安装最终App，保持主界面打开供用户使用，native-startup-review.json已落盘。没有新连接或长测。
 
 - **用户已明确批准具体候选Apple公证上传。** 授权仅覆盖source4616677、1.0.0/build3、89cfceaa目录OpenLXSSH.zip、SHA256 e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8、7318818B，目的为Apple公证/Gatekeeper安装验证；允许成功后附票据并另记最终分发归档摘要，不上传私钥或测试材料。用户明确尚未配置notarytool登录。原候选摘要与签名Team已重新核对；现在只缺用户本人在本机安全创建公证登录配置（建议profile名OpenLXSSH-notary）。不再次询问该原产物上传批准，不读取/枚举其他Keychain，不代输Apple账号或专用密码；配置完成后提交一次、保存submission ID并查询同一任务，不重复提交。尚未上传。
 

@@ -1,5 +1,13 @@
 # OpenLXSSH 公证交接
 
+## 已完成（2026-10-30交付检查点）
+
+用户已完成`OpenLXSSH-notary`配置。仅提交下方原批准ZIP一次，Apple submission `422351c8-24a7-4b1a-9e94-57d552a2c954`返回Accepted，官方log statusCode0/issues=null及上传SHA一致。
+
+最终分发包：`DerivedData/Notarization/notary-5a0f9dad-3ef6-46fb-9a64-4c2b82e7fddd/final/OpenLXSSH-1.0.0-build3-macOS-arm64.zip`，7,320,217字节，SHA256 `52a29df7e1a6b4bb59b73e6e628340afbdcab2be6161ada9c55c7c2f0bcd3eca`。同一Notarization目录的`release-manifest.json`及原命令/官方日志为完整记录，最终App已附公证票据。
+
+主管另从最终ZIP解压核完整树/代码、签名/票据/Gatekeeper全通过，再正常替换本机安装并正常GUI打开0会话；既有包完整回退保留。原候选App/ZIP/manifest冻结不改。下面凭据准备和原候选批准对象是历史交接，不再要求用户重新配置或重新批准、不得重复提交。第二台Mac及实际人工场景仍待。
+
 当前批准对象为1.0.0/build3、source4616677：
 
 - 归档：`DerivedData/Distributions/1.0.0-3-4616677a3edc/89cfceaa-a6fb-45fd-8f67-07d430438ef0/OpenLXSSH.zip`

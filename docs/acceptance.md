@@ -1,5 +1,7 @@
 # OpenLXSSH V1.0 — 验收总表
 
+**2026-10-30发布验证：** build3最终ZIP已完成Apple公证（422351c8… Accepted）、附票据、严格签名和Gatekeeper accepted；主管独立从最终ZIP解压/安装并正常启动，0会话。AC-34本机构建范围通过，最终归档摘要及完整原证据见工程状态顶部与mac26接手报告。第二台Mac及真实人工/企业场景尚未代验，整体仍待这些用户记录。
+
 **最新验收变更（2026-10-29）：** 用户明确接受本轮五真实会话连续约9h38m/1024完整样本，AC-29按变更标准通过；取消必须24h及重新长测条件。下方原24h中断记录保留，不再作为时长阻塞。当前进入DeveloperID签后安装/认证、公证与双机验收，整体尚未完成。
 
 **接手更新（2026-10-29）：** 宿主macOS26.7.1，精确OpenSSH10.3兼容门及默认扫描10秒已审。真实一次性Keychain公开API生命周期/无授权人工回退已过；正式build3正常安装首次启动、UI记住→SSH登录→忘记→人工认证、中文粘贴、独立SFTP36B往返摘要一致、退出重开0会话已有新证据。首轮200计数完成但资源指标未知，最终failed仍保留，新工具采样与串行准备修复已审，新200+20真实驱动范围已通过（原失败仍保留），24h运行约9h38m后中断、未通过；正式Release有限五会话/输出资源测量已审。Developer ID签名和Apple时间戳已完成，未公证。下文host15为历史基线，不因升级或局部通过改绿所有AC；以 `docs/reports/mac26-takeover.md` 和 `ENGINEERING_STATE.md` 接手章节为准。
@@ -119,8 +121,8 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 | 验收 ID | 必须结果 | 当前状态 / 证据 |
 | --- | --- | --- |
 | AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 候选范围通过：1.0.0/build3、source4616677、89cfceaa DeveloperID App/ZIP+manifest已唯一生成并独立核arm64/min26/依赖许可/辅助程序/Runtime/归档摘要；完整ZIP摘要见工程状态。未公证，最终分发产物待公证后另记，不把候选当已发布。 |
-| AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 签名与时间戳已完成并独立核验，同Team/Runtime/无绕过权限；用户已明确批准89cfceaa具体ZIP上传Apple公证，尚缺用户本人配置notarytool登录，未提交。原spctl3拒绝保留，待公证后复验。 |
-| AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 本机构建范围通过：DeveloperID build3正常替换安装、真实manual-password helper/shell、唯一新profile保存→退出重开0会话→自动认证/shell→忘记→人工回退取消→删除本轮profile与正常退出，主管另CUA实际交互/签名摘要/已观察PID和端口释放复核。原Development包完整保留。非所有跨版本升级组合，物理Keychain删除未另查询；最终公证后安装与第二台Mac另验。见mac26接手报告。 |
+| AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 通过：用户授权原ZIP只提交一次，Apple422351c8… Accepted/statusCode0/issues=null；独立副本附票据，最终ZIP由主管另解压并严验主/helper、stapler和spctl全部0，source=Notarized Developer ID，同Team/Runtime/无绕过权限。原内部候选未公证时spctl3记录保留；不关闭系统保护。 |
+| AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 本机构建范围通过：DeveloperID build3正常替换安装、真实manual-password helper/shell、唯一新profile保存→退出重开0会话→自动认证/shell→忘记→人工回退取消→删除本轮profile与正常退出，主管另CUA实际交互/签名摘要/已观察PID和端口释放复核。最终公证ZIP另独立解压/正常替换安装，完整树/签名/票据/Gatekeeper通过且正常GUI启动0会话，原包回退保留。非所有跨版本升级组合，物理Keychain删除未另查询；第二台Mac另验。见mac26接手报告。 |
 | AC-36 | 朋友的第二台 Apple Silicon/macOS 26 正常安装，SSH/MFA、终端、SFTP 与退出实际验收 | 待外部条件：尚未安排第二台 Mac 操作 |
 | AC-37 | 用户在公司允许的实际环境手动覆盖适用的认证/审批与嵌套 SSH，记录范围及结果，无秘密进入报告 | 待外部条件：尚未安排实际企业场景验收 |
 | AC-38 | 安装/使用/已知限制说明、阶段审查与本地提交齐全；没有遗漏的必要未完成项 | 进行中：使用说明 `docs/user-guide.md`、候选说明与 `docs/release/acceptance-prerequisites.md` 已写，明确开发中/未验项；必要功能/Release/外部验收仍未完成 |

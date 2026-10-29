@@ -137,3 +137,16 @@ Terra在独占devid-native-auth-8252c43d-ae23-42f3-8c5d-a2240808f290记录正常
 result.json、persist-result-1cf8260b-1112-46fc-afb5-687e66d4e167.json、两relay.log和primary-runtime-review.json保留于上述独占目录。当前安装DeveloperID build3，签名新候选仍未公证、未上传；具体ZIP SHA256仍e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8/7318818B，源4616677的产品/打包输入至今无差异。不重建无变化候选，下一步仅对该具体产物请求Apple公证批准及用户安全准备登录配置。双机/人工IME/Finder/企业与内层SSH记录仍待，不因此宣告整体完成。
 
 自动回查曾将memory误写到字面目录$CODEX_HOME；主管确认仅该回查memory和两级目录，未跟踪/无链接/当前UID，将全目录原样保存在ignored Takeover/misplaced-automation-memory-fed7bef1-af8c-489c-bedd-3b31ae637880，未删除或提交其内容。
+
+
+## Apple公证、最终归档与正常安装（2026-10-30交付检查点）
+
+用户配置OpenLXSSH-notary并明确告知后，Terra只向Apple提交已批准原ZIP一次：submission 422351c8-24a7-4b1a-9e94-57d552a2c954，Accepted/statusCode0/issues=null，官方上传SHA e91a18d2…7a8与原对象完全相同。所有意图、submit/wait/log、实际命令/退出记录在DerivedData/Notarization/notary-5a0f9dad-3ef6-46fb-9a64-4c2b82e7fddd。主管实际读取官方log并独立比对SHA/ID，不把submit成功当完成。
+
+独立副本附票据后生成final/OpenLXSSH-1.0.0-build3-macOS-arm64.zip，7,320,217字节，SHA256 52a29df7e1a6b4bb59b73e6e628340afbdcab2be6161ada9c55c7c2f0bcd3eca；App树8222a1346a422f3d3bc0779a84ed8fe928d45c42199cc842cded7ea20c780efd。原主/helper全部字节和原树逐项不变，仅新增Contents/CodeResources公证票据（1716B、mode0644、普通单链接非可执行、SHA2b44d6af…715）。既有候选inspect_bundle拒绝这个新增布局的失败保留；它原本仅验证local-only候选，本轮不放宽通用规则或修改候选，而核对原布局通过、最终树仅允许精确票据差异，另验最终ZIP/代码/许可/签名/票据/Gatekeeper。原App/ZIP/候选manifest冻结不改，最终发布receipt另记。
+
+主管独立重验原候选和新增票据限定差异、ZIP逐项内容/模式，另用ditto解压最终ZIP到Takeover/final-package-review-534878b3-2bf9-401e-aae6-3313d64f9ed6/unpacked，完整树及主/helper摘要相同，codesign strict/deep、stapler validate、spctl assess三项exit0，明确source=Notarized Developer ID。随后检查旧App已退出，按原树守卫完整保留previous-unstapled-DeveloperID.app回退，用解压实物正常替换~/Applications/OpenLXSSH.app，复制后完整树和三项验证再次通过。CUA正常启动，原4测试主机/0会话/0传输，无绕过系统保护；签后真实helper认证与保存重开用此前同字节代码的已验分项，不重跑全部网络campaign。
+
+Terra正常UI逐项清理4条本轮fixture主机及2个明确无引用的App导入测试密钥副本（209DB9C9…、711ECEE7…），源fixture文件不动，不处理其他凭据。主管另CUA确认主界面0主机/0标签/0传输；已安装App PID78075/UID501/birth1793289597.579913精确路径及严格出生身份确认，保持打开供用户使用。review.json、commands.json、install-review.json、install-commands.json和native-startup-review.json构成主管独立证据；final-ui-cleanup-6cda58f8-98cb-43bf-8250-0b4c32ea097d.json为清理范围记录。
+
+交付物已可正常安装，使用说明已更新；用户接受约9h38m稳定性，原24h中断不改写。第二台Mac、实际企业MFA/内层SSH及人工IME/Finder/剪贴板物理操作仍待用户记录，未冒称整体全部人工验收通过。没有推送、公开发布或上传测试/签名私钥材料。
