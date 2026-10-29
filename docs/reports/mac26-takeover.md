@@ -79,3 +79,21 @@ build2正常复制到~/Applications/OpenLXSSH.app并经CUA启动，遇storage.un
 recovery至closed包含最后关闭过渡，不把全168秒当5会话；closed至finite-end204.853927秒40样本，只有App，RSS均118.351/峰119.016 MiB、FD16/PTY0、五SSH全部退役。采样自然exit0、1000.004542秒、200样本/remainingObservedChildren0。原始JSONL/phase UUID748fbfed-3011-4e53-a4f7-672aa340a941，主管primary-review-748fbfed.json独立重算；CPU为ps调度报告值，RSS共享页/PTY描述符重复计，短于采样间隔的helper和Swift任务不作完整覆盖声明。
 
 长测驱动原来同时发起5次三算法keyscan。主管只调整测试工具为逐项真实认证的有限准备，避免把并发突发当24h前提；检查此前项持续连接，错误/缺auth或PID/取消/睡眠/断开拒绝。原有86400秒从全部5项就绪后才开始，计时与cleanup门不变。新增5项加原采样/身份/清理共28项XCTest，由Terra在资源关闭后2分钟一次执行全过，主管读取实际日志/命令/cwd/exit并源审。准备新driver，不将旧a215静态校验沿用为改后来源，不在此声称200/24h通过。
+
+## 泄漏扫描归属对照（未改产品代码）
+
+正式App post-close单次leaks exit1/274项/9232B，原图为244个NSArray根和30个AXObserverCookie，未列产品会话或终端类。主管以独占ignored ax-control-d7c7a25e-2138-43d0-b432-73c279d036b2创建标准SwiftUI公共文字/按钮/五行展开控件，无产品导入、SSH、文件或用户数据访问；arm64/min26编译0。CUA启动原PID45520，baseline leaks288项/14400B（NSXPC及标准容器）；12次展开/收起后317项/15728B，新增AXObserverCookie13及NSArray16。原始0600扫描/类摘要和源码均保留，正常Cmd-Q后该PID不存在。
+
+该对照证明相同类别可在完全不含SSH/终端代码的UI/观察路径出现，不等于证明原App没有任何泄漏、普通人工无辅助工具条件下的影响或精确OS责任。正式有限RSS预算/PID退役证据按原范围保留，不将此扫描改为0，不无依据修改产品来消除系统报告。
+
+新driver-c12524dc按cdf47ac干净源唯一构建/verify0、主管静态复核通过，未live。MFA首个原生正向案因安全读取完成时75秒TTL已过期，零OTP提交/取消/精确临时材料清理，原PARTIAL保留；后续仅改善测试动作批处理速度，不延长TTL或放宽session/secret检查。
+
+## 正式App MFA桥接与新200启动
+
+私钥MFA公开session5b8c882e14c32009763d0aaa三轮实际提交、外层认证/shell/MFA_KEY_UI_OK_5b8c；密码MFA session3221a8c000611fea7847fc13三轮提交/真实shell/MFA_PASSWORD_UI_OK_3221。原过期ac4ef…零提交案、499049…缺C案均保持PARTIAL，精确本地材料清理，旧服务端过期残留由下一次认证原有sweep自然清除，不追认为原cleanup成功。
+
+独立SFTP原1c4a…三轮后C外额外等待10秒才确认空通知，最终files.timeout，保留PARTIAL。源审fixture LoginGraceTime90、OTP75、App KBI预算120；缺原总时序不能确证根因，不修改产品延长预算。新案把已核为空的最终通知及时确认，session b552fc09c6fff1467f984650实际ready并列根目录21项，全部精确挑战与App资源已清理。connect/首次A/C/zero确认分别1793243113395/3129355/3187087/3189371ms；ready明确观测1793243258734ms仅上界，不能声称首次ready要145秒。证明正向接线，不代表所有企业提供方或无需人工响应。
+
+新唯一driver-c12524dc已于11:11:28+0800开始200+20，PID47157/UID501/birth1793243488.663325，stability-6FE08664-AE01-4700-B38F-095D47829596/evidence.jsonl，尚未结束不先标通过；relay42333原7200s预算在启动时尚余57m52s，四服务/FP/材料身份经当前核对。24h尚未启动；用户明确选择未来独立Terra/medium每30分钟监测，须在真实长测启动后创建。
+
+用户另明确批准当前同产品源码build3候选DeveloperID签名/Apple时间戳请求，不含公证上传；下一步骤仅现有配方生成与静态验证，不运行App干扰200，也不上传Apple公证。

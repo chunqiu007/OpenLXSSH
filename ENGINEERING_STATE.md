@@ -2,6 +2,26 @@
 
 更新：2026-10-28（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
+## 当前权威检查点（2026-10-29，CONTINUE）
+
+- 正式产品代码仍来自3ee3a68的1.0.0/build3；当前HEAD cdf47ac只新增长测工具串行准备及验收/指南记录，没有改产品认证或终端实现。后续源审/本地提交允许，不推送/生产连接/Apple上传。
+- 成本分工：主管处理复杂诊断与关键小修；常规测试/构建/回查明确指定gpt-6.1-terra / medium。本轮两Terra已实际完成有限GUI资源、28项测试、干净源driver构建/验证；没有需交ZCode的大规模代码任务。
+- 正式五会话有限场景与退出观测已独立审过，125.139 MiB均/125.516峰（App+SSH RSS）、公开输出峰135.438 MiB，五SSH正常退役，App暖态FD16/PTY0。原突发第五扫描失败仍PARTIAL，未确证拒绝原因，未改产品或扩中继限额。
+- 唯一新driver-c12524dc已实际开始200+20：PID47157/PPID47156/UID501/birth1793243488.663325，2026-10-29 11:11:28+0800，Terra session45463，原始stability-6FE08664-AE01-4700-B38F-095D47829596/evidence.jsonl位于既有DerivedData/Takeover/mac26-8834149cacad467585fd03a34f6379ec。source cdf47ac dirty=false，主helper hash/163源快照/严格签名已核，root另静态复核。测试正在执行，不能先标通过。24h尚未启动，旧回查已删除。
+- post-close leaks274项/9232B保留。主管自建仅17行标准SwiftUI公开控件对照（无任何产品导入/SSH/用户数据）在相同宿主也复现：baseline288项/14400B，12次展开收起后317项/15728B，并出现13个AXObserverCookie及NSArray增长；原App244NSArray+30AXObserverCookie。这是独立于SSH代码的UI/观察路径复现，不宣称原App无泄漏或最终OS归因已证；作为系统UI/自动化相关局限留档，不无根据重写产品。对照45520已正常退出，原数据不改。
+- 正式App私钥MFA三轮及密码MFA三轮均已进入真实shell并有唯一公开marker；独立密码MFA SFTP也已就绪、列出根目录21项。新SFTP session b552fc09c6fff1467f984650：connect1793243113395ms、A首次见1793243129355、A/B/C提交1793243180491/3183865/3187087、zero空通知立即确认1793243189371；ready明确观察1793243258734仅145.339s上界，不能当首次就绪耗时。原过期/缺C/超时案仍PARTIAL。fixture LoginGraceTime90，原脚本C后额外等待10秒可能撞窗口，但无总时序不能确证；只改测试动作等待/空通知即时确认，没有改产品/服务器超时或安全规则。所有精确本地/服务器挑战清理，新认证自然扫掉原过期残留，原失败不改绿。
+- MFA测试后正式App正常退出，200期间禁止正常App/API消费者同跑。运行时独占交Terra测试工程师，完成后先主管审查200原结果，再启动唯一实际五会话24h。
+- 用户已明确批准长测后使用独立定时任务、gpt-6.1-terra/medium、每30分钟（可产生独立任务记录）。项目ID6ecb2326-68f3-4568-b9b0-18f3703560a1；只在真实长测开始且身份/证据记录后创建，结束停用，健康时安静。
+- 用户已明确批准现有1.0.0/build3候选的DeveloperID签名和Apple时间戳请求（不上传App/私钥），不含公证上传。允许Terra现有配方执行并静态验证；签后具体ZIP/摘要/Apple目的地仍须单独确认，不能因当前许可自动notary。
+- key-kbd新gen4ba4ddb1aa91/22223/FPzzZ9B7L8srAQFmIettj3r/r1XwuSSfvZFAs8K2SmWvE；password-kbd genfcdd0ef62707/22224/FPM89ZPAwqBO3k4+50seWt4j0oCpqAamqWCicE+q1hibc。唯一有限relay42333/session56672仍在，当前MFA已退出并已交接200执行者。不得同时运行正式App与stability wrapper。
+- 已允许仅自建一次性Keychain测试；DeveloperID证书现可用，签名时间戳已获本轮明确批准，具体最终产物公证授权仍待按文档处理；第二台Mac/人工IME/Finder/企业及内层密码OTP仍需用户记录。以下各节是此前证据，状态冲突以本节及未来真实结果为准。
+
+## 后续检查点（2026-10-29）
+
+- 新driver-c12524dc已由Terra按cdf47ac干净源唯一构建/verify，均exit0；inputSet5650161270e9a404c5c8d13a3e2e6d6df03b7ee540ba51d96f9edb1b68bd7a27，main0267f3830300503dc860a138b2e857b52645e19e5f00a498ac29d3a99a536253/helper0cd6932587b690be8fbc3b6a1594f4cffdcce14ce539231e69d1c8ec766c57de，arm64/min26/严格Development/Runtime/同Team/无权限。记录driver-c12524dc-1779-4687-82aa-a0efbe9d9090/result.json，尚未live，不再用旧a215。
+- 新post-close真实leaks一次exit1：150267 malloc nodes/22396KB，274 leaks/9232 bytes。主管对原图分类：244个NSArray根和30个AXObserverCookie，没有在这份报告中列出产品会话/终端类；这提示无障碍观察相关，但**归因尚未证明，不能声称无泄漏或已修复**。原始0600日志leaks-review-93b5b6c5-c0d9-40aa-9502-34bb1e436fb6/output.log保留，先前空闲0只属于先前时点。5会话RSS预算与退出PID/PTY证据仍按原有限范围有效。
+- 已通过正式guarded collect分别生成key-kbd credentials-4ba4ddb1aa91、password-kbd credentials-fcdd0ef62707，内容未打印，仅用于接下来尚未覆盖的正式App MFA UI桥接；不重建容器、不连接真实服务器。当前App零标签，接手GUI后还未执行MFA，200/24h均未开始。
+
 ## 最新验收检查点（2026-10-29）
 
 - Terra/medium已完成正式build3串行五会话有限验收，主管独立从JSONL重算：319.865781秒/64样本，真实SSH始终5、全指标完整，App+SSH RSS均125.139/峰125.516 MiB，FD96、vnode PTY描述符35；该口径重复计算共享页/PTY描述符，不是唯一设备数或Swift任务数。
@@ -9,7 +29,7 @@
 - 原快速连续创建案仍PARTIAL：四认证/第5扫描失败，中继18accepted/1rejected/18finished/cleanup_failed0，精确relay41403正常TERM后exit0。静态计数没有拒绝原因，不能确证并发上限或产品Bug。源审确认scanner三流/relay每端口8，本轮不改产品或扩中继限额；串行正常创建5项是有区别的新案，不回写旧失败。
 - 主管亲自小修仅长测工具准备顺序：connectFiveSequentially每次要求真实认证+owner并持续检查此前连接，再建下一项；取消/睡眠/错误/此前断开拒绝，每项最多600次原50ms等待。五项全部满足后才开始原86400秒时钟，判定与cleanup保持。Terra独立一次定向XCTest28项/0失败（新增5项），真实命令/退出/cwd/output在unit-0e3a2dc6-6096-4f86-8681-f184c52aa96f，主管源审和日志核对通过。需要按新源码构建唯一新driver，旧a215不冒当前来源，尚未200或24h。
 - 当前正式App25406/0标签，唯一有限relay42333（Terra session56672）继续供后续认证，完整实时tee日志gui-relay-serial-739f963d-e2ac-4f51-a41b-f33b8a3ca58d.log。runtime/GUI已交主管；后台测试进程本身不依赖模型容量。
-- 用户询问的at capacity已核：账号ordinaryUsageAllowed=true、5h剩64%/周63%、无额度耗尽标记；提示文案为模型容量暂不足，截图主会话Sol不能断言Terra额度耗尽。两个Terra任务实际均已返回结果，不重复已完成测试。
+- 用户询问的at capacity按模型服务暂时容量不足处理，不把它当作测试失败或重复已完成工作的理由；执行分工继续遵守用户指定的Terra/medium。
 
 ## 执行恢复与成本分工（2026-10-29）
 
