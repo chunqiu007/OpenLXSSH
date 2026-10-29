@@ -4,6 +4,8 @@
 
 ## 当前权威检查点（2026-10-29，CONTINUE）
 
+- **用户已明确批准具体候选Apple公证上传。** 授权仅覆盖source4616677、1.0.0/build3、89cfceaa目录OpenLXSSH.zip、SHA256 e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8、7318818B，目的为Apple公证/Gatekeeper安装验证；允许成功后附票据并另记最终分发归档摘要，不上传私钥或测试材料。用户明确尚未配置notarytool登录。原候选摘要与签名Team已重新核对；现在只缺用户本人在本机安全创建公证登录配置（建议profile名OpenLXSSH-notary）。不再次询问该原产物上传批准，不读取/枚举其他Keychain，不代输Apple账号或专用密码；配置完成后提交一次、保存submission ID并查询同一任务，不重复提交。尚未上传。
+
 - **DeveloperID候选本机运行已复核。** Terra完成89cfceaa正常替换安装（原Development完整备份）、一次真实manual-password helper挑战及shell；新一次性profile保存密码→正常退出重开0会话→无人工challenge自动认证/shell→忘记→人工提示取消→删除仅本轮profile→正常退出。主管另核安装main/helper摘要、严格deep签名与原relay日志，并亲自CUA看到重开shell marker，原生粘贴公开命令得到DEVID_PRIMARY_REVIEW_OK。两轮relay分别4/8 accepted且finished一致、0rejected/cleanup_failed0，主管另查已观察PID全无、批准端口无监听。结果位于DerivedData/Takeover/devid-native-auth-8252c43d-ae23-42f3-8c5d-a2240808f290；Keychain物理删除未另独立查询，不扩称全枚举或跨版本升级所有组合。当前安装为DeveloperID build3，App已正常退出。产品源码/打包输入相较4616677未变；ZIP仍e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8/7318818B。下一项为该具体ZIP的Apple公证批准及用户自备公证登录配置，未上传。第二台Mac/人工IME/Finder/企业与内层SSH仍保留。
 
 - **用户最新验收变更：接受本轮五会话约9h38m/1024完整样本，AC-29本关通过，取消必须24h及重新长测的条件。** 用户亦确认21:37确实重启/更新桌面端；结合系统退出时序支持桌面重启关联，精确退出码/信号仍未知。原24h未完成、无正常end/cleanup事实不改写，不把9h38m称为完成24h。停止独立终端启动器的准备（尚未创建代码），不启动新长测，回查保持PAUSED。下一项DEVID-CANDIDATE-NATIVE-AUTH由Terra/medium做89cfceaa DeveloperID候选正常替换安装/实际manual-password helper挑战/退出复核；主管独立验收后处理具体ZIP公证授权及双机人工验收。下方23:25记录及此前重跑计划是变更前历史，不再执行。

@@ -119,7 +119,7 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 | 验收 ID | 必须结果 | 当前状态 / 证据 |
 | --- | --- | --- |
 | AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 候选范围通过：1.0.0/build3、source4616677、89cfceaa DeveloperID App/ZIP+manifest已唯一生成并独立核arm64/min26/依赖许可/辅助程序/Runtime/归档摘要；完整ZIP摘要见工程状态。未公证，最终分发产物待公证后另记，不把候选当已发布。 |
-| AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 签名与时间戳已完成并独立核验，同Team/Runtime/无绕过权限；公证上传未授权/执行，spctl3拒绝保留。 |
+| AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 签名与时间戳已完成并独立核验，同Team/Runtime/无绕过权限；用户已明确批准89cfceaa具体ZIP上传Apple公证，尚缺用户本人配置notarytool登录，未提交。原spctl3拒绝保留，待公证后复验。 |
 | AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 本机构建范围通过：DeveloperID build3正常替换安装、真实manual-password helper/shell、唯一新profile保存→退出重开0会话→自动认证/shell→忘记→人工回退取消→删除本轮profile与正常退出，主管另CUA实际交互/签名摘要/已观察PID和端口释放复核。原Development包完整保留。非所有跨版本升级组合，物理Keychain删除未另查询；最终公证后安装与第二台Mac另验。见mac26接手报告。 |
 | AC-36 | 朋友的第二台 Apple Silicon/macOS 26 正常安装，SSH/MFA、终端、SFTP 与退出实际验收 | 待外部条件：尚未安排第二台 Mac 操作 |
 | AC-37 | 用户在公司允许的实际环境手动覆盖适用的认证/审批与嵌套 SSH，记录范围及结果，无秘密进入报告 | 待外部条件：尚未安排实际企业场景验收 |
