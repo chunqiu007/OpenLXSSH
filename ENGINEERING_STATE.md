@@ -4,6 +4,10 @@
 
 ## 当前权威检查点（2026-10-29，CONTINUE）
 
+- **DeveloperID候选本机运行已复核。** Terra完成89cfceaa正常替换安装（原Development完整备份）、一次真实manual-password helper挑战及shell；新一次性profile保存密码→正常退出重开0会话→无人工challenge自动认证/shell→忘记→人工提示取消→删除仅本轮profile→正常退出。主管另核安装main/helper摘要、严格deep签名与原relay日志，并亲自CUA看到重开shell marker，原生粘贴公开命令得到DEVID_PRIMARY_REVIEW_OK。两轮relay分别4/8 accepted且finished一致、0rejected/cleanup_failed0，主管另查已观察PID全无、批准端口无监听。结果位于DerivedData/Takeover/devid-native-auth-8252c43d-ae23-42f3-8c5d-a2240808f290；Keychain物理删除未另独立查询，不扩称全枚举或跨版本升级所有组合。当前安装为DeveloperID build3，App已正常退出。产品源码/打包输入相较4616677未变；ZIP仍e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8/7318818B。下一项为该具体ZIP的Apple公证批准及用户自备公证登录配置，未上传。第二台Mac/人工IME/Finder/企业与内层SSH仍保留。
+
+- **用户最新验收变更：接受本轮五会话约9h38m/1024完整样本，AC-29本关通过，取消必须24h及重新长测的条件。** 用户亦确认21:37确实重启/更新桌面端；结合系统退出时序支持桌面重启关联，精确退出码/信号仍未知。原24h未完成、无正常end/cleanup事实不改写，不把9h38m称为完成24h。停止独立终端启动器的准备（尚未创建代码），不启动新长测，回查保持PAUSED。下一项DEVID-CANDIDATE-NATIVE-AUTH由Terra/medium做89cfceaa DeveloperID候选正常替换安装/实际manual-password helper挑战/退出复核；主管独立验收后处理具体ZIP公证授权及双机人工验收。下方23:25记录及此前重跑计划是变更前历史，不再执行。
+
 - **23:25核对：本轮24h已中断，未通过，不再RUNNING。** 6F5F0F5C最后样本21:36:35.842，共1024完整样本/原六身份不变，connected后awake/continuous34694.635287秒、wall34694.739441秒（约9h38m14.739s），无end/cleanup，sessions目录留存。主管严格identity复核driver/五SSH/relay均GONE，22221～22225无监听；不等正常清理有证。系统记录driver55678在21:37:00 proc_exit，ChatGPT桌面端21:37:05退出并重新启动；两原exec session已Unknown process id，退出码/信号未知。疑为桌面重启关联，尚未确证因果；宿主未重启，未见该窗口sleep/wake，keyonly原容器健康/未重启/OOMKilled=false。独立报告primary-interruption-review-4ff301ea-6bf0-4718-beb0-658b0e694f11.json与primary-system-exit-6b153fbf-fd6a-4ee6-8a04-ef50197eaaf7.json。原证据保留，不拼接/不自动重跑。Terra22:00已将openlxssh-24h-terra实际设PAUSED，原200通过不受影响。下一项先确认应用重启情况并改善有限测试进程存续/退出记录，再安排新的完整24h；本轮仅调查，没有启动新测试或更改产品。
 
 - 新200+20已完成并独立复核：6FE08664案424行/2538.540682秒、200auth/20cancel/220closed、695资源样本全complete，全部closed与cleanup均FD5/PTY0，driver47157已不在、sessions目录消失。closed RSS前20均37573427B/后20均36481434B，无本案持续增长证据；仅driver/所观察SSH与helper范围，不宣称SwiftTask全数或App零泄漏。报告primary-200-review-4d820158-588c-49eb-a310-2abb34fe0c8b.json。旧失败不改。relay42333已正常TERM/exit0，accepted898/rejected0/finished898/cleanup_failed0，原端口释放。只读pmset当前AC sleep0/displaysleep0，未更改电源设置。

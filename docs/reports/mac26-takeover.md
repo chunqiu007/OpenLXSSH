@@ -121,3 +121,19 @@ spctl实际exit3/Gatekeeper拒绝，未notary或上传，未安装/运行该新�
 Terra在22:00发现中断，写observer-final-review.json并实际暂停openlxssh-24h-terra。原执行工程师对自己拥有的session24279/9307各查询一次均Unknown process id；两个console仅启动文本，无退出码/信号/result/relay-stopped。系统统一日志在21:37:00.365记录driver55678 termination reported by proc_exit，21:37:05.515 ChatGPT退出，21:37:05.705重新spawn ChatGPT72402。宿主uptime连续，pmset限定窗口未见Sleep/Wake；原keyonly容器ed38148af68e仍healthy、StartedAt仍10-28、OOMKilled=false。时间对应提示桌面端重启关联，但缺退出信号/父链终止原因，不能断言已证因果或SSH产品Bug。
 
 独立记录在该原始目录primary-interruption-review-4ff301ea-6bf0-4718-beb0-658b0e694f11.json、primary-system-exit-6b153fbf-fd6a-4ee6-8a04-ef50197eaaf7.json、exit-session-check-c9cc139f-6938-4c72-b3fb-6fa8f9a9beca.json。没有发送信号、删除残留、更改产品或重跑；下一步确认21:37桌面端操作，改善有限测试进程存续与退出证据，再运行全新连续24h。原200通过及已验分项仍有效。
+
+## 用户变更验收范围并进入发布验证（2026-10-29）
+
+用户确认21:37曾重启/更新桌面端，并明确接受中午至晚上的稳定记录，取消强制24小时、要求本关通过并进入下一项。PERF-03/P7-04/AC-29统一调整为接受本轮五真实会话连续34694.635秒、1024完整样本及资源趋势；不再重跑或开发独立终端启动器。此前尚未创建启动器代码。原24h中断、无正常end/cleanup和退出码的事实保留，不追写completedDriverScope或24h通过。回查PAUSED，原200次及其他分项仍有效。
+
+DEVID-CANDIDATE-NATIVE-AUTH已交Terra/medium，仅对已核89cfceaa build3正常替换安装并验证一次实际manual-password helper挑战/shell marker/正常退出。原Development包完整保留回退、用户数据不动，系统保护不改；未公证候选若正常启动被拒绝则报告，不绕过。具体ZIP公证上传仍待明确批准。
+
+## DeveloperID正常安装与重开凭据验证（2026-10-29）
+
+Terra在独占devid-native-auth-8252c43d-ae23-42f3-8c5d-a2240808f290记录正常安装完整树46904aed…，原Development树57aa0392…完整备份；新App实际启动并由helper手动密码认证进入shell，DEVID_MANUAL_AUTH_8252_OK正确。主管另独立核安装main d13a3629…、helper ffc38c2a…与严格deep签名0，读取原relay ready/stopped：4accepted/4finished/0rejected/cleanup_failed0。
+
+新建唯一fixture测试profile 1cf8260b…保存密码后，正常退出/重开0会话，连接无人工challenge而实际认证进入shell，DEVID_KEYCHAIN_REOPEN_1cf8260b_OK可见。主管亲自CUA观察该profile/outer-auth及marker，再原生粘贴公开printf得到DEVID_PRIMARY_REVIEW_OK及新shell提示。主管最初用typeText时标点未保持，实际DEVIDPRIMARYREVIEWOKn原案保留；原生paste完整正确，不能由自动输入差异推定物理键盘行为。随后仅忘记该测试条目，重连出现对应人工密码prompt→取消，删除仅本轮profile，恢复4测试主机/0标签，App正常退出前FD16/PTY0完整。新relay原记录8accepted/8finished/0rejected/cleanup_failed0/exit0。主管另查已观察App/SSH/helper/relay PID均不在及批准端口无监听；未记录的短命helper出生或取消SSH身份不补造，未独立查询物理Keychain删除，只证明UI关联解除/人工回退。
+
+result.json、persist-result-1cf8260b-1112-46fc-afb5-687e66d4e167.json、两relay.log和primary-runtime-review.json保留于上述独占目录。当前安装DeveloperID build3，签名新候选仍未公证、未上传；具体ZIP SHA256仍e91a18d2d75b2cef32f82b1ea1cfe9356ac3f31a24577565b07ac43ed9ccb7a8/7318818B，源4616677的产品/打包输入至今无差异。不重建无变化候选，下一步仅对该具体产物请求Apple公证批准及用户安全准备登录配置。双机/人工IME/Finder/企业与内层SSH记录仍待，不因此宣告整体完成。
+
+自动回查曾将memory误写到字面目录$CODEX_HOME；主管确认仅该回查memory和两级目录，未跟踪/无链接/当前UID，将全目录原样保存在ignored Takeover/misplaced-automation-memory-fed7bef1-af8c-489c-bedd-3b31ae637880，未删除或提交其内容。

@@ -1,5 +1,7 @@
 # OpenLXSSH V1.0 — 验收总表
 
+**最新验收变更（2026-10-29）：** 用户明确接受本轮五真实会话连续约9h38m/1024完整样本，AC-29按变更标准通过；取消必须24h及重新长测条件。下方原24h中断记录保留，不再作为时长阻塞。当前进入DeveloperID签后安装/认证、公证与双机验收，整体尚未完成。
+
 **接手更新（2026-10-29）：** 宿主macOS26.7.1，精确OpenSSH10.3兼容门及默认扫描10秒已审。真实一次性Keychain公开API生命周期/无授权人工回退已过；正式build3正常安装首次启动、UI记住→SSH登录→忘记→人工认证、中文粘贴、独立SFTP36B往返摘要一致、退出重开0会话已有新证据。首轮200计数完成但资源指标未知，最终failed仍保留，新工具采样与串行准备修复已审，新200+20真实驱动范围已通过（原失败仍保留），24h运行约9h38m后中断、未通过；正式Release有限五会话/输出资源测量已审。Developer ID签名和Apple时间戳已完成，未公证。下文host15为历史基线，不因升级或局部通过改绿所有AC；以 `docs/reports/mac26-takeover.md` 和 `ENGINEERING_STATE.md` 接手章节为准。
 
 当前状态：**本轮host15受控分项已收口，OpenLXSSH V1.0整体验收仍未通过。** 真实SSH/SFTP四类认证、多提示/审批、2GiB/1000及异常已有分项证据；App上传跨关闭/隐藏、关窗/Quit、原生文件操作与批skip/rename/overwrite、正字节切标签、双标签/自然断线历史/手动重连、原生搜索/内存Bracketed Paste、加密key认证UI取消恢复/并发提示归属、真实预扫变化拒绝/原生信任管理，以及Vim/tmux/htop、公钥nested、正常保活+R2黑洞均经主管独立验收。当前App160tests/0failure、最终正式Debug/Release各一次arm64/min26静态编译/运行测试代码隔离通过，**不等macOS26运行或已发布Release**。原MFA fixture取消材料cleanupIncomplete、原黑洞control/-9等失败历史保留，不被恢复或后续通过追认。当前需满足的默认Keychain动作授权、目标mac26/200次/连续24h/Release压力资源、DeveloperID/具体产物Apple上传、双机/人工/企业和剩余工具合法条件见 `docs/release/acceptance-prerequisites.md`；不把这些必要门删除或以host15短测替代。
@@ -100,7 +102,7 @@ P1-01/P1-02 不改变 AC-04、AC-06～AC-12、AC-16、AC-25、AC-28～AC-32 等�
 | 验收 ID | 场景 | 必要证据 | 当前状态 / 证据 |
 | --- | --- | --- | --- |
 | AC-28 | 200 次直接 SSH 创建/认证/关闭循环，并穿插连接中取消 | 循环计数、退出结果、前后进程/PTY/FD/任务数及内存趋势，无持续累积 | macOS26正式驱动范围通过：cdf47ac/driver-c12524dc，新6FE08664案424行、2538.541秒、200auth/20cancel/220closed、695资源样本完整；每次closed及cleanup均FD5/PTY0，末20次closed RSS均低于前20次，driver退出且sessions目录消失。主管独立报告primary-200-review-4d820158-588c-49eb-a310-2abb34fe0c8b.json。仅观察所属SSH/精确helper，kernel threads不冒充Swift任务，非完整App对象普查；旧1A8BB3F2案仍failed。 |
-| AC-29 | 5 个独立普通 SSH 会话真实连续运行 24 小时 | 实际起止时间、有效连接时长、采样、负载和错误；不以短测、改时钟或重启拼接冒充 | 中断/未通过：6F5F0F5C案10-29 11:58:21至末样本21:36:35，仅34694.635秒awake/continuous；1024样本身份与指标完整，但无end/cleanup、sessions留存。driver与relay/五SSH已不存在；系统21:37:00记录driver退出，21:37:05桌面端退出重启，退出码/因果仍未确证。Terra回查已PAUSED，不自动重试或拼接；见mac26接手报告及primary-interruption-review-4ff301ea-6bf0-4718-beb0-658b0e694f11.json。 |
+| AC-29 | 五真实会话本轮长时间稳定运行（用户2026-10-29调整） | 实际起止、会话身份、完整采样及资源趋势；不宣称24h或拼接 | 通过（按用户变更标准）：用户明确接受6F5F0F5C案11:58:21～21:36:35约9h38m、awake/continuous34694.635秒、1024完整样本及原五SSH身份持续一致，取消必须24h/重跑条件。桌面重启关联中断、无end/cleanup原样保留，不把进程消失当正常清理。回查PAUSED，下一项签后App认证与发布验证。 |
 | AC-30 | 大量输出与快速标签切换 | 声明输入速率/持续时间；队列有界、UI 可响应，渲染与输入正确，停止压力后能恢复 | 进行中：五真实view/逻辑driver有限渲染输入压力，主管105tests及原生76检查/22轮、每view814108 bytes、heartbeat377.93ms、停止后恢复通过；不是SSH/PTY/Release性能验收，真实负载待环境。见 `docs/reports/p7-app-output-stress.md` |
 | AC-31 | 大文件和多文件传输 | 默认至少 2 GiB 单文件及 1,000 个小文件测试集，记录往返摘要、速度、峰值内存、取消/断线结果；资源不够时报告实际限制 | 进行中：真实2GiB/1000及Unicode四manifest、双向25%取消/权限/链接/服务能力/资源已核；主管R1新16MiB断连闭环通过；独立有界真实远端ENOSPC/write4+errno28/noOOM/原件保全及恢复通过。正式App/mac26/完整能力边界仍待，非整体通过。见 `docs/reports/real-sftp-file-acceptance.md`、`docs/reports/real-sftp-disconnect.md`、`docs/reports/real-sftp-disk-full.md` |
 | AC-32 | 关闭主窗口或退出后资源检查 | 无不应存在的所属 ssh/认证辅助进程、文件连接、PTY/FD 或终端对象 | 进行中：App关闭/退出Local任务及五view压力后closed/disposed5、weak0、warm/closedFD16；Transport超时泄漏已修且主管Release rights归零/子进程回收通过，见 `docs/reports/p7-transport-adversarial.md`。真实SSH/SFTP及macOS26整体资源仍未验 |
@@ -116,9 +118,9 @@ Instruments 覆盖 Allocations、Leaks 和 Time Profiler；工具或权限不可
 
 | 验收 ID | 必须结果 | 当前状态 / 证据 |
 | --- | --- | --- |
-| AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 进行中：最新干净源8b63961/最终Transport修复Development内部App/ZIP+manifest UUIDfdb05b4d-a035-4040-8ded-5d549ffadb57已生成，strict/runtime/来源许可/归档摘要独立verify通过；Gatekeeper拒绝/未安装运行min26/非正式Release。见 `docs/reports/p8-packaging-preparation.md` |
-| AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 未执行 |
-| AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 未执行 |
+| AC-33 | Release 可重复构建，安装包包含非系统运行依赖与辅助程序，产物有版本/提交/摘要记录 | 候选范围通过：1.0.0/build3、source4616677、89cfceaa DeveloperID App/ZIP+manifest已唯一生成并独立核arm64/min26/依赖许可/辅助程序/Runtime/归档摘要；完整ZIP摘要见工程状态。未公证，最终分发产物待公证后另记，不把候选当已发布。 |
+| AC-34 | Developer ID 签名、所需权限、Hardened Runtime 与授权后的公证验证完成，未关闭系统保护 | 签名与时间戳已完成并独立核验，同Team/Runtime/无绕过权限；公证上传未授权/执行，spctl3拒绝保留。 |
+| AC-35 | 开发机正常安装和运行，退出重启、升级后本机凭据读取正确，不依赖开发目录 | 本机构建范围通过：DeveloperID build3正常替换安装、真实manual-password helper/shell、唯一新profile保存→退出重开0会话→自动认证/shell→忘记→人工回退取消→删除本轮profile与正常退出，主管另CUA实际交互/签名摘要/已观察PID和端口释放复核。原Development包完整保留。非所有跨版本升级组合，物理Keychain删除未另查询；最终公证后安装与第二台Mac另验。见mac26接手报告。 |
 | AC-36 | 朋友的第二台 Apple Silicon/macOS 26 正常安装，SSH/MFA、终端、SFTP 与退出实际验收 | 待外部条件：尚未安排第二台 Mac 操作 |
 | AC-37 | 用户在公司允许的实际环境手动覆盖适用的认证/审批与嵌套 SSH，记录范围及结果，无秘密进入报告 | 待外部条件：尚未安排实际企业场景验收 |
 | AC-38 | 安装/使用/已知限制说明、阶段审查与本地提交齐全；没有遗漏的必要未完成项 | 进行中：使用说明 `docs/user-guide.md`、候选说明与 `docs/release/acceptance-prerequisites.md` 已写，明确开发中/未验项；必要功能/Release/外部验收仍未完成 |
