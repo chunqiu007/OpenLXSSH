@@ -2,6 +2,31 @@
 
 更新：2026-10-28（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
+## 最新验收检查点（2026-10-29）
+
+- Terra/medium已完成正式build3串行五会话有限验收，主管独立从JSONL重算：319.865781秒/64样本，真实SSH始终5、全指标完整，App+SSH RSS均125.139/峰125.516 MiB，FD96、vnode PTY描述符35；该口径重复计算共享页/PTY描述符，不是唯一设备数或Swift任务数。
+- 公开输出+快速切标签132.954083秒/27样本，仍5SSH，RSS均131.601/峰135.438 MiB；命令定义780000B/120批，末尾marker及随后输入回显实际可见，未独立逐字节核对实收。恢复marker至closed含关闭过渡，不把整段当5会话恢复；closed至finite-end204.853927秒/40样本仅App、FD16/PTY0、五SSH confirmedGone。采样自然exit0、1000.004542秒、remainingObservedChildren0。证据UUID748fbfed-3011-4e53-a4f7-672aa340a941，同gui-resource-e433目录；主管primary-review-748fbfed.json独立重算。
+- 原快速连续创建案仍PARTIAL：四认证/第5扫描失败，中继18accepted/1rejected/18finished/cleanup_failed0，精确relay41403正常TERM后exit0。静态计数没有拒绝原因，不能确证并发上限或产品Bug。源审确认scanner三流/relay每端口8，本轮不改产品或扩中继限额；串行正常创建5项是有区别的新案，不回写旧失败。
+- 主管亲自小修仅长测工具准备顺序：connectFiveSequentially每次要求真实认证+owner并持续检查此前连接，再建下一项；取消/睡眠/错误/此前断开拒绝，每项最多600次原50ms等待。五项全部满足后才开始原86400秒时钟，判定与cleanup保持。Terra独立一次定向XCTest28项/0失败（新增5项），真实命令/退出/cwd/output在unit-0e3a2dc6-6096-4f86-8681-f184c52aa96f，主管源审和日志核对通过。需要按新源码构建唯一新driver，旧a215不冒当前来源，尚未200或24h。
+- 当前正式App25406/0标签，唯一有限relay42333（Terra session56672）继续供后续认证，完整实时tee日志gui-relay-serial-739f963d-e2ac-4f51-a41b-f33b8a3ca58d.log。runtime/GUI已交主管；后台测试进程本身不依赖模型容量。
+- 用户询问的at capacity已核：账号ordinaryUsageAllowed=true、5h剩64%/周63%、无额度耗尽标记；提示文案为模型容量暂不足，截图主会话Sol不能断言Terra额度耗尽。两个Terra任务实际均已返回结果，不重复已完成测试。
+
+## 执行恢复与成本分工（2026-10-29）
+
+- 用户已明确要求继续执行，取消上一轮“只说明不操作”的停止点。复杂Bug定位/关键修复由主管亲自处理；方案明确但大量编码的任务形成ZCode任务包，不自行扩大实施；已有脚本的常规测试和定时检查指定gpt-6.1-terra / medium。主要编码默认委派的旧约定服从这一最新分工。
+- 已派 `/root/terra_gui_acceptance`，实际工具请求模型gpt-6.1-terra、reasoning_effort=medium，独占正常App GUI与普通资源验收。只复用现有build3和采样器，不改tracked代码/共享文档，不运行200/24h或新增环境；未知/失败保留并交主管，不自行修核心逻辑或重试消除失败。
+- 本轮先完成真实五会话/公开有限输出/切标签/恢复/关闭释放；主管同时准备剩余认证和发布审核，不与该工程师争用GUI或测试runtime。200与24h串行跟进，必须先记录真实启动后才建立回查，不能提前宣称长测运行。
+- 上轮三份未提交状态/报告改动已识别并保留；正式源码当前3ee3a68，未因恢复任务重做已验大文件或旧campaign。后续按验收证据提交相关文档，不全量暂存。
+
+## 自动回查核对（2026-10-29）
+
+- **24小时测试尚未启动，没有有效长测可监控。** 当前仅发现首轮cycles的原failed证据；修复后driver-a215d18a无运行进程或新evidence。未重复启动、改时钟、电源或连接服务器。
+- 正式App资源短测已正常结束exit0，960.010223秒/192样本，最大观察SSH数为0；虽然写过fiveSessions阶段marker，实际未建立五会话，不能把该marker或finishedFiniteScope当五会话/输出验收。现有数据仅空闲App RSS 106.515625～111.03125 MiB、FD固定11，不证明五会话预算、输出压力或完整释放。原始行不改写。
+- App原PID25406在本轮只读核对仍为同一启动时间；原有限relay PID24420已不在运行。没有将应用仍打开当作24小时五会话。
+- heartbeat `openlxssh` 实际已提前ACTIVE并产生回查，与下方此前PAUSED记录不一致。因为并不存在约定的24h测试，本轮已通过工具**删除**该无效回查（deleteStatus=deleted），停止空转。用户此前同意真实长测后每30分钟回查的授权仍保留；实际启动并记录精确身份/来源/证据后再新建，不因本次删除要求重复授权。
+- 下一项仍是收口正式App五会话/有限输出资源测量与剩余必要GUI桥接，随后修复后200次验收、再启动唯一真实五会话24h。整体未完成；不在这次仅监控既有测试的heartbeat中擅自启动新测试。
+- 核对时间：2026-10-29T03:18:24+08:00。下方为此前接手记录，涉及“正在idle/回查PAUSED”的描述以本检查点更新为准。
+
 ## Codex 接手检查点（2026-10-28，进行中）
 
 - 用户已要求由当前 Codex 主会话接手剩余开发和验收，不重复 ZCode 已完成且未受变化影响的工作；下方 ZCode 最终检查点保留为历史基线，不能将其中 host15/等待目标设备描述当成当前事实。
@@ -15,17 +40,21 @@
 - 有限relay PID8872已到7200秒正常退出0，relay-campaign.log记录868 accepted/finished、cleanup_failed0。四owned服务身份/隔离配置保留，keyonly CID ed38148af68e、generation c5fd32c839fc、带外FP d2G+w7lBrjYDFHHd6c6GxIhk7qzFs6df1i7EVJfeUYs。后续先恢复既有有限relay，不重建健康容器。24h尚未启动。用户允许每30分钟临时回查，本会话heartbeat openlxssh已建PAUSED；仅实际长测启动并记录精确PID/证据后激活，正常运行安静、完成后停用。
 - 当前干净源内部Development候选已生成一次，目录 `DerivedData/Distributions/1.0.0-2-6124bbeb4201/47f7c768-0a3c-4ecc-a46a-c284b84e991e/`；ZIP SHA256 c23155d8ebe73610accbb9f638f74c17424cbf1fe3bfe6feb22aac3055360434，strict/min26/源码6124bbe dirtyfalse，spctl3拒绝/未公证。主管复核后待正常目标系统UI运行；不可与稳定性driver同时启动，不移除quarantine或绕过保护。
 - 上述候选已用正常复制安装到 `~/Applications/OpenLXSSH.app`，签名复制后严验通过；主管经CUA首次真实GUI启动发现storage.unsafeLocation，默认ApplicationSupport父目录UID当前用户/mode0700/唯一OS标准ACL `group:everyone deny delete` 被ensureAppParent blanket noACL误拒，App专属目录尚未创建。旧候选是失败证据，已正常退出。`release_reviewer` 独占AppFileSecurity/AppRepository/AppACLTests补精确父目录保护性ACL策略，App-owned子目录仍任何ACL拒绝，不清系统ACL。修复已源审，主管独立4项新AppACL测试通过，精确允许系统父目录唯一非继承everyone deny delete、App-owned仍任何ACL拒绝，父目录不变及拒绝边界有回归。build3元数据已同步三配置，下一步提交后生成新候选重验正常安装路径，不以HostProbe临时目录代替。
+- 修复提交 `3ee3a68`，1.0.0/build3 Development候选目录 `DerivedData/Distributions/1.0.0-3-3ee3a68a9e24/2d18e43a-83d8-49ee-b636-c929bd7873b2/`；主程序SHA256 e629a9984807c8c6904b104172b87df0a0c0e97a4211d96555bdeca5d4c9e3ae。正常复制/签名校验/首次启动通过，Application Support父目录mode/UID/GID/dev/inode/flags及ACL逐项未变。原build2保留独占证据目录，没有清ACL或绕过Gatekeeper。
+- build3正式GUI已真实验证：主机编辑记住本轮一次性密码→带外核对22222指纹→无人工prompt outer-auth/shell；原生粘贴公开中文printf正确回显。SFTP独立连接、显式能力检查、独立风险确认后上传/下载36B，源/远端/下载SHA一致；远端只精确清理本轮专用目录及该文件。UI忘记后凭据管理不再列关联，重连出现人工challenge并实际输入成功。正常退出/重开两次只恢复两条测试配置、0会话；不冒充完整IME组合输入或四类MFA UI矩阵。
+- Developer ID Application已按类型计数检测到1，Apple Development1，尚未使用Developer ID签名/请求Apple时间戳/公证上传。用户准备证书不等于具体产物上传授权。
+- 正式build3准确PID24956的TimeProfiler20s、Allocations20s、Leaks30s顺序attach均exit0；Leaks trace无可导出扫描表，不凭空表称零。正常退出重启新PID25406后，另一次真实leaks扫描exit0：106811 malloc nodes/14853KB，0 leaked bytes，仅该空闲时点。随后启动未插桩阶段资源测量，独占 `Tests/StabilityAcceptance/.build/gui-resource-e433eba4-13a1-449b-9498-430a7b1e8d80/`，session37311，PID25406/UID501/birth1793198820.263134，960秒/5秒采样，阶段marker独立；未知资源/身份/时钟拒绝。当前idle，未先标PERF-R或AC30完成。
 - 整体仍未完成；不把接手、升级或既有构建结果当成 Release 验收通过。所有原失败与已验收分项保留，不回写改绿。
 
 ## 当前目标、范围与授权
 
-- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 BLOCKED于必要发布/目标平台与人工条件。本轮已确认范围内的host15受控分项和当前源码静态构建已收口，无活动工程师或测试进程；这不是整个产品完成。** 不虚构运行环境 Goal 状态变更。
+- 同一 Goal：Apple Silicon/macOS 26 原生 OpenLXSSH V1.0 可安装 Release，并完成规定验收。**整体 NOT COMPLETE；当前 CONTINUE，macOS26及默认Keychain授权已具备，正在补正式App资源与剩余验收。发布/人工条件继续保留，旧host15状态不得当作当前阻塞。** 不虚构运行环境 Goal 状态变更。
 - 范围：四类直连 SSH/MFA、多标签、用户手动嵌套 SSH、直连 SFTP、主机/密钥/凭据管理、独立传输与窗口/退出保护。排除自动 ProxyJump、经跳板图形 SFTP、转发、自动重连/恢复。基线见 `docs/requirements.md`。
 - Primary 是唯一主管，主要编码交 software-engineer；工程师 DONE 不等主管验收。用户授权验收后的相关本地 Git 提交，没有 remote push、发布、生产连接或 Apple 公证上传授权。
 - 用户已明确批准官方 Docker Desktop、固定 Ubuntu ARM64/必要依赖、四认证及多提示隔离服务。宿主端口仅 127.0.0.1:22221～22225，不 LAN、不真实凭据/生产挂载、不宿主 sshd、不生产连接、不 Apple 上传。Agent 不代接受法律协议或输入系统凭据。不再重复“等待 Docker 授权”。
 - 许可与引擎条件已实际核验解除；公证需展示具体产物/Apple 目的地/用途后另获批准。公开 CredentialStore 持久化消费者当前仅 source/offline，未放行真实默认 file-based Keychain save/read/delete；测试事故开关不构成额外授权。
 
-## 本轮最终检查点
+## 历史基线：ZCode本轮最终检查点
 
 - 当前正式App源码分项提交 `fa5191d`；最新HostProbe实际160tests/0failure（旧156保留），仅测试配置min15，不冒目标系统。公开consumer保活17Python pure/83Swift实际断言及A正常＋R2 B黑洞真实门已审，提交 `4c89e23`。
 - 本轮真实分项主管独立验收：htop、原生双向搜索/53B内存Bracketed Paste、双标签复用/自然退出历史/原生手动重连、批skip→新batchrename与独立风险、批overwrite逐item风险、16MiB正字节在途切标签、加密私钥原生取消恢复、真实keyscan变化拒绝/原生信任管理恢复、双真实pending认证UI归属。

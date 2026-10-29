@@ -53,3 +53,29 @@ build2正常复制到~/Applications/OpenLXSSH.app并经CUA启动，遇storage.un
 旧源red真实复现；新源原15项通过、首green新增项有测试辅助快照失败并保留，修正辅助后相关4项通过。主管独立4项新增边界全部通过。build3将独立生成候选重验正式默认路径，不能用单测或旧HostProbe冒充GUI通过。
 
 有限relay已正常结束868/868、cleanup_failed0。24h尚未启动；用户允许临时每30分钟回查，heartbeat openlxssh已建PAUSED，实际长测启动后才激活。
+
+## build3正式GUI桥接与性能测量启动
+
+修复提交3ee3a68对应1.0.0/build3新Development候选独占生成并验证。正常安装到~/Applications/OpenLXSSH.app并经CUA启动成功，系统父目录mode/UID/GID/dev/inode/flags及ACL前后不变。主机编辑UI仅保存已授权的一次性fixture密码，核对管理通道导出22222公钥指纹后无需人工prompt真实outer-auth及shell；原生粘贴公开中文printf有正确输出。键盘自动化typeText曾丢失部分字符，改原生粘贴验证，不把这当IME组合输入通过。
+
+独立SFTP连接，能力探测通过且自有临时探测目录自然清理；上传及下载各独立风险确认，36B源/远端/下载SHA256均d8a2acd4e33ab472ae5fddecb102dcaeb62372fba964bf9043fe619c2e802cdd。后验只清本轮专用远端ui-mac26-20261028-2d18e43a及其中唯一样本。UI忘记后关联消失，下一次重连进入真实人工认证窗口、输入成功。退出重启只恢复配置、0会话。GUI声明仅以上实际动作，不扩大为四类MFA/IME/Finder拖放/所有边界。
+
+精确PID24956串行TimeProfiler20s、Allocations20s、Leaks30s attach均exit0，无签名权限放宽；Leaks表不可导出不能猜扫描结果。正常重启后新PID25406另执行一次实际leaks -nocontext -nostacks，exit0/106811 malloc nodes/14853KB/0 leaked bytes，仅空闲时点。性能原始trace含工具自身采集元数据，保留本地ignored证据，不上传或提交。
+
+未插桩正式App阶段采样已启动960秒/5秒，只观察准确PID/UID/birth/路径及所属已观察SSH/helper。独立脚本和C辅助经主管及交叉源审，修正子列表errno与有限时钟/独立截止，未知拒绝；CPU为ps报告值、非5秒区间CPU，RSS相加重复共享页，线程不是Swift任务。不因工具正常收口就判产品性能通过。
+
+## 2026-10-29 自动回查纠正
+
+只读核对所有当前稳定性evidence：只有首轮cycles原failed，修复后driver未运行、24h尚未启动。原正式App有限采样960.010223秒正常结束、192样本，但全程只观察到App，最大SSH数0；fiveSessions阶段marker未对应实际会话，不能算五会话/输出测试。空闲App RSS范围106.515625～111.03125 MiB、FD11，仅保留该窄范围结果，不改原始记录。App25406仍在，有限relay24420已退出。
+
+实际heartbeat提前ACTIVE，已通过工具删除openlxssh无效回查，避免继续检查不存在的24h测试；原用户自动回查授权保留，真实长测启动后再建。没有启动新测试、修改时钟/电源、读取生产凭据、推送或Apple上传。下一步与未完成状态已写ENGINEERING_STATE顶部。
+
+## 2026-10-29 正式App有限五会话与工具准备收口
+
+用户要求按成本分工执行，常规检查/GUI资源/定向测试实际派gpt-6.1-terra/medium，主管处理诊断与关键小修。原快速新建5案仅4认证、第5扫描失败，relay18accepted/1rejected/18finished/cleanup_failed0；没有拒绝原因，不能确证是并发上限。原案保留PARTIAL，所有5标签正常关闭，观察到4SSH全部confirmedGone。初次相对输出路径参数错误exit1及旧observer受控exit143均保留，不当产品失败或成功。
+
+新案逐个确认outer-auth与shell后再建下一项，同一正式build3/同一签名/原中继限额：5会话持续319.865781秒、64完整样本，RSS App+SSH均125.139/峰125.516 MiB；FD96/PTY vnode35。输出/切换132.954083秒、27样本、5SSH完整，RSS均131.601/峰135.438 MiB；120批×100行×65B为命令定义780000B，非独立实收证明。屏幕末尾SERIAL_LOAD_DONE_748fbfed及随后RECOVERY_OK_748fbfed真实出现；中途AX编号失效刷新后继续，原工具错误保留，不算产品错误。
+
+recovery至closed包含最后关闭过渡，不把全168秒当5会话；closed至finite-end204.853927秒40样本，只有App，RSS均118.351/峰119.016 MiB、FD16/PTY0、五SSH全部退役。采样自然exit0、1000.004542秒、200样本/remainingObservedChildren0。原始JSONL/phase UUID748fbfed-3011-4e53-a4f7-672aa340a941，主管primary-review-748fbfed.json独立重算；CPU为ps调度报告值，RSS共享页/PTY描述符重复计，短于采样间隔的helper和Swift任务不作完整覆盖声明。
+
+长测驱动原来同时发起5次三算法keyscan。主管只调整测试工具为逐项真实认证的有限准备，避免把并发突发当24h前提；检查此前项持续连接，错误/缺auth或PID/取消/睡眠/断开拒绝。原有86400秒从全部5项就绪后才开始，计时与cleanup门不变。新增5项加原采样/身份/清理共28项XCTest，由Terra在资源关闭后2分钟一次执行全过，主管读取实际日志/命令/cwd/exit并源审。准备新driver，不将旧a215静态校验沿用为改后来源，不在此声称200/24h通过。

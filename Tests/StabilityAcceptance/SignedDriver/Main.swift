@@ -188,13 +188,10 @@ private enum SignatureGuard {
         return totals
     }
     func runSoak() async throws {
-        for _ in 0..<5 { let session = try make(); try session.connect() }
-        for _ in 0..<600 {
-            if stop.requested { throw StabilityError.cancelled }
-            if active.contains(where: { $0.phase == .failed || $0.failure != nil }) { throw StabilityError.connectionLost }
-            if active.count == 5 && active.allSatisfy({ $0.phase == .connected && $0.authenticated && $0.ownedPID != nil }) { break }
-            await wait()
-        }
+        try await FiniteLifecycle.connectFiveSequentially(interruption: {
+            if self.stop.slept { return .timerDiscontinuity }
+            return self.stop.requested ? .cancelled : nil
+        }, make: { try self.make() }, wait: { await self.wait() })
         guard active.count == 5, active.allSatisfy({ $0.phase == .connected && $0.authenticated && $0.ownedPID != nil }) else { throw StabilityError.timeout }
         soakStarted = true
         let started = ClockReading.now()

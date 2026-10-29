@@ -67,6 +67,38 @@ public struct CycleTotals: Codable, Equatable, Sendable {
 }
 
 @MainActor public enum FiniteLifecycle {
+    /// Preparation is serial to avoid overlapping keyscan bursts against a bounded
+    /// test transport. The caller owns every created session and drains on failure.
+    /// This does not start the soak clock or shorten the five-session duration.
+    public static func connectFiveSequentially(interruption: () -> StabilityError?,
+                                              make: () throws -> any AcceptanceSession,
+                                              wait: () async -> Void) async throws {
+        var prepared: [any AcceptanceSession] = []
+        func ready(_ session: any AcceptanceSession) -> Bool {
+            session.phase == .connected && session.authenticated && session.ownedPID != nil && session.failure == nil
+        }
+        for _ in 0..<5 {
+            if let error = interruption() { throw error }
+            guard prepared.allSatisfy(ready) else { throw StabilityError.connectionLost }
+            let session = try make()
+            try session.connect()
+            var authenticated = false
+            for _ in 0..<600 {
+                if let error = interruption() { throw error }
+                guard prepared.allSatisfy(ready), session.failure == nil,
+                      session.phase != .failed, session.phase != .closing, session.phase != .closed else {
+                    throw StabilityError.connectionLost
+                }
+                if ready(session) { authenticated = true; break }
+                await wait()
+            }
+            guard authenticated else { throw StabilityError.timeout }
+            prepared.append(session)
+        }
+        if let error = interruption() { throw error }
+        guard prepared.count == 5, prepared.allSatisfy(ready) else { throw StabilityError.connectionLost }
+    }
+
     /// Bounds are finite even if a backend never transitions. The production
     /// waiter is an ordinary 50 ms Task.sleep, not a fake clock or fast-forward.
     public static func closeAndDrain(_ session: any AcceptanceSession,
