@@ -41,6 +41,10 @@ enum SecurityUIFailure: Error {
 enum PasswordChoice: Sendable { case preserve, manual, forget, remember(SecretBytes) }
 enum KeyCreation: Sendable { case generate, importFile(URL) }
 enum SecuritySaveOutcome: Sendable { case saved, savedWithCleanupPending }
+struct SecurityHostSaveResult: Sendable {
+    let host: HostConfiguration
+    let outcome: SecuritySaveOutcome
+}
 struct KeyCreationOutcome: Equatable, Sendable {
     let id: UUID
     let cleanupPending: Bool
@@ -157,7 +161,14 @@ actor SecurityCoordinator {
         return try await storage().0.publicKey(for: id)
     }
 
-    @discardableResult func saveHost(_ supplied: HostConfiguration, isNew: Bool, password: PasswordChoice) async throws -> SecuritySaveOutcome {
+    @discardableResult func saveHost(_ supplied: HostConfiguration, isNew: Bool, password: PasswordChoice, tagIDs: Set<UUID>? = nil) async throws -> SecuritySaveOutcome {
+        try await saveHostCommitted(supplied, isNew: isNew, password: password, tagIDs: tagIDs).outcome
+    }
+
+    /// Returns the actual committed credential reference, not the pre-save supplied snapshot.
+    /// Existing callers keep the outcome-only API; editors additionally supply their read baseline.
+    func saveHostCommitted(_ supplied: HostConfiguration, isNew: Bool, password: PasswordChoice,
+                           tagIDs: Set<UUID>? = nil, expected: HostEditPrecondition? = nil) async throws -> SecurityHostSaveResult {
         try begin(); defer { busy = false }
         let (_, journal) = try storage()
         let metadata = try await repository.securityMetadata()
@@ -189,20 +200,24 @@ actor SecurityCoordinator {
         if host.authentication.needsKey { host.credentialRef = nil; host.savePasswordAuthorized = false }
         var changes: [RepositoryChange] = []
         if let created { changes.append(.registerCredential(.init(id: created.id, purpose: .password, isSavingAuthorized: true))) }
-        changes.append(isNew ? .insertHost(host) : .updateHost(host))
+        if isNew { changes.append(.insertHost(host)) }
+        else if let original {
+            changes.append(.updateHostIfUnchanged(host, expected: expected ?? .init(host: original)))
+        }
+        if let tagIDs { changes.append(.setHostTags(hostID: host.id, tagIDs: tagIDs)) }
         do { try await repository.apply(changes) }
-        catch is AppStorageFailure { return .savedWithCleanupPending }
+        catch is AppStorageFailure { return .init(host: host, outcome: .savedWithCleanupPending) }
         catch { if let created { try await compensate(created) }; throw error }
         do {
             if let created { try journal.remove(created.id) }
             // Old shared references are never deleted before the new host transaction commits.
             if let old = original?.credentialRef, old != host.credentialRef { try await deleteIfUnusedCredential(old) }
             let metadata = try await repository.securityMetadata()
-            return metadata.tickets.isEmpty ? .saved : .savedWithCleanupPending
+            return .init(host: host, outcome: metadata.tickets.isEmpty ? .saved : .savedWithCleanupPending)
         } catch {
             // Host is already committed. Never make the editor retry insertion or claim that
             // the metadata save failed just because later exact cleanup needs attention.
-            return .savedWithCleanupPending
+            return .init(host: host, outcome: .savedWithCleanupPending)
         }
     }
 
@@ -301,7 +316,7 @@ actor SecurityCoordinator {
     func forgetHostPassword(_ hostID: UUID) async throws {
         let metadata = try await repository.securityMetadata()
         guard let host = metadata.hosts.first(where: { $0.id == hostID }) else { throw RepositoryError.notFound }
-        try await saveHost(host, isNew: false, password: .forget)
+        _ = try await saveHostCommitted(host, isNew: false, password: .forget, expected: .init(host: host))
     }
     func deleteUnusedCredential(_ id: UUID) async throws {
         try begin(); defer { busy = false }

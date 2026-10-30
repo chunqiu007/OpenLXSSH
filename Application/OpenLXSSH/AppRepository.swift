@@ -30,6 +30,8 @@ struct AppSnapshot: Sendable {
 
 protocol AppRepositoryProtocol: Sendable {
     func snapshot(query: HostQuery) async throws -> AppSnapshot
+    /// A single-direction invalidation channel. Reads never publish, including refreshes by consumers.
+    func metadataChanges() async -> AsyncStream<Void>
     func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot
     func folderDeletionImpact(id: UUID) async throws -> FolderDeletionImpact
     func tagDeletionImpact(id: UUID) async throws -> TagDeletionImpact
@@ -54,6 +56,7 @@ struct SecurityMetadata: Sendable {
 extension AppRepositoryProtocol {
     // Older test repositories need not implement the new metadata surface. Unsupported operations
     // fail explicitly instead of fabricating an empty catalog, a zero impact, or a successful save.
+    func metadataChanges() async -> AsyncStream<Void> { AsyncStream { $0.finish() } }
     func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot { throw RepositoryError.notFound }
     func folderDeletionImpact(id: UUID) async throws -> FolderDeletionImpact { throw RepositoryError.notFound }
     func tagDeletionImpact(id: UUID) async throws -> TagDeletionImpact { throw RepositoryError.notFound }
@@ -123,6 +126,16 @@ actor AppRepository: AppRepositoryProtocol {
     private let location: AppDataLocation
     private var database: OpenLXSSHDatabase?
     private let afterCommit: @Sendable () throws -> Void
+    private var metadataObservers: [UUID: AsyncStream<Void>.Continuation] = [:]
+    func metadataChanges() async -> AsyncStream<Void> {
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            metadataObservers[id] = continuation
+            continuation.onTermination = { [weak self] _ in Task { await self?.removeObserver(id) } }
+        }
+    }
+    private func removeObserver(_ id: UUID) { metadataObservers[id] = nil }
+    private func metadataDidCommit() { for observer in metadataObservers.values { observer.yield(()) } }
     init(location: AppDataLocation = .applicationSupport, afterCommit: @escaping @Sendable () throws -> Void = {}) {
         self.location = location; self.afterCommit = afterCommit
     }
@@ -166,6 +179,8 @@ actor AppRepository: AppRepositoryProtocol {
     }
 
     private func validateCommittedStorage() throws {
+        // Commit is irrevocable even if post-commit access verification fails.
+        metadataDidCommit()
         do { try afterCommit(); _ = try location.databaseDirectory() }
         catch { throw AppStorageFailure.committedStorageUnsafe }
     }
