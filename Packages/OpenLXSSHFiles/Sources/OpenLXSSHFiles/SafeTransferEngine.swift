@@ -130,11 +130,13 @@ public struct SafeTransferEngine: Sendable {
     public func copy(hostID: String, source: any RemoteFileService, sourcePath: RemotePath,
                      destination: any RemoteFileService, destinationPath: RemotePath,
                      conflict: ConflictDecision = .fail, token: CancellationToken,
-                     policy: TransferPolicy = .init(), hooks: TransferHooks = .init()) async throws -> TransferReport {
+                     policy: TransferPolicy = .init(), hooks: TransferHooks = .init(),
+                     sourceManifest: TransferSourceManifest? = nil) async throws -> TransferReport {
+        try sourceManifest?.checkBinding(hostID: hostID, source: source, sourcePath: sourcePath, destination: destination, destinationPath: destinationPath)
         let target = try conflictDestination(destinationPath, conflict)
         let action: ConflictDecision = { if case .renameTo = conflict { return .fail }; return conflict }()
         return try await scheduler.onHost(hostID, token: token) {
-            let result = await self.copyFile(source, sourcePath, destination, target, action, token, policy, hooks)
+            let result = await self.copyFile(source, sourcePath, destination, target, action, token, policy, hooks, manifest: sourceManifest)
             return TransferReport(items: [result])
         }
     }
@@ -147,7 +149,7 @@ public struct SafeTransferEngine: Sendable {
                           _ destination: any RemoteFileService, _ destinationPath: RemotePath,
                           _ conflict: ConflictDecision, _ token: CancellationToken,
                           _ policy: TransferPolicy, _ hooks: TransferHooks,
-                          acknowledgedRisks: [TransferRisk] = []) async -> TransferItemResult {
+                          acknowledgedRisks: [TransferRisk] = [], manifest: TransferSourceManifest? = nil) async -> TransferItemResult {
         var temporary: RemotePath?
         var sourceHandle: FileHandleID?
         var destinationHandle: FileHandleID?
@@ -160,7 +162,9 @@ public struct SafeTransferEngine: Sendable {
             }
             try await TransferChecks.inspect(source, path: sourcePath, includeLeaf: true, token: token)
             try await TransferChecks.inspect(destination, path: destinationPath, includeLeaf: false, token: token)
-            let attr = try await source.lstat(sourcePath, token: token)
+            let observed = try await source.lstat(sourcePath, token: token)
+            try await manifest?.validateSource(source, path: sourcePath, token: token)
+            let attr = try manifest?.entry(sourcePath).attributes ?? observed
             guard attr.kind == .regular else {
                 throw FileServiceError(attr.kind == .symbolicLink ? .symbolicLink : .unsupported, operation: "source-kind", path: sourcePath)
             }
@@ -173,11 +177,12 @@ public struct SafeTransferEngine: Sendable {
                 if decision == .fail, let resolveConflict = hooks.resolveConflict {
                     decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing))
                     try token.check()
+                    try await manifest?.validateSource(source, path: sourcePath, token: token)
                 }
                 if case .renameTo = decision {
                     let target = try conflictDestination(destinationPath, decision)
                     let alternateHooks = TransferHooks(progress: hooks.progress, beforeCommit: hooks.beforeCommit)
-                    return await copyFile(source, sourcePath, destination, target, .fail, token, policy, alternateHooks, acknowledgedRisks: risks)
+                    return await copyFile(source, sourcePath, destination, target, .fail, token, policy, alternateHooks, acknowledgedRisks: risks, manifest: manifest)
                 }
                 if decision == .skip {
                     return TransferItemResult(source: sourcePath, destination: destinationPath, state: .skipped, retainedTemporary: nil,
@@ -190,6 +195,7 @@ public struct SafeTransferEngine: Sendable {
                 }
                 let risk = TransferRisk.overwriteIsAtomicButNotCompareAndSwap(path: destinationPath)
                 try await policy.require(risk); risks.append(risk)
+                try await manifest?.validateSource(source, path: sourcePath, token: token)
                 expectedTarget = existing
                 targetDigest = try await TransferChecks.contentFingerprint(destination, path: destinationPath, token: token)
                 guard try await destination.lstat(destinationPath, token: token) == existing else {
@@ -204,6 +210,7 @@ public struct SafeTransferEngine: Sendable {
                     throw FileServiceError(.needsCapabilityConfirmation, operation: "server-no-replace-unproven", path: destinationPath)
                 }
             }
+            try await manifest?.validateSource(source, path: sourcePath, token: token)
             let openedSource = try await source.open(sourcePath, mode: .read, token: token)
             sourceHandle = openedSource
             let sourceCheck = try await SourceIntegrityCheck(service: source, path: sourcePath, handle: openedSource, expected: attr, token: token)
@@ -212,6 +219,7 @@ public struct SafeTransferEngine: Sendable {
             for _ in 0..<3 {
                 let candidate = try destinationPath.parent.appending(FileName(".openlxssh-transfer.\(UUID().uuidString).part"))
                 do {
+                    try await manifest?.validateSource(source, path: sourcePath, token: token)
                     destinationHandle = try await destination.open(candidate, mode: .exclusiveWrite, token: token)
                     temporary = candidate; owned = true; break
                 } catch let error as FileServiceError where error.kind == .conflict { continue }
@@ -221,6 +229,7 @@ public struct SafeTransferEngine: Sendable {
             }
             var total: UInt64 = 0
             var sourceDigest = SHA256()
+            try await manifest?.validateSource(source, path: sourcePath, token: token)
             while true {
                 let data: Data = try await scheduler.chunk(token) {
                     try token.check()
@@ -269,6 +278,7 @@ public struct SafeTransferEngine: Sendable {
             // Keep the original handle until final path/handle comparison and optional digest finish.
             try await source.closeHandle(sh); sourceHandle = nil
             try token.check()
+            try await manifest?.validateSource(source, path: sourcePath, token: token)
             let request = CommitRequest(mode: expectedTarget == nil ? .noReplace : .replaceExisting,
                 expectedTarget: expectedTarget, expectedContentSHA256: targetDigest,
                 acceptNonCASOverwriteRisk: expectedTarget != nil, serverConfirmation: policy.serverCommit)
@@ -296,7 +306,9 @@ public struct SafeTransferEngine: Sendable {
     public func copyTree(hostID: String, source: any RemoteFileService, sourcePath: RemotePath,
                          destination: any RemoteFileService, destinationPath: RemotePath,
                          conflict: ConflictDecision = .fail, token: CancellationToken,
-                         policy: TransferPolicy = .init(), hooks: TransferHooks = .init()) async throws -> TransferReport {
+                         policy: TransferPolicy = .init(), hooks: TransferHooks = .init(),
+                         sourceManifest: TransferSourceManifest? = nil) async throws -> TransferReport {
+        try sourceManifest?.checkBinding(hostID: hostID, source: source, sourcePath: sourcePath, destination: destination, destinationPath: destinationPath)
         let target = try conflictDestination(destinationPath, conflict)
         let action: ConflictDecision = { if case .renameTo = conflict { return .fail }; return conflict }()
         // Component prefixes include equality and root's empty prefix, without confusing siblings.
@@ -315,6 +327,7 @@ public struct SafeTransferEngine: Sendable {
                     return TransferReport(items: [self.failure(FileServiceError(.conflict, operation: "renamed-tree-target-exists", path: target),
                                                               source: sourcePath, destination: target)])
                 } catch let error as FileServiceError where error.kind == .notFound { }
+                try await sourceManifest?.validateSource(source, path: sourcePath, token: token)
                 if try await source.lstat(sourcePath, token: token).kind == .directory {
                     // Reserve the new top-level name exclusively. A competing mkdir must fail,
                     // not silently convert rename-to into a merge of somebody else's directory.
@@ -322,14 +335,15 @@ public struct SafeTransferEngine: Sendable {
                 }
             }
             var results: [TransferItemResult] = []
-            await self.walk(source, sourcePath, destination, target, action, token, policy, hooks, 0, &results)
+            await self.walk(source, sourcePath, destination, target, action, token, policy, hooks, 0, &results, manifest: sourceManifest)
             return TransferReport(items: results)
         }
     }
     private func walk(_ source: any RemoteFileService, _ sourcePath: RemotePath,
                       _ destination: any RemoteFileService, _ destinationPath: RemotePath,
                       _ conflict: ConflictDecision, _ token: CancellationToken, _ policy: TransferPolicy, _ hooks: TransferHooks,
-                      _ depth: Int, _ results: inout [TransferItemResult], acknowledgedRisks: [TransferRisk] = []) async {
+                      _ depth: Int, _ results: inout [TransferItemResult], acknowledgedRisks: [TransferRisk] = [],
+                      manifest: TransferSourceManifest? = nil) async {
         var risks = acknowledgedRisks
         do {
             try token.check()
@@ -340,10 +354,12 @@ public struct SafeTransferEngine: Sendable {
             try await TransferChecks.inspect(source, path: sourcePath, includeLeaf: true, token: token)
             try await TransferChecks.inspect(destination, path: destinationPath, includeLeaf: false, token: token)
             guard depth <= maxDepth, results.count < maxItems else { throw FileServiceError(.resourceLimit, operation: "recursive-bound", path: sourcePath) }
-            let attr = try await source.lstat(sourcePath, token: token)
+            let observed = try await source.lstat(sourcePath, token: token)
+            try await manifest?.validateSource(source, path: sourcePath, token: token)
+            let attr = try manifest?.entry(sourcePath).attributes ?? observed
             if attr.kind == .regular {
                 results.append(await copyFile(source, sourcePath, destination, destinationPath, conflict, token, policy, hooks,
-                                              acknowledgedRisks: risks)); return
+                                              acknowledgedRisks: risks, manifest: manifest)); return
             }
             guard attr.kind == .directory else {
                 throw FileServiceError(attr.kind == .symbolicLink ? .symbolicLink : .unsupported, operation: "recursive-kind", path: sourcePath)
@@ -355,6 +371,7 @@ public struct SafeTransferEngine: Sendable {
                     if conflict == .fail, let resolveConflict = hooks.resolveConflict {
                         decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing))
                         try token.check()
+                        try await manifest?.validateSource(source, path: sourcePath, token: token)
                     } else { decision = conflict }
                     if decision == .skip {
                         results.append(TransferItemResult(source: sourcePath, destination: destinationPath, state: .skipped, retainedTemporary: nil,
@@ -370,25 +387,32 @@ public struct SafeTransferEngine: Sendable {
                         }
                         try await TransferChecks.inspect(destination, path: target, includeLeaf: false, token: token)
                         // Reserve the alternate directory exclusively, just like copyTree(renameTo:).
+                        try await manifest?.validateSource(source, path: sourcePath, token: token)
                         try await destination.mkdir(target, token: token)
-                        await walk(source, sourcePath, destination, target, .fail, token, policy, hooks, depth, &results, acknowledgedRisks: risks)
+                        await walk(source, sourcePath, destination, target, .fail, token, policy, hooks, depth, &results, acknowledgedRisks: risks, manifest: manifest)
                         return
                     }
                     throw FileServiceError(.conflict, operation: "directory-conflict", path: destinationPath)
                 }
             } catch let error as FileServiceError where error.kind == .notFound {
+                try await manifest?.validateSource(source, path: sourcePath, token: token)
                 try await destination.mkdir(destinationPath, token: token)
             }
-            let entries = try await source.list(sourcePath, token: token)
+            try await manifest?.validateSource(source, path: sourcePath, token: token)
+            let names: [FileName]
+            if let manifest { names = try manifest.entry(sourcePath).children ?? [] }
+            else { names = try await source.list(sourcePath, token: token).map(\.name) }
             results.append(TransferItemResult(source: sourcePath, destination: destinationPath, state: .succeeded(bytes: 0), retainedTemporary: nil,
                                               acknowledgedRisks: risks))
-            for (index, entry) in entries.enumerated() {
+            for (index, name) in names.enumerated() {
                 try token.check()
                 guard results.count < maxItems else { throw FileServiceError(.resourceLimit, operation: "recursive-item-bound", path: sourcePath) }
-                // Name was validated as one raw component; destination service also rejects symlinked ancestors.
-                await walk(source, try sourcePath.appending(entry.name), destination, try destinationPath.appending(entry.name),
-                           conflict, token, policy, hooks, depth + 1, &results)
-                if token.isCancelled && index + 1 < entries.count {
+                // Live lists only validate the approved set; they never supply new traversal work.
+                try await manifest?.validateSource(source, path: sourcePath, token: token)
+                await walk(source, try sourcePath.appending(name), destination, try destinationPath.appending(name),
+                           conflict, token, policy, hooks, depth + 1, &results, manifest: manifest)
+                if manifest != nil, case .failed(let error)? = results.last?.state, error.kind == .raceDetected { return }
+                if token.isCancelled && index + 1 < names.count {
                     throw FileServiceError(.cancelled, operation: "recursive-cancelled-with-remaining-items", path: sourcePath)
                 }
             }

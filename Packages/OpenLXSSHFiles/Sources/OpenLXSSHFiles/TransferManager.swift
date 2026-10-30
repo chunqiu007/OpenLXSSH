@@ -17,9 +17,11 @@ public struct TransferRequest: Sendable, Equatable {
     public let source: TransferLocation
     public let destination: TransferLocation
     public let kind: TransferKind
+    public let sourceManifest: TransferSourceManifest?
     public init(hostID: String, batchID: TransferBatchID = UUID(), source: TransferLocation,
-                destination: TransferLocation, kind: TransferKind = .file) {
+                destination: TransferLocation, kind: TransferKind = .file, sourceManifest: TransferSourceManifest? = nil) {
         self.hostID = hostID; self.batchID = batchID; self.source = source; self.destination = destination; self.kind = kind
+        self.sourceManifest = sourceManifest
     }
 }
 public enum TransferJobState: String, Sendable {
@@ -82,10 +84,12 @@ public struct TransferManagerSnapshot: Sendable, Equatable {
     public let jobs: [TransferJobSnapshot]
     public let isClosed: Bool
     public let serviceOperations: [TransferServiceOperationSnapshot]
-    public init(jobs: [TransferJobSnapshot], isClosed: Bool, serviceOperations: [TransferServiceOperationSnapshot] = []) {
-        self.jobs = jobs; self.isClosed = isClosed; self.serviceOperations = serviceOperations
+    public let planResources: TransferPlanResources
+    public init(jobs: [TransferJobSnapshot], isClosed: Bool, serviceOperations: [TransferServiceOperationSnapshot] = [],
+                planResources: TransferPlanResources = .empty) {
+        self.jobs = jobs; self.isClosed = isClosed; self.serviceOperations = serviceOperations; self.planResources = planResources
     }
-    public var hasActiveWork: Bool { !serviceOperations.isEmpty || jobs.contains { $0.state.isActive } }
+    public var hasActiveWork: Bool { planResources.hasPendingPlans || !serviceOperations.isEmpty || jobs.contains { $0.state.isActive } }
 }
 
 private enum ServiceOperationContext {
@@ -135,6 +139,27 @@ public actor TransferManager {
             TransferServiceOperationSnapshot(id: id, serviceID: serviceID, hostID: hostID, cancellationRequested: token.isCancelled)
         }
     }
+    private enum PlanPhase { case preparing, ready, confirming }
+    private struct PlanRecord {
+        var phase: PlanPhase = .preparing
+        var token: CancellationToken
+        let deadline: ContinuousClock.Instant
+        let serviceIDs: Set<TransferServiceID>
+        let confirmations: [TransferServiceID: ServerCommitConfirmation]
+        let retryOf: TransferJobID?
+        var plan: TransferBatchPlan?
+        var worker: Task<TransferBatchPlan, Error>?
+        var confirmationWorker: Task<Void, Error>?
+        var expiry: Task<Void, Never>?
+        var discardRequested = false
+        var entries: Int
+        var bytes: Int
+    }
+    private struct ManifestBudget { let entries: Int; let bytes: Int; var jobs: Set<TransferJobID> }
+    private let managerIdentity = UUID()
+    private let planLimits: TransferPlanLimits
+    private var plans: [UUID: PlanRecord] = [:]
+    private var manifestBudgets: [UUID: ManifestBudget] = [:]
     private struct BatchKey: Hashable { let hostID: String; let batchID: TransferBatchID }
     private let engine: SafeTransferEngine
     private let maxConcurrentJobs: Int
@@ -155,13 +180,15 @@ public actor TransferManager {
     private var closed = false
 
     public init(engine: SafeTransferEngine = .init(), maxConcurrentJobs: Int = 2, maxQueuedJobs: Int = 128,
-                maxStoredJobs: Int = 512, idleTimeout: Duration? = .seconds(60), maxServiceOperations: Int = 128) {
+                maxStoredJobs: Int = 512, idleTimeout: Duration? = .seconds(60), maxServiceOperations: Int = 128,
+                planLimits: TransferPlanLimits = .init()) {
         precondition((1...8).contains(maxConcurrentJobs) && (1...1024).contains(maxQueuedJobs))
         precondition(maxStoredJobs >= maxConcurrentJobs + maxQueuedJobs && maxStoredJobs <= 10_000)
         precondition(idleTimeout == nil || idleTimeout! > .zero)
         precondition((1...128).contains(maxServiceOperations))
         self.engine = engine; self.maxConcurrentJobs = maxConcurrentJobs; self.maxQueuedJobs = maxQueuedJobs
         self.maxStoredJobs = maxStoredJobs; self.idleTimeout = idleTimeout; self.maxServiceOperations = maxServiceOperations
+        self.planLimits = planLimits
     }
 
     /// Transfers service lifetime ownership to the manager. Remote services must be bound to their
@@ -187,10 +214,16 @@ public actor TransferManager {
         scheduleIdle(id)
         return id
     }
-    public var hasActiveWork: Bool { !serviceOperations.isEmpty || jobs.values.contains { $0.state.isActive } }
+    public var hasActiveWork: Bool { !plans.isEmpty || !serviceOperations.isEmpty || jobs.values.contains { $0.state.isActive } }
     public func snapshot() -> TransferManagerSnapshot {
         TransferManagerSnapshot(jobs: order.compactMap { jobs[$0]?.snapshot }, isClosed: closed,
-            serviceOperations: serviceOperationOrder.compactMap { serviceOperations[$0]?.snapshot })
+            serviceOperations: serviceOperationOrder.compactMap { serviceOperations[$0]?.snapshot }, planResources: planResources)
+    }
+    private var planResources: TransferPlanResources {
+        TransferPlanResources(preparing: plans.values.filter { $0.phase == .preparing }.count,
+            ready: plans.values.filter { $0.phase == .ready }.count, confirming: plans.values.filter { $0.phase == .confirming }.count,
+            reservedEntries: plans.values.reduce(0) { $0 + $1.entries } + manifestBudgets.values.reduce(0) { $0 + $1.entries },
+            reservedMetadataBytes: plans.values.reduce(0) { $0 + $1.bytes } + manifestBudgets.values.reduce(0) { $0 + $1.bytes })
     }
     /// At most 16 subscriptions; each buffers only the newest complete metadata snapshot.
     public func updates() throws -> AsyncStream<TransferManagerSnapshot> {
@@ -219,7 +252,7 @@ public actor TransferManager {
     /// cancelAllAndWait() from the closure: shutdown must await this very operation's cleanup.
     /// Invoke shutdown from the outer application lifecycle coordinator instead.
     public func withServiceOperation<T: Sendable>(serviceID: TransferServiceID, hostID: String,
-        scheduling: TransferServiceOperationScheduling = .serialized,
+        scheduling: TransferServiceOperationScheduling = .serialized, token operationToken: CancellationToken? = nil,
         _ operation: @escaping @Sendable (any RemoteFileService, CancellationToken) async throws -> T) async throws -> T {
         guard !closed else { throw FileServiceError(.closed, operation: "transfer-manager") }
         let managerID = ObjectIdentifier(self)
@@ -227,7 +260,7 @@ public actor TransferManager {
             throw FileServiceError(.conflict, operation: "nested-service-operation")
         }
         try validateHost(hostID)
-        let token = CancellationToken(); try token.check()
+        let token = operationToken ?? CancellationToken(); try token.check()
         guard let record = services[serviceID], record.closing == nil else {
             throw FileServiceError(.closed, operation: "service-operation-unavailable")
         }
@@ -281,6 +314,180 @@ public actor TransferManager {
         releaseService(record.serviceID); publish()
     }
 
+    /// Read-only preparation. The caller may cancel its task or the explicit token; neither
+    /// cancels/closes a shared service. Retained roots survive until actual completion/discard.
+    public func prepareBatch(_ requests: [TransferRequest],
+        serverConfirmations: [TransferServiceID: ServerCommitConfirmation] = [:],
+        token: CancellationToken = CancellationToken()) async throws -> TransferBatchPlan {
+        try await prepare(requests, confirmations: serverConfirmations, retryOf: nil, token: token)
+    }
+    public func prepareRetry(_ jobID: TransferJobID, batchID: TransferBatchID = UUID(),
+        token: CancellationToken = CancellationToken()) async throws -> TransferBatchPlan {
+        guard let previous = jobs[jobID], previous.state == .failed || previous.state == .cancelled else {
+            throw FileServiceError(.conflict, operation: "retry-requires-failed-or-cancelled-job")
+        }
+        let old = previous.request
+        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind)
+        return try await prepare([request], confirmations: previous.serverConfirmation.map { [old.destination.serviceID: $0] } ?? [:],
+                                 retryOf: jobID, token: token)
+    }
+    private func prepare(_ requests: [TransferRequest], confirmations: [TransferServiceID: ServerCommitConfirmation],
+                         retryOf: TransferJobID?, token: CancellationToken) async throws -> TransferBatchPlan {
+        try token.check()
+        guard confirmations.count <= requests.count,
+              Set(confirmations.keys).isSubset(of: Set(requests.map { $0.destination.serviceID })) else {
+            throw FileServiceError(.resourceLimit, operation: "manifest-confirmation-metadata-limit")
+        }
+        guard requests.allSatisfy({ $0.sourceManifest == nil }) else { throw FileServiceError(.conflict, operation: "prepare-requires-unplanned-requests") }
+        try validateAdmission(requests, confirmations: confirmations)
+        let descriptorBytes = requests.reduce(0) { $0 + 512 + $1.hostID.utf8.count + $1.source.path.bytes.count + $1.destination.path.bytes.count }
+        let planOverhead = descriptorBytes + 512 + requests.count * 256 + confirmations.values.reduce(0) { $0 + 128 + $1.evidence.utf8.count }
+        guard requests.count <= 128, planOverhead <= planLimits.maxMetadataBytes else {
+            throw FileServiceError(.resourceLimit, operation: "manifest-request-metadata-limit")
+        }
+        for (index, request) in requests.enumerated() {
+            for other in requests.prefix(index) where request.source.serviceID == other.source.serviceID {
+                guard !request.source.path.components.starts(with: other.source.path.components),
+                      !other.source.path.components.starts(with: request.source.path.components) else {
+                    throw FileServiceError(.conflict, operation: "manifest-overlapping-source-roots", path: request.source.path)
+                }
+            }
+        }
+        let usage = planResources, limits = planLimits
+        guard plans.count < limits.maxPendingPlans, usage.preparing < limits.maxConcurrentPreparations,
+              usage.reservedEntries <= limits.maxTotalEntries - limits.maxEntries,
+              usage.reservedMetadataBytes <= limits.maxTotalMetadataBytes - limits.maxMetadataBytes else {
+            throw FileServiceError(.resourceLimit, operation: "manifest-preparation-budget")
+        }
+        // No actor suspension before reserving the full scan allowance and both endpoint leases.
+        let id = UUID(), deadline = ContinuousClock.now.advanced(by: limits.lifetime), created = Date()
+        let serviceIDs = Set(requests.flatMap { [$0.source.serviceID, $0.destination.serviceID] })
+        for serviceID in serviceIDs { retainService(serviceID) }
+        plans[id] = PlanRecord(token: token, deadline: deadline, serviceIDs: serviceIDs, confirmations: confirmations,
+            retryOf: retryOf, entries: limits.maxEntries, bytes: limits.maxMetadataBytes)
+        let identities = services.mapValues { ObjectIdentifier($0.service) }
+        let owner = managerIdentity
+        let worker = Task<TransferBatchPlan, Error> {
+            var result: [TransferRequest] = [], issues: [TransferPlanIssue] = []
+            var remainingEntries = limits.maxEntries, remainingBytes = limits.maxMetadataBytes - planOverhead
+            for (index, request) in requests.enumerated() {
+                try token.check()
+                let entryAllowance = min(remainingEntries, self.engine.maxItems), byteAllowance = remainingBytes
+                let depthAllowance = min(limits.maxDepth, self.engine.maxDepth)
+                var scan = try await self.withServiceOperation(serviceID: request.source.serviceID, hostID: request.hostID, token: token) { service, operationToken in
+                    var scan = TransferManifestScan(maxEntries: entryAllowance, maxDepth: depthAllowance, maxBytes: byteAllowance)
+                    try await scan.run(service, request: request, token: operationToken)
+                    try operationToken.check(); return scan
+                }
+                let targetAllowance = remainingBytes - scan.metadataBytes
+                let destinationResult = try await self.withServiceOperation(serviceID: request.destination.serviceID, hostID: request.hostID, token: token) { service, operationToken in
+                    do {
+                        let anchors = try await TransferSourceManifest.anchors(service, parent: request.destination.path.parent, token: operationToken, maxBytes: targetAllowance)
+                        try operationToken.check()
+                        return (anchors, Optional<FileServiceError>.none)
+                    } catch {
+                        try operationToken.check()
+                        return ([], Optional(error as? FileServiceError ?? FileServiceError(.io, operation: "manifest-target-check")))
+                    }
+                }
+                var targetIssue = destinationResult.1
+                let anchorBytes = TransferSourceManifest.anchorBytes(destinationResult.0)
+                var targetAnchors = destinationResult.0
+                if anchorBytes > remainingBytes - scan.metadataBytes {
+                    targetIssue = FileServiceError(.resourceLimit, operation: "manifest-metadata-limit")
+                    targetAnchors = []; scan.complete = false
+                }
+                let manifestIssueBytes = (scan.issues + (targetIssue.map { [$0] } ?? [])).reduce(0) {
+                    $0 + 256 + $1.operation.utf8.count + ($1.path?.bytes.count ?? 0)
+                }
+                let size = scan.metadataBytes + TransferSourceManifest.anchorBytes(targetAnchors) + manifestIssueBytes
+                guard size <= remainingBytes else { throw FileServiceError(.resourceLimit, operation: "manifest-issue-metadata-limit") }
+                let manifest = TransferSourceManifest(planID: id, managerIdentity: owner, request: request,
+                    sourceIdentity: identities[request.source.serviceID]!, destinationIdentity: identities[request.destination.serviceID]!,
+                    scan: scan, destinationAnchors: targetAnchors, destinationIssue: targetIssue, metadataBytes: size)
+                remainingEntries -= manifest.entries.count; remainingBytes -= size
+                issues += manifest.issues.map { TransferPlanIssue(requestIndex: index, error: $0) }
+                result.append(TransferRequest(hostID: request.hostID, batchID: request.batchID, source: request.source,
+                    destination: request.destination, kind: request.kind, sourceManifest: manifest))
+            }
+            try token.check()
+            return TransferBatchPlan(id: id, createdAt: created, expiresAt: created.addingTimeInterval(Double(limits.lifetime.components.seconds) + Double(limits.lifetime.components.attoseconds) / 1e18), requests: result, issues: issues)
+        }
+        plans[id]!.worker = worker
+        plans[id]!.expiry = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            await self?.discardPreparedBatch(id)
+        }
+        publish()
+        return try await withTaskCancellationHandler {
+            do {
+                let plan = try await worker.value
+                try token.check()
+                guard !closed, var record = plans[id], !record.discardRequested, ContinuousClock.now < deadline else {
+                    throw FileServiceError(.cancelled, operation: "manifest-preparation-expired")
+                }
+                record.worker = nil; record.phase = .ready; record.plan = plan
+                // Entry charges include index/container overhead. Plan/request/evidence and
+                // bounded issue records are charged separately; even an empty issue plan costs
+                // one entry so rejected reviews cannot accumulate for free.
+                record.entries = max(1, plan.itemCount)
+                record.bytes = planOverhead + plan.requests.reduce(0) { $0 + ($1.sourceManifest?.metadataBytes ?? 0) }
+                guard record.bytes <= limits.maxMetadataBytes else { throw FileServiceError(.resourceLimit, operation: "manifest-final-metadata-limit") }
+                plans[id] = record; publish(); return plan
+            } catch { finishPlan(id); throw error }
+        } onCancel: { token.cancel() }
+    }
+    /// Consumes precisely the stored plan. Full read-only preflight precedes one atomic admission.
+    /// A second/late confirm cannot enter the same phase or enqueue any additional jobs.
+    public func confirmPreparedBatch(_ planID: UUID, token: CancellationToken = CancellationToken()) async throws -> [TransferJobID] {
+        try token.check()
+        guard !closed, var record = plans[planID], record.phase == .ready, !record.discardRequested,
+              ContinuousClock.now < record.deadline, let plan = record.plan, plan.canExecute else {
+            throw FileServiceError(.conflict, operation: "manifest-plan-not-confirmable")
+        }
+        try record.token.check()
+        record.token = token; record.phase = .confirming
+        let planToken = record.token
+        let worker = Task<Void, Error> {
+            for request in plan.requests {
+                let manifest = request.sourceManifest!
+                try planToken.check(); try token.check()
+                try await self.withServiceOperation(serviceID: request.source.serviceID, hostID: request.hostID, token: planToken) { service, operationToken in
+                    try await manifest.revalidate(service, token: operationToken); try operationToken.check()
+                }
+                try await self.withServiceOperation(serviceID: request.destination.serviceID, hostID: request.hostID, token: planToken) { service, operationToken in
+                    try await manifest.validateDestination(service, token: operationToken); try operationToken.check()
+                }
+            }
+        }
+        record.confirmationWorker = worker; plans[planID] = record; publish()
+        return try await withTaskCancellationHandler {
+            do {
+                try await worker.value; try planToken.check(); try token.check()
+                guard !closed, let current = plans[planID], !current.discardRequested, ContinuousClock.now < current.deadline else {
+                    throw FileServiceError(.cancelled, operation: "manifest-confirm-expired")
+                }
+                try validateAdmission(plan.requests, confirmations: current.confirmations, approvedPlanID: planID)
+                let ids = plan.requests.map { insert($0, confirmation: current.confirmations[$0.destination.serviceID], retryOf: current.retryOf) }
+                manifestBudgets[planID] = ManifestBudget(entries: current.entries, bytes: current.bytes, jobs: Set(ids))
+                finishPlan(planID); publish(); pump(); return ids
+            } catch { finishPlan(planID); throw error }
+        } onCancel: { planToken.cancel(); token.cancel() }
+    }
+    /// Idempotent. Waits for actual scan/preflight return before releasing leases and budget.
+    public func discardPreparedBatch(_ planID: UUID) async {
+        guard var record = plans[planID] else { return }
+        record.discardRequested = true; record.token.cancel(); record.expiry?.cancel(); plans[planID] = record
+        _ = await record.worker?.result; _ = await record.confirmationWorker?.result
+        finishPlan(planID)
+    }
+    private func finishPlan(_ id: UUID) {
+        guard let record = plans.removeValue(forKey: id) else { return }
+        record.expiry?.cancel()
+        for serviceID in record.serviceIDs { releaseService(serviceID) }
+        publish()
+    }
+
     @discardableResult public func enqueue(_ request: TransferRequest,
                                           serverConfirmation: ServerCommitConfirmation? = nil) throws -> TransferJobID {
         try enqueueBatch([request], serverConfirmations: serverConfirmation.map { [request.destination.serviceID: $0] } ?? [:])[0]
@@ -303,6 +510,7 @@ public actor TransferManager {
             throw FileServiceError(.conflict, operation: "retry-requires-failed-or-cancelled-job")
         }
         let old = previous.request
+        guard old.sourceManifest == nil else { throw FileServiceError(.conflict, operation: "manifest-retry-requires-prepare-and-confirm") }
         let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind)
         try validateAdmission([request], confirmations: previous.serverConfirmation.map { [request.destination.serviceID: $0] } ?? [:])
         let id = insert(request, confirmation: previous.serverConfirmation, retryOf: jobID)
@@ -314,7 +522,7 @@ public actor TransferManager {
         }
     }
     private func validateAdmission(_ requests: [TransferRequest],
-                                   confirmations: [TransferServiceID: ServerCommitConfirmation]) throws {
+                                   confirmations: [TransferServiceID: ServerCommitConfirmation], approvedPlanID: UUID? = nil) throws {
         guard !closed else { throw FileServiceError(.closed, operation: "transfer-manager") }
         guard !requests.isEmpty, requests.count <= maxQueuedJobs + maxConcurrentJobs,
               jobs.count + requests.count <= maxStoredJobs else {
@@ -331,6 +539,13 @@ public actor TransferManager {
         var additionalQueued = 0
         for request in requests {
             try validateHost(request.hostID)
+            if let manifest = request.sourceManifest {
+                guard manifest.planID == approvedPlanID, manifest.matches(request, manager: managerIdentity),
+                      manifest.sourceIdentity == services[request.source.serviceID].map({ ObjectIdentifier($0.service) }),
+                      manifest.destinationIdentity == services[request.destination.serviceID].map({ ObjectIdentifier($0.service) }) else {
+                    throw FileServiceError(.conflict, operation: "manifest-requires-original-plan-confirmation")
+                }
+            }
             for location in [request.source, request.destination] {
                 guard let record = services[location.serviceID], record.closing == nil else {
                     throw FileServiceError(.closed, operation: "transfer-service-unavailable", path: location.path)
@@ -384,10 +599,12 @@ public actor TransferManager {
                     switch request.kind {
                     case .file:
                         report = try await engine.copy(hostID: request.hostID, source: source, sourcePath: request.source.path,
-                            destination: destination, destinationPath: request.destination.path, token: token, policy: policy, hooks: hooks)
+                            destination: destination, destinationPath: request.destination.path, token: token, policy: policy, hooks: hooks,
+                            sourceManifest: request.sourceManifest)
                     case .tree:
                         report = try await engine.copyTree(hostID: request.hostID, source: source, sourcePath: request.source.path,
-                            destination: destination, destinationPath: request.destination.path, token: token, policy: policy, hooks: hooks)
+                            destination: destination, destinationPath: request.destination.path, token: token, policy: policy, hooks: hooks,
+                            sourceManifest: request.sourceManifest)
                     }
                     self.complete(id, generation: generation, report: report, error: nil)
                 } catch {
@@ -504,7 +721,13 @@ public actor TransferManager {
     /// retained temps; removing history never deletes files or permits removing an active job.
     @discardableResult public func removeFinishedJobs(_ ids: [TransferJobID]) -> Int {
         var count = 0
-        for id in ids where jobs[id]?.state.isActive == false { jobs[id] = nil; count += 1 }
+        for id in ids where jobs[id]?.state.isActive == false {
+            if let planID = jobs[id]?.request.sourceManifest?.planID {
+                manifestBudgets[planID]?.jobs.remove(id)
+                if manifestBudgets[planID]?.jobs.isEmpty == true { manifestBudgets[planID] = nil }
+            }
+            jobs[id] = nil; count += 1
+        }
         order.removeAll { jobs[$0] == nil }; publish(); return count
     }
     private func scheduleIdle(_ id: TransferServiceID) {
@@ -550,12 +773,15 @@ public actor TransferManager {
     public func cancelAllAndWait() async {
         if let shutdownTask { await shutdownTask.value; return }
         closed = true
+        let pendingPlans = Array(plans.keys)
+        for id in pendingPlans { plans[id]?.token.cancel() }
         let activeIDs = order.filter { jobs[$0]?.state.isActive == true }
         for id in activeIDs { cancel(id) }
         for operation in serviceOperations.values { operation.token.cancel() }
         let running = Array(workers.values)
         let operations = serviceOperations.values.map(\.drain)
         let task = Task {
+            for id in pendingPlans { await self.discardPreparedBatch(id) }
             for worker in running { await worker.value }
             for operation in operations { await operation.value }
             await self.closeServices(Array(self.services.keys))
