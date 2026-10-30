@@ -243,6 +243,18 @@ public final class OpenLXSSHDatabase: Sendable {
             try value.validate()
             guard try HostConfiguration.fetchOne(db, key: value.id) != nil else { throw RepositoryError.notFound }
             try value.update(db)
+        case .updateHostIfUnchanged(var value, let expected):
+            guard value.id == expected.host.id else { throw RepositoryError.staleRecord }
+            guard let current = try HostConfiguration.fetchOne(db, key: value.id) else { throw RepositoryError.notFound }
+            var comparable = current
+            comparable.lastConnectedAt = expected.host.lastConnectedAt
+            guard comparable == expected.host else { throw RepositoryError.staleRecord }
+            if let tags = expected.tagIDs {
+                let currentTags = Set(try UUID.fetchAll(db, sql: "SELECT tagID FROM hostTags WHERE hostID = ?", arguments: [value.id]))
+                guard currentTags == tags else { throw RepositoryError.staleRecord }
+            }
+            value.lastConnectedAt = current.lastConnectedAt
+            try value.validate(); try value.update(db)
         case .deleteHost(let id):
             _ = try HostConfiguration.deleteOne(db, key: id)
         case .saveFolder(let value):

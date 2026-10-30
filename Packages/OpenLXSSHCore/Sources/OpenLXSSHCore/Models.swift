@@ -5,6 +5,7 @@ public enum RepositoryError: Error, Equatable, Sendable {
     case invalidField(String)
     case notFound
     case conflictingID
+    case staleRecord
     case resourceInUse
     case savingNotAuthorized
     case cleanupAlreadyScheduled
@@ -259,9 +260,9 @@ public enum FolderFilter: Equatable, Sendable {
     case folder(UUID)
     case folderAndDescendants(UUID)
 }
-public enum HostSort: Sendable { case name, recentlyConnected, favorites }
-public enum HostSortDirection: Sendable { case ascending, descending }
-public struct HostQuery: Sendable {
+public enum HostSort: Equatable, Sendable { case name, recentlyConnected, favorites }
+public enum HostSortDirection: Equatable, Sendable { case ascending, descending }
+public struct HostQuery: Equatable, Sendable {
     public var search: String
     public var favoritesOnly: Bool
     public var folder: FolderFilter
@@ -277,9 +278,18 @@ public struct HostQuery: Sendable {
     }
 }
 
+/// Optimistic editor precondition checked under the same immediate write transaction as the update.
+/// Connection activity is deliberately not editable; it is ignored here and preserved by the update.
+public struct HostEditPrecondition: Equatable, Sendable {
+    public let host: HostConfiguration
+    public let tagIDs: Set<UUID>?
+    public init(host: HostConfiguration, tagIDs: Set<UUID>? = nil) { self.host = host; self.tagIDs = tagIDs }
+}
+
 /// Every batch is one real SQLite transaction. A failing command rolls back the entire batch.
 public enum RepositoryChange: Sendable {
     case insertHost(HostConfiguration), updateHost(HostConfiguration), deleteHost(UUID)
+    case updateHostIfUnchanged(HostConfiguration, expected: HostEditPrecondition)
     case saveFolder(HostFolder), moveFolder(UUID, parentID: UUID?), deleteFolder(UUID)
     /// A set is dissolved to its nearest surviving ancestors, independent of input order.
     case deleteFolders(Set<UUID>)

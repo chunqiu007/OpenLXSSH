@@ -667,6 +667,70 @@ final class VaultMetadataTests: XCTestCase {
         try checkIntegrity()
     }
 
+    func testConditionalHostUpdateRejectsRevokedKeyAndRollsBackWholeBatch() throws {
+        let key = ManagedKeyReference(algorithm: .ed25519), original = host()
+        var keyed = original; keyed.authentication = .privateKeyWithMFA; keyed.keyRef = key.id
+        let tag = HostTag(name: "original tag"), proposed = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        try database.apply([.registerKey(key), .insertHost(keyed), .addTag(tag), .assignTag(hostID: keyed.id, tagID: tag.id)])
+        var revoked = keyed; revoked.authentication = .passwordWithMFA; revoked.keyRef = nil
+        try database.updateHost(revoked)
+        var stale = keyed; stale.name = "stale rename"
+        expect(.staleRecord) {
+            try database.apply([.registerCredential(proposed),
+                .updateHostIfUnchanged(stale, expected: .init(host: keyed, tagIDs: [tag.id])),
+                .setHostTags(hostID: keyed.id, tagIDs: [])])
+        }
+        XCTAssertEqual(try database.host(id: keyed.id), revoked)
+        XCTAssertEqual(try database.tagIDs(hostID: keyed.id), [tag.id])
+        XCTAssertTrue(try database.credentials().isEmpty)
+        try reopen(); try checkIntegrity()
+    }
+
+    func testConditionalHostUpdateRejectsChangedTagsAndMetadataButPreservesNewActivity() throws {
+        let original = host(), first = HostTag(name: "first"), second = HostTag(name: "second")
+        try database.apply([.insertHost(original), .addTag(first), .addTag(second), .assignTag(hostID: original.id, tagID: first.id)])
+        let baseline = HostEditPrecondition(host: original, tagIDs: [first.id])
+        try database.assignTag(hostID: original.id, tagID: second.id)
+        var changed = original; changed.name = "renamed"
+        expect(.staleRecord) { try database.apply([.updateHostIfUnchanged(changed, expected: baseline)]) }
+        try database.unassignTag(hostID: original.id, tagID: second.id)
+        try database.setFavorite(hostID: original.id, isFavorite: true)
+        expect(.staleRecord) { try database.apply([.updateHostIfUnchanged(changed, expected: baseline)]) }
+        try database.setFavorite(hostID: original.id, isFavorite: false)
+        let activity = Date(timeIntervalSince1970: 123456)
+        try database.markConnected(hostID: original.id, at: activity)
+        try database.apply([.updateHostIfUnchanged(changed, expected: baseline), .setHostTags(hostID: original.id, tagIDs: [second.id])])
+        changed.lastConnectedAt = activity
+        XCTAssertEqual(try database.host(id: original.id), changed)
+        XCTAssertEqual(try database.tagIDs(hostID: original.id), [second.id])
+        try checkIntegrity()
+    }
+
+    func testConditionalHostUpdateWaitsForOtherWriterAndRejectsRevokedAuthorization() throws {
+        let credential = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        let original = HostConfiguration(name: "saved", address: "never.invalid", username: "fixture", credentialRef: credential.id, savePasswordAuthorized: true)
+        try database.apply([.registerCredential(credential), .insertHost(original)])
+        let other = try OpenLXSSHDatabase(directory: directory)
+        defer { try? other.close() }
+        let acquired = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0), failure = CopyThreadFailure()
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                try other.queue.write { db in
+                    try db.execute(sql: "UPDATE hosts SET credentialRef = NULL, savePasswordAuthorized = 0 WHERE id = ?", arguments: [original.id])
+                    acquired.signal(); Thread.sleep(forTimeInterval: 0.1)
+                }
+            } catch { failure.record(error); acquired.signal() }
+        }
+        XCTAssertEqual(acquired.wait(timeout: .now() + 5), .success)
+        var changed = original; changed.name = "old editor"
+        expect(.staleRecord) { try database.apply([.updateHostIfUnchanged(changed, expected: .init(host: original, tagIDs: []))]) }
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success); XCTAssertNil(failure.error)
+        XCTAssertNil(try database.host(id: original.id)?.credentialRef)
+        XCTAssertFalse(try XCTUnwrap(database.host(id: original.id)).savePasswordAuthorized)
+        XCTAssertEqual(try database.credentials(), [credential]); try checkIntegrity()
+    }
+
     func testStructuredVaultSnapshotContainsPathsAndPerHostTagIDsWithoutSecretData() throws {
         let root = HostFolder(name: "root"), group = HostFolder(name: "group")
         let nested = HostFolder(id: group.id, name: group.name, parentID: root.id)
