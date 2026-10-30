@@ -2,7 +2,15 @@
 
 更新：2026-10-30（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
-## 当前权威检查点（2026-10-29，CONTINUE）
+## 当前权威检查点（2026-10-30，U1六项修复门通过，继续U2，整体CONTINUE）
+
+- **当前目标取代旧发布推进顺序：** 用户已正式启动 Termius 桌面体验重构，交付完整、真实运行的本地体验候选；覆盖 `docs/ux/desktop-experience-spec.md` 的全部116条R要求、交接书UX-01～14、操作位置和状态表。达到 `UX_READY_FOR_USER` 后等待用户体验反馈，不代表整体V1.0人工验收完成。
+- **本轮授权边界：** 不连接生产、不读取真实凭据、不推送、不重开24h或无关历史大文件测试；复用既有批准的隔离服务。允许相关本地构建、既有身份离线签名和验收后本地提交；用户确认体验满意前不做新的Apple公证上传、时间戳请求或最终分发出包，原build3及失败证据保留。
+- **恢复实物核对（本次会话）：** 当前 `152489c`，启动实见 `main`、仅本文件已有12行差异；`ux/termius-desktop` 分支已存在且同一提交，现已安全切换，保留原改动。先前记载的四个agent ID无法恢复（工具返回No active local_agent），不将它们当完成调查。实见macOS26.7.1/25G241、Xcode26.3/17C529、Swift6.2.4、OpenSSH10.3p1、可用空间113GiB、Docker desktop-linux与四原服务healthy；未重建服务、未启动连接。
+- **必读已核对：** AGENTS、本状态、requirements、architecture、execution-plan、acceptance、UX handoff、完整spec及初始116条矩阵均已读取。六张本地图已经逐一调用Read，但主模型收到媒体不支持提示，已委派专门只读视觉调查，不把调用Read当作已完成视觉观察。
+- **当前里程碑：** U1六项修复门已独立验收：Cmd+F实际消费者、per-session search/dialog、原生隐藏/field editor焦点、完整SFTP身份授权链、任务入口显式展开、旧隐藏按钮改真实返回；最后tab/菜单sheet/最新Core切页等回归通过。审查 `docs/ux/u1-workspace-review.md`。下一项U2A兼容数据层（本地嵌套分组/标签/key label）后串行Vault UI，边界 `docs/ux/u2-implementation-boundary.md`。U1不等完整tab/布局/视觉或U2～U6；116父项仍INVESTIGATED，像素门未过。
+- **任务与所有权：** U1 R5 `agent_f96ea203-5823-472d-b7ac-a7ef30881838`、R6 `agent_2cfcc7b9-02e6-473b-84bf-47b3068365bc` 均返回并停止写入；主管独立审查发现最新Core切页误清pending的交叉回归后原R5小修+4项新test再冻结。当前无writer/runtime测试进程；主管维护状态/矩阵/本地提交，随后派唯一U2A writer。旧中断/失败任务不当成功；六图已有Codex文字依据，不重复无法读图委派。- **本轮审查与验证：** R5最终Debug build0/test175/0，HostProbe build0/workspace34/34/App0/8.066s（`DerivedData/UXVerification/U1-R5/*-4.*`）；主管独立正式min26四组69/0/exit0、最终HostProbe34/34/App0/8.090s，`DerivedData/UXVerification/U1-Primary/targeted-tests.log`与`workspace-final-review.json`。实际原生NSMenu/NSTextField field-editor/hitTest、搜索A-B-A、旧认证回答清空、CmdT/W和service/job owner保持已验，但网络为明确替身，不冒真实SSH/SFTP或像素。R4原157和R5首171及失败日志保留；完整U1审查/未覆盖边界见报告。无生产/真秘密/relay/Keychain/Apple/最终出包/24h。已交付一张合成数据原生截图但未像素评审，不改视觉为VERIFIED。相关本地提交后继续U2。
+## 重构前历史检查点（2026-10-29～30；与当前UX目标冲突时以上文为准）
 
 - **2026-10-30完整体验规格补充，仍未实施。** 用户明确要求尽量覆盖Termius的全部个人桌面交互，而非只改首先指出的页面。已补充docs/ux/desktop-experience-spec.md及termius-parity-matrix.csv，并更新原termius-redesign-handoff.md：覆盖视觉、标签/窗口、主机/分组/编辑、密钥/信任/认证、终端、双栏浏览/传输队列、菜单/快捷键/设置、空/忙/错/取消/恢复及可访问性；要求逐控件/状态记录参考依据、实现和证据。额外Termius能力逐项列实现/适配/范围外差异，不默认开启会话录制、云同步或原排除功能。矩阵初始NOT_STARTED不是现有功能缺失结论，ZCode先核对再执行。本轮仅修改任务文档，没有改产品代码、启动测试、连接主机或进行新Apple操作。
 

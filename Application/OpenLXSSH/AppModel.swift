@@ -20,6 +20,50 @@ enum SessionRouteResult: Equatable, Sendable {
     func closeAll()
 }
 
+enum WorkspacePage: Equatable {
+    case vault, sftp, session(UUID)
+    var sessionID: UUID? { if case .session(let id) = self { id } else { nil } }
+}
+struct WorkspaceInteractionContext: Equatable {
+    var hasAttachedSheet = false
+    var hasModalWindow = false
+    var hasOtherKeyWindow = false
+    var isEditingText = false
+    var allowsWorkspaceActions: Bool { !hasAttachedSheet && !hasModalWindow && !hasOtherKeyWindow }
+    var allowsWorkspaceSearch: Bool { allowsWorkspaceActions && !isEditingText }
+}
+
+enum WorkspaceCommand: Equatable { case newConnection, newHost, settings, search, connectionInfo }
+struct WorkspaceCommandRequest: Identifiable, Equatable {
+    let id = UUID()
+    let command: WorkspaceCommand
+}
+
+struct HostConnectionIdentity: Equatable {
+    let address: String
+    let port: Int
+    let username: String
+    let authentication: AuthenticationKind
+    let keyRef: UUID?
+    let credentialRef: UUID?
+    let savePasswordAuthorized: Bool
+    let keepaliveInterval: Int
+    let keepaliveCountMax: Int
+}
+extension HostConfiguration {
+    var connectionIdentity: HostConnectionIdentity {
+        HostConnectionIdentity(address: address, port: port, username: username, authentication: authentication,
+            keyRef: keyRef, credentialRef: credentialRef, savePasswordAuthorized: savePasswordAuthorized,
+            keepaliveInterval: keepaliveInterval, keepaliveCountMax: keepaliveCountMax)
+    }
+
+    /// Request/authorization comparisons include the stable row identity and
+    /// connection parameters, but intentionally ignore display-only metadata.
+    func matchesConnection(of other: HostConfiguration) -> Bool {
+        id == other.id && connectionIdentity == other.connectionIdentity
+    }
+}
+
 enum SidebarSelection: Hashable {
     case all, favorites, ungrouped, folder(UUID)
     func query(search: String) -> HostQuery {
@@ -78,7 +122,11 @@ struct AppIssue: Identifiable, Equatable {
     @Published var selection: SidebarSelection = .all
     @Published var search = ""
     @Published var selectedHostID: UUID?
+    @Published private(set) var connectionHosts: [HostConfiguration] = []
     @Published private(set) var connectionNotice: SessionRouteResult?
+    @Published private(set) var workspacePage: WorkspacePage = .vault
+    @Published private(set) var workspaceCommand: WorkspaceCommandRequest?
+    @Published private(set) var hostSearchFocusRequest: UUID?
     private var generation = 0
 
     init(repository: any AppRepositoryProtocol, sessionRouter: (any SessionRouting)? = nil, security: SecurityCoordinator? = nil,
@@ -94,6 +142,12 @@ struct AppIssue: Identifiable, Equatable {
         files = FilesController(connector: filesConnector ?? LibSSH2FilesConnector(repository: repository, security: security, environment: environment))
         lifecycle = AppLifecycleCoordinator(sessions: sessions)
         lifecycle.files = files
+        sessions.setWorkspaceVisible(false)
+        sessions.onSelectionChanged = { [weak self] id in
+            guard let self, case .session = workspacePage else { return }
+            workspacePage = id.map(WorkspacePage.session) ?? .vault
+            sessions.setWorkspaceVisible(id != nil)
+        }
         sessions.onAuthenticatedMetadata = { [weak self] in Task { await self?.reload() } }
     }
 
@@ -107,10 +161,16 @@ struct AppIssue: Identifiable, Equatable {
         do {
             let snapshot = try await repository.snapshot(query: selection.query(search: search))
             guard token == generation else { return false }
-            hosts = snapshot.hosts; folders = snapshot.folders; keys = snapshot.keys; settings = snapshot.settings
+            hosts = snapshot.hosts; connectionHosts = snapshot.allHosts ?? snapshot.hosts; folders = snapshot.folders; keys = snapshot.keys; settings = snapshot.settings
             sessions.updateSettings(settings)
             if let selectedHostID, !hosts.contains(where: { $0.id == selectedHostID }) { self.selectedHostID = nil }
-            if files.visible { files.show(host: selectedHost) }
+            if files.selectedHost != nil {
+                // The selected row can be an intentionally retained live-connection
+                // snapshot. Only the current Core catalog may update/revert it.
+                let wasVisible = files.visible
+                files.show(host: currentFilesHost(allowVaultSelection: false))
+                if !wasVisible { files.hide() }
+            }
             didLoad = true
             issue = nil
             return true
@@ -185,16 +245,73 @@ struct AppIssue: Identifiable, Equatable {
     }
 
     func requestSession(hostID: UUID, mode: SessionOpenMode) {
-        guard let host = hosts.first(where: { $0.id == hostID }) else { issue = .sanitized(RepositoryError.notFound); return }
+        guard let host = connectionHosts.first(where: { $0.id == hostID }) else { issue = .sanitized(RepositoryError.notFound); return }
         let request = SessionRequest(hostID: hostID, mode: mode)
         if let sessionRouter { connectionNotice = sessionRouter.open(request) }
-        else if let id = sessions.open(host, mode: mode) { connectionNotice = .opened(request, id) }
+        else if let id = sessions.open(host, mode: mode) {
+            connectionNotice = .opened(request, id)
+            showWorkspace(.session(id))
+        }
+    }
+
+    func showWorkspace(_ page: WorkspacePage) {
+        if case .session(let id) = page {
+            guard sessions.tabs.contains(where: { $0.id == id }) else { return }
+            sessions.select(id)
+        }
+        workspacePage = page
+        sessions.setWorkspaceVisible(page.sessionID != nil)
+        if page == .sftp { files.show(host: currentFilesHost(allowVaultSelection: true)) }
+    }
+    private func currentFilesHost(allowVaultSelection: Bool) -> HostConfiguration? {
+        if let id = files.selectedHost?.id {
+            // A missing/deleted row means no current host, not fallback to the
+            // old connection snapshot or an unrelated Vault selection.
+            return connectionHosts.first { $0.id == id }
+        }
+        guard allowVaultSelection, let id = selectedHostID else { return nil }
+        return connectionHosts.first { $0.id == id }
+    }
+    var canSearchWorkspace: Bool {
+        switch workspacePage {
+        case .vault: true
+        case .sftp: false // No file-filter consumer yet; the menu must say so by disabling.
+        case .session(let id): sessions.selectedTabID == id && sessions.selectedTab?.driver != nil
+        }
+    }
+    @discardableResult func sendWorkspaceCommand(_ command: WorkspaceCommand) -> Bool {
+        if command == .search {
+            guard canSearchWorkspace else { return false }
+            if workspacePage == .vault { hostSearchFocusRequest = UUID() }
+            else { guard sessions.showSearchInSelectedTab() else { return false } }
+        }
+        workspaceCommand = WorkspaceCommandRequest(command: command)
+        return true
+    }
+    func showTransferTasks() {
+        showWorkspace(.sftp)
+        files.tasksVisible = true
+    }
+    func returnToVaultFromFiles() {
+        files.hide() // Presentation only; the service, manager and jobs stay alive.
+        showWorkspace(.vault)
+    }
+    func switchWorkspace(by offset: Int) {
+        let pages: [WorkspacePage] = [.vault, .sftp] + sessions.tabs.map { .session($0.id) }
+        guard let index = pages.firstIndex(of: workspacePage) else { showWorkspace(.vault); return }
+        showWorkspace(pages[(index + offset % pages.count + pages.count) % pages.count])
+    }
+    func closeCurrentWorkspace() async -> Bool {
+        guard let id = workspacePage.sessionID else { return false }
+        await sessions.closeTab(id)
+        return true
     }
 
     func windowClosed() {
         generation += 1
         sessionRouter?.closeAll()
         connectionNotice = nil; selectedHostID = nil; search = ""; selection = .all
+        workspacePage = .vault; workspaceCommand = nil; sessions.setWorkspaceVisible(false)
         isLoading = false
     }
 }

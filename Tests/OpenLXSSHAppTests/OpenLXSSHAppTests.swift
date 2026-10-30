@@ -1,7 +1,9 @@
+import AppKit
 import Darwin
 import Foundation
 import XCTest
 import OpenLXSSHCore
+import OpenLXSSHFiles
 
 @MainActor final class OpenLXSSHAppTests: XCTestCase {
     private func temporaryDirectory() throws -> URL {
@@ -16,6 +18,234 @@ import OpenLXSSHCore
     }
     private func sample(_ name: String = "测试主机") -> HostConfiguration {
         HostConfiguration(name: name, address: "unit.invalid", username: "fixture")
+    }
+
+    func testFixedWorkspaceRoutingCommandsAndConnectionCatalog() async throws {
+        let (repository, _) = try repository()
+        let model = AppModel(repository: repository)
+        let first = sample("first"), second = sample("second")
+        XCTAssertTrue(awaiting: await model.saveHost(first, isNew: true))
+        XCTAssertTrue(awaiting: await model.saveHost(second, isNew: true))
+        model.search = "first"
+        XCTAssertTrue(awaiting: await model.reload())
+        XCTAssertEqual(model.hosts.map(\.id), [first.id])
+        XCTAssertEqual(Set(model.connectionHosts.map(\.id)), Set([first.id, second.id]))
+        XCTAssertEqual(model.workspacePage, .vault)
+        model.showWorkspace(.sftp)
+        XCTAssertEqual(model.workspacePage, .sftp)
+        XCTAssertTrue(model.sessions.tabs.isEmpty)
+        let closedSession = await model.closeCurrentWorkspace()
+        XCTAssertFalse(closedSession)
+        XCTAssertEqual(model.workspacePage, .sftp)
+        model.switchWorkspace(by: 1)
+        XCTAssertEqual(model.workspacePage, .vault)
+        model.switchWorkspace(by: -1)
+        XCTAssertEqual(model.workspacePage, .sftp)
+        model.sendWorkspaceCommand(.newConnection)
+        let firstCommand = model.workspaceCommand
+        model.sendWorkspaceCommand(.newConnection)
+        XCTAssertEqual(model.workspaceCommand?.command, .newConnection)
+        XCTAssertNotEqual(model.workspaceCommand?.id, firstCommand?.id)
+        model.showWorkspace(.session(UUID()))
+        XCTAssertEqual(model.workspacePage, .sftp)
+        model.windowClosed()
+        XCTAssertEqual(model.workspacePage, .vault)
+        XCTAssertNil(model.workspaceCommand)
+        await model.files.closeForWindow(); try await repository.close()
+    }
+
+    func testSearchConsumerAndQueueNavigationAreExplicitAndPreserveManager() async throws {
+        let (repository, _) = try repository()
+        let model = AppModel(repository: repository)
+        XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        let focus = model.hostSearchFocusRequest
+        XCTAssertNotNil(focus)
+        XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        XCTAssertNotEqual(model.hostSearchFocusRequest, focus)
+        let command = model.workspaceCommand
+        let manager = model.files.manager, controller = model.files
+        model.showWorkspace(.sftp)
+        XCTAssertFalse(model.canSearchWorkspace)
+        XCTAssertFalse(model.sendWorkspaceCommand(.search))
+        XCTAssertEqual(model.workspaceCommand, command)
+        for visible in [false, true] {
+            model.files.tasksVisible = visible
+            model.showWorkspace(.vault)
+            model.showTransferTasks()
+            XCTAssertEqual(model.workspacePage, .sftp)
+            XCTAssertTrue(model.files.tasksVisible)
+            XCTAssertTrue(model.files === controller)
+            XCTAssertTrue(model.files.manager === manager)
+        }
+        model.returnToVaultFromFiles()
+        XCTAssertEqual(model.workspacePage, .vault)
+        XCTAssertFalse(model.files.visible)
+        XCTAssertTrue(model.files.tasksVisible)
+        XCTAssertTrue(model.files.manager === manager)
+        await model.files.closeForWindow(); try await repository.close()
+    }
+
+    private func connectedFilesModel() async throws -> (AppRepository, AppModel, AppModelFilesConnector, HostConfiguration) {
+        let (repository, directory) = try repository()
+        let remote = try AppDataLocation.canonical(directory).appendingPathComponent("local-files-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let connector = AppModelFilesConnector(root: remote)
+        let model = AppModel(repository: repository, location: .isolated(directory), filesConnector: connector)
+        addTeardownBlock { await model.files.closeForWindow(); try await repository.close() }
+        let original = sample("connected snapshot A")
+        XCTAssertTrue(awaiting: await model.saveHost(original, isNew: true))
+        model.selectedHostID = original.id; model.showWorkspace(.sftp)
+        await model.files.waitUntilCurrentWorkCompletes()
+        model.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await model.files.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.files.state, .ready)
+        return (repository, model, connector, original)
+    }
+
+    func testSFTPWorkspaceEntryKeepsCurrentCoreEditPendingUntilExplicitReconnect() async throws {
+        let (repository, model, connector, original) = try await connectedFilesModel()
+        let manager = model.files.manager, context = try model.files.transferContext(upload: false)
+        var changed = original; changed.port += 1; changed.username = "updated-B"
+        try await repository.apply([.updateHost(changed)])
+        XCTAssertTrue(awaiting: await model.reload())
+        for _ in 0..<3 {
+            model.showWorkspace(.vault); model.showWorkspace(.sftp)
+            XCTAssertEqual(model.files.issue?.code, "files.hostChanged")
+            XCTAssertEqual(model.files.selectedHost, original)
+            XCTAssertEqual(model.files.state, .ready)
+            XCTAssertTrue(model.files.manager === manager)
+            XCTAssertEqual(try model.files.transferContext(upload: false).serviceID, context.serviceID)
+        }
+        let before = await connector.hosts
+        XCTAssertEqual(before, [original])
+        model.files.cancelCurrent(); await model.files.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.files.selectedHost, changed)
+        model.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await model.files.waitUntilCurrentWorkCompletes()
+        let after = await connector.hosts
+        XCTAssertEqual(after, [original, changed])
+        XCTAssertEqual(model.files.state, .ready)
+    }
+
+    func testOnlyActualCoreReversionClearsSFTPConfigurationWarning() async throws {
+        let (repository, model, connector, original) = try await connectedFilesModel()
+        let manager = model.files.manager, context = try model.files.transferContext(upload: false)
+        var changed = original; changed.port += 1
+        try await repository.apply([.updateHost(changed)])
+        XCTAssertTrue(awaiting: await model.reload())
+        model.showWorkspace(.vault); model.showWorkspace(.sftp)
+        XCTAssertEqual(model.files.issue?.code, "files.hostChanged")
+        var reverted = original; reverted.name = "Core really reverted to A"; reverted.isFavorite = true
+        try await repository.apply([.updateHost(reverted)])
+        XCTAssertTrue(awaiting: await model.reload())
+        model.showWorkspace(.vault); model.showWorkspace(.sftp)
+        XCTAssertNil(model.files.issue)
+        XCTAssertEqual(model.files.selectedHost, reverted)
+        XCTAssertTrue(model.files.manager === manager)
+        XCTAssertEqual(try model.files.transferContext(upload: false).serviceID, context.serviceID)
+        let before = await connector.hosts
+        XCTAssertEqual(before, [original])
+        model.files.cancelCurrent(); await model.files.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.files.selectedHost, reverted)
+        model.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await model.files.waitUntilCurrentWorkCompletes()
+        let after = await connector.hosts
+        XCTAssertEqual(after, [original, reverted])
+    }
+
+    func testHiddenSFTPReloadAndEntryResolveNewestCoreRow() async throws {
+        let (repository, model, connector, original) = try await connectedFilesModel()
+        let manager = model.files.manager, context = try model.files.transferContext(upload: false)
+        model.returnToVaultFromFiles(); XCTAssertFalse(model.files.visible)
+        var changed = original; changed.port += 1
+        try await repository.apply([.updateHost(changed)])
+        model.search = "no-match"
+        XCTAssertTrue(awaiting: await model.reload())
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertFalse(model.files.visible)
+        XCTAssertEqual(model.files.issue?.code, "files.hostChanged")
+        XCTAssertEqual(model.files.selectedHost, original)
+        model.showWorkspace(.sftp)
+        XCTAssertEqual(model.files.issue?.code, "files.hostChanged")
+        XCTAssertTrue(model.files.manager === manager)
+        XCTAssertEqual(try model.files.transferContext(upload: false).serviceID, context.serviceID)
+        model.files.cancelCurrent(); await model.files.waitUntilCurrentWorkCompletes()
+        model.returnToVaultFromFiles()
+        var latest = changed; latest.username = "newest-C"
+        try await repository.apply([.updateHost(latest)])
+        XCTAssertTrue(awaiting: await model.reload())
+        XCTAssertFalse(model.files.visible)
+        XCTAssertEqual(model.files.selectedHost, latest)
+        model.showWorkspace(.sftp)
+        XCTAssertEqual(model.files.selectedHost, latest)
+        await model.files.waitUntilCurrentWorkCompletes()
+        model.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await model.files.waitUntilCurrentWorkCompletes()
+        let connected = await connector.hosts
+        XCTAssertEqual(connected, [original, latest])
+    }
+
+    func testDeletedSFTPRowDoesNotReviveOldSnapshotOrSelectUnrelatedVaultHost() async throws {
+        let (repository, model, connector, original) = try await connectedFilesModel()
+        let other = sample("unrelated Vault selection")
+        try await repository.apply([.insertHost(other), .deleteHost(original.id)])
+        model.selectedHostID = other.id
+        model.showWorkspace(.vault)
+        XCTAssertTrue(awaiting: await model.reload())
+        XCTAssertNil(model.files.selectedHost)
+        XCTAssertEqual(model.files.state, .disconnected)
+        model.selectedHostID = nil
+        model.showWorkspace(.sftp)
+        XCTAssertNil(model.files.selectedHost)
+        XCTAssertFalse(model.files.canConnect)
+        let connected = await connector.hosts
+        XCTAssertEqual(connected, [original])
+    }
+
+    func testModalRoutingPolicyBlocksWorkspaceButLeavesTextEditingIndependent() {
+        XCTAssertTrue(WorkspaceInteractionContext().allowsWorkspaceActions)
+        for context in [WorkspaceInteractionContext(hasAttachedSheet: true),
+                        WorkspaceInteractionContext(hasModalWindow: true),
+                        WorkspaceInteractionContext(hasOtherKeyWindow: true)] {
+            XCTAssertFalse(context.allowsWorkspaceActions)
+            XCTAssertFalse(context.allowsWorkspaceSearch)
+        }
+        let editing = WorkspaceInteractionContext(isEditingText: true)
+        XCTAssertTrue(editing.allowsWorkspaceActions)
+        XCTAssertFalse(editing.allowsWorkspaceSearch)
+    }
+
+    func testNativeWorkspaceContainerResignsFieldEditorAndExcludesHiddenHitTesting() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 240), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil); window.contentView = nil }
+        let root = NSView(frame: window.contentRect(forFrameRect: window.frame)); window.contentView = root
+        let first = NativeWorkspacePageView(frame: root.bounds), second = NativeWorkspacePageView(frame: root.bounds)
+        let a = NSTextField(string: "A"), b = NSTextField(string: "B")
+        a.frame = NSRect(x: 20, y: 60, width: 200, height: 26); b.frame = a.frame
+        first.addSubview(a); second.addSubview(b); root.addSubview(first); root.addSubview(second)
+        second.setPageVisible(false)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(a))
+        let oldEditor = try XCTUnwrap(a.currentEditor())
+        XCTAssertTrue(window.firstResponder === oldEditor)
+        first.setPageVisible(false); second.setPageVisible(true)
+        XCTAssertTrue(first.isHidden)
+        XCTAssertNil(first.hitTest(NSPoint(x: 30, y: 70)))
+        XCTAssertFalse(first.acceptsFirstResponder)
+        XCTAssertNil(a.currentEditor())
+        XCTAssertFalse(window.firstResponder === oldEditor)
+        XCTAssertTrue(window.makeFirstResponder(b))
+        XCTAssertTrue(window.firstResponder === b.currentEditor())
+        let editor = try XCTUnwrap(b.currentEditor() as? NSTextView)
+        editor.selectAll(nil); editor.insertText("edited B", replacementRange: NSRange(location: NSNotFound, length: 0))
+        window.endEditing(for: b)
+        XCTAssertEqual(b.stringValue, "edited B")
+        XCTAssertEqual(a.stringValue, "A")
+        second.setPageVisible(false); first.setPageVisible(true)
+        XCTAssertTrue(window.makeFirstResponder(a))
+        XCTAssertTrue(window.firstResponder === a.currentEditor())
     }
 
     func testEmptyStartupHasDefaultsAndDoesNotRoute() async throws {
@@ -272,6 +502,21 @@ private func XCTAssertTrue(awaiting value: Bool, file: StaticString = #filePath,
 }
 private func XCTAssertFalse(awaiting value: Bool, file: StaticString = #filePath, line: UInt = #line) {
     XCTAssertFalse(value, file: file, line: line)
+}
+
+/// Real local file service only; records model routing, never SSH/SFTP or Keychain.
+private actor AppModelFilesConnector: FilesConnecting {
+    let root: URL
+    private(set) var hosts: [HostConfiguration] = []
+    init(root: URL) { self.root = root }
+    func connect(request: FilesRequest, input: FilesConnectInput, token: CancellationToken,
+                 trust: @escaping FileHostTrustHandler, keyboard: @escaping FilesKeyboardHandler,
+                 isCurrent: @escaping @Sendable () async -> Bool) async throws -> any RemoteFileService {
+        try token.check()
+        guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "app-model-local-stale") }
+        hosts.append(request.host)
+        return try LocalFileService(root: root)
+    }
 }
 
 @MainActor private final class RecordingRouter: SessionRouting {

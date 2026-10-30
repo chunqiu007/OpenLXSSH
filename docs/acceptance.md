@@ -1,5 +1,13 @@
 # OpenLXSSH V1.0 — 验收总表
 
+## 当前UX候选验收（2026-10-30，进行中，未UX_READY_FOR_USER）
+
+最新Goal是完整Termius桌面体验本地候选，覆盖全部116条DX R、UX-01～14、操作位置/状态表及新发现细项。权威逐项表为 `docs/ux/termius-parity-matrix.csv`，子项见 `docs/ux/termius-parity-subitems.csv`，证据门见 `docs/ux/verification-plan.md`，官方与未知/范围差异见 `docs/ux/u0-reference-and-differences.md`。下文旧V1 AC与历史证据仍保留，不因新UX代码编译或部分单元通过整体改绿。
+
+当前：U1六项修复门已主管独立通过，详细正常/异常覆盖与明确未覆盖范围见 `docs/ux/u1-workspace-review.md`。工程师最终Debug build/HostProbe build均0、Debug175 tests/0fail、原生workspace34/34/App0；主管另独立正式min26关键四组69/0、最终原生workspace34/34/App0。证据 `DerivedData/UXVerification/U1-R5` 和 `U1-Primary`。SFTP完整身份链、原生隐藏/焦点、逐会话搜索、CmdF消费者、任务入口、菜单模态路由及最新Core配置切页回归已具备本地/原生证据；网络仍为明确逻辑替身，不冒真实SSH/SFTP。六图已有Codex文字依据可实施，但当前主模型未见新版像素，视觉门保留；116父R尚无全部VERIFIED，不宣称整体完成或百分比。下一项U2A兼容数据/主机组织，后串行Vault UI。
+
+体验确认前不新Apple上传/时间戳/最终分发包；旧build3及原失败证据保持。人工IME/实体键盘与不可替代外部条件必须分别记已测/待测，不能由单元断言替代。
+
 **2026-10-30发布验证：** build3最终ZIP已完成Apple公证（422351c8… Accepted）、附票据、严格签名和Gatekeeper accepted；主管独立从最终ZIP解压/安装并正常启动，0会话。AC-34本机构建范围通过，最终归档摘要及完整原证据见工程状态顶部与mac26接手报告。第二台Mac及真实人工/企业场景尚未代验，整体仍待这些用户记录。
 
 **最新验收变更（2026-10-29）：** 用户明确接受本轮五真实会话连续约9h38m/1024完整样本，AC-29按变更标准通过；取消必须24h及重新长测条件。下方原24h中断记录保留，不再作为时长阻塞。当前进入DeveloperID签后安装/认证、公证与双机验收，整体尚未完成。

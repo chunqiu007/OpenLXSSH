@@ -8,6 +8,16 @@ struct FilesRequest: Equatable, Sendable {
     let id: UUID
     let generation: UInt64
     let host: HostConfiguration
+
+    /// A request keeps the display snapshot for prompts and diagnostics, but its
+    /// authorization identity deliberately excludes mutable presentation metadata.
+    /// This lets a repository refresh name/folder/favorite/history without
+    /// invalidating an in-flight request or prepared authentication plan.
+    static func == (lhs: FilesRequest, rhs: FilesRequest) -> Bool {
+        lhs.id == rhs.id && lhs.generation == rhs.generation
+            && lhs.host.id == rhs.host.id
+            && lhs.host.connectionIdentity == rhs.host.connectionIdentity
+    }
 }
 enum FilesInitialSecret: Sendable {
     case manual(OpenLXSSHSecurity.SecretBytes)
@@ -119,13 +129,13 @@ actor LibSSH2FilesConnector: FilesConnecting {
         try token.check()
         let metadata = try await repository.securityMetadata()
         try token.check()
-        guard await isCurrent(), metadata.hosts.contains(request.host) else { throw FileServiceError(.cancelled, operation: "host-authorization-changed") }
+        guard await isCurrent(), metadata.hosts.contains(where: { $0.matchesConnection(of: request.host) }) else { throw FileServiceError(.cancelled, operation: "host-authorization-changed") }
         try token.check()
         return metadata
     }
     private func validateAuthorization(_ authorization: FilesAuthenticationAuthorization, metadata: SecurityMetadata) throws {
         let host = authorization.request.host
-        guard metadata.hosts.contains(host) else { throw FileServiceError(.cancelled, operation: "host-authorization-changed") }
+        guard metadata.hosts.contains(where: { $0.matchesConnection(of: host) }) else { throw FileServiceError(.cancelled, operation: "host-authorization-changed") }
         if let key = authorization.key {
             guard host.authentication.needsKey, host.keyRef == key.id,
                   let currentKey = metadata.keys.first(where: { $0.id == key.id }), currentKey.algorithm == key.algorithm else {

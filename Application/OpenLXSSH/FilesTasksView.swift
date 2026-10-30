@@ -5,10 +5,11 @@ import OpenLXSSHFiles
 /// Mounted at the MainView root, not inside FilesPanelView or a terminal tab.
 struct FilesApplicationUI: View {
     @ObservedObject var model: FilesController
+    var showsTasks = true
     @State private var dialog: FilesDialog?
     var body: some View {
         VStack(spacing: 0) {
-            if model.tasksVisible {
+            if model.tasksVisible && showsTasks {
                 FilesTasksView(model: model) { decision in dialog = FilesDialog(content: .transferDecision(decision)) }
             }
             HStack {

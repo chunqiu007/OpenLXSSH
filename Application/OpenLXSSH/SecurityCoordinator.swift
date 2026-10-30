@@ -138,7 +138,7 @@ actor SecurityCoordinator {
         guard authorized, !Task.isCancelled, host.authentication.needsKey, let id = host.keyRef else { throw SecurityUIFailure.notAuthorized }
         let metadata = try await repository.securityMetadata()
         try Task.checkCancellation()
-        guard metadata.hosts.contains(host), let reference = metadata.keys.first(where: { $0.id == id }) else { throw RepositoryError.notFound }
+        guard metadata.hosts.contains(where: { $0.matchesConnection(of: host) }), let reference = metadata.keys.first(where: { $0.id == id }) else { throw RepositoryError.notFound }
         let keys = try storage().0
         let key = try await keys.key(id: id)
         try Task.checkCancellation()
@@ -148,7 +148,7 @@ actor SecurityCoordinator {
         try Task.checkCancellation()
         let after = try await repository.securityMetadata()
         try Task.checkCancellation()
-        guard after.hosts.contains(host), after.keys.contains(reference) else { throw SecurityUIFailure.notAuthorized }
+        guard after.hosts.contains(where: { $0.matchesConnection(of: host) }), after.keys.contains(reference) else { throw SecurityUIFailure.notAuthorized }
         return secret
     }
     func publicKey(_ id: UUID) async throws -> PublicKey {

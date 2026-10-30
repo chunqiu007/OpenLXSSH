@@ -54,8 +54,9 @@ struct TrustManagementView: View {
     @State private var replacement = ""
     @State private var verified = false
     var dismiss: () -> Void
-    init(environment: SessionEnvironment, dismiss: @escaping () -> Void) {
-        _model = StateObject(wrappedValue: TrustManagementModel(environment: environment)); self.dismiss = dismiss
+    let embedded: Bool
+    init(environment: SessionEnvironment, embedded: Bool = false, dismiss: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: TrustManagementModel(environment: environment)); self.dismiss = dismiss; self.embedded = embedded
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -96,7 +97,7 @@ struct TrustManagementView: View {
                 Spacer()
                 NativeButton(title: "完成", id: "trust.manage.done", enabled: !model.busy) { Task { await model.close(); dismiss() } }.fixedSize()
             }
-        }.padding(24).frame(width: 720)
+        }.padding(24).frame(width: embedded ? nil : 720).frame(maxWidth: embedded ? .infinity : nil)
         .task { await model.load() }
         .onDisappear { Task { await model.close() } }
     }

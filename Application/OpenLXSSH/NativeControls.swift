@@ -6,14 +6,15 @@ import OpenLXSSHCore
 /// editor state, while the coordinator closes only the NSWindow it presented.
 /// This avoids losing nested sheet dismissal after an observed model reload.
 extension View {
-    func nativeSheet<Item: Identifiable, Content: View>(item: Binding<Item?>,
+    func nativeSheet<Item: Identifiable, Content: View>(item: Binding<Item?>, isEnabled: Bool = true,
                                                        @ViewBuilder content: @escaping (Item) -> Content) -> some View {
-        background(NativeSheetPresenter(item: item, content: content).frame(width: 0, height: 0))
+        background(NativeSheetPresenter(item: item, isEnabled: isEnabled, content: content).frame(width: 0, height: 0))
     }
 }
 
 private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRepresentable {
     @Binding var item: Item?
+    let isEnabled: Bool
     let content: (Item) -> Content
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> SheetAnchorView {
@@ -24,7 +25,7 @@ private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRe
     func updateNSView(_ view: SheetAnchorView, context: Context) {
         // Read the item during SwiftUI's update so presentation-only state changes
         // invalidate this representable even when no observed model property changes.
-        context.coordinator.update(value: item, item: $item, content: content, parent: view.window)
+        context.coordinator.update(value: item, item: $item, isEnabled: isEnabled, content: content, parent: view.window)
     }
     static func dismantleNSView(_ view: SheetAnchorView, coordinator: Coordinator) {
         view.windowChanged = nil
@@ -40,9 +41,10 @@ private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRe
         private var presentedID: Item.ID?
         private var scheduled = false
         private var active = true
+        private var isEnabled = true
         private var dismissing = false
-        func update(value: Item?, item: Binding<Item?>, content: @escaping (Item) -> Content, parent: NSWindow?) {
-            self.value = value; self.item = item; self.content = content; self.parent = parent
+        func update(value: Item?, item: Binding<Item?>, isEnabled: Bool, content: @escaping (Item) -> Content, parent: NSWindow?) {
+            self.value = value; self.item = item; self.isEnabled = isEnabled; self.content = content; self.parent = parent
             schedule()
         }
         func setParent(_ parent: NSWindow?) { self.parent = parent; schedule() }
@@ -58,7 +60,7 @@ private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRe
         }
         private func reconcile() {
             guard active else { return }
-            guard let value, let content else {
+            guard isEnabled, let value, let content else {
                 dismissOwnedSheet(); return
             }
             if sheet != nil {
@@ -69,7 +71,7 @@ private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRe
             }
             guard let parent, parent.isVisible else { return }
             let hosting = NSHostingController(rootView: content(value))
-            let sheet = NSWindow(contentViewController: hosting)
+            let sheet = NativeOwnedSheetWindow(contentViewController: hosting)
             sheet.styleMask = [.titled]
             sheet.title = "OpenLXSSH"
             sheet.isReleasedWhenClosed = false
@@ -101,6 +103,79 @@ private struct NativeSheetPresenter<Item: Identifiable, Content: View>: NSViewRe
             item = nil; value = nil; content = nil
         }
     }
+}
+
+@MainActor private final class NativeOwnedSheetWindow: NSWindow {
+    override func performClose(_ sender: Any?) {
+        // Cmd+W dismisses this editor, never the workspace behind its sheet.
+        if let sheetParent { sheetParent.endSheet(self, returnCode: .cancel) }
+        else { super.performClose(sender) }
+    }
+}
+
+/// A page is mounted once. AppKit, rather than opacity, owns visibility and
+/// responder isolation for native controls (including the shared field editor).
+struct NativeWorkspacePage: NSViewRepresentable {
+    let id: String
+    let isVisible: Bool
+    let content: AnyView
+    init<Content: View>(id: String, isVisible: Bool, @ViewBuilder content: () -> Content) {
+        self.id = id; self.isVisible = isVisible; self.content = AnyView(content())
+    }
+    func makeNSView(context: Context) -> NativeWorkspacePageView {
+        let view = NativeWorkspacePageView(content: content)
+        view.identifier = NSUserInterfaceItemIdentifier(id)
+        view.setPageVisible(isVisible)
+        return view
+    }
+    func updateNSView(_ view: NativeWorkspacePageView, context: Context) {
+        // Do not replace rootView on routing updates: its State and native views
+        // belong to this page. ObservedObject subscriptions update it in place.
+        view.setPageVisible(isVisible)
+    }
+}
+
+@MainActor final class NativeWorkspacePageView: NSView {
+    private(set) var pageVisible = true
+    private(set) var hostingView: NSHostingView<AnyView>?
+    init(content: AnyView) {
+        super.init(frame: .zero)
+        let hosting = NSHostingView(rootView: content)
+        hostingView = hosting; addSubview(hosting)
+        hosting.autoresizingMask = [.width, .height]
+        clipsToBounds = true
+    }
+    override init(frame frameRect: NSRect) { super.init(frame: frameRect) }
+    required init?(coder: NSCoder) { fatalError("Use init(content:) or init(frame:)") }
+    override func layout() { super.layout(); hostingView?.frame = bounds }
+    func setPageVisible(_ visible: Bool) {
+        guard visible != pageVisible else { return }
+        if !visible { resignPageFocus() }
+        pageVisible = visible; isHidden = !visible
+        setAccessibilityHidden(!visible)
+    }
+    private func resignPageFocus() {
+        guard let window else { return }
+        let responder = window.firstResponder
+        let nativeView = responder as? NSView
+        // A field editor is window-owned, not a descendant of its NSTextField.
+        let editingField = allDescendants.compactMap { $0 as? NSTextField }
+            .first { $0.currentEditor() === responder && responder != nil }
+        if nativeView?.isDescendant(of: self) == true || editingField != nil {
+            window.endEditing(for: editingField ?? self)
+            if window.firstResponder === responder { _ = window.makeFirstResponder(nil) }
+        }
+    }
+    private var allDescendants: [NSView] {
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        return descendants(self)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard pageVisible, !isHiddenOrHasHiddenAncestor else { return nil }
+        return super.hitTest(point)
+    }
+    override var acceptsFirstResponder: Bool { pageVisible && !isHiddenOrHasHiddenAncestor }
+    override func becomeFirstResponder() -> Bool { acceptsFirstResponder && super.becomeFirstResponder() }
 }
 
 @MainActor private final class SheetAnchorView: NSView {
@@ -146,9 +221,12 @@ struct NativeField: NSViewRepresentable {
     let placeholder: String
     let id: String
     @Binding var text: String
+    var focusRequest: UUID? = nil
+    var onSubmit: ((Bool) -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
     func makeCoordinator() -> Coordinator { Coordinator($text) }
     func makeNSView(context: Context) -> NSTextField {
-        let view = NSTextField(string: text)
+        let view = FocusableNativeTextField(string: text)
         view.identifier = NSUserInterfaceItemIdentifier(id); view.placeholderString = placeholder
         view.delegate = context.coordinator; view.target = context.coordinator; view.action = #selector(Coordinator.committed(_:))
         view.lineBreakMode = .byTruncatingTail
@@ -157,15 +235,51 @@ struct NativeField: NSViewRepresentable {
     }
     func updateNSView(_ view: NSTextField, context: Context) {
         context.coordinator.text = $text
+        context.coordinator.onSubmit = onSubmit; context.coordinator.onCancel = onCancel
         if view.stringValue != text { view.stringValue = text }
+        (view as? FocusableNativeTextField)?.requestFocus(focusRequest)
     }
     @MainActor final class Coordinator: NSObject, NSTextFieldDelegate {
         var text: Binding<String>
+        var onSubmit: ((Bool) -> Void)?
+        var onCancel: (() -> Void)?
         init(_ text: Binding<String>) { self.text = text }
         func controlTextDidChange(_ notification: Notification) {
             if let field = notification.object as? NSTextField { text.wrappedValue = field.stringValue }
         }
         @objc func committed(_ sender: NSTextField) { text.wrappedValue = sender.stringValue }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            // Leave marked text and ordinary editing commands to the field editor.
+            guard !textView.hasMarkedText() else { return false }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)), let onCancel {
+                onCancel(); return true
+            }
+            if (commandSelector == #selector(NSResponder.insertNewline(_:)) || commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:))), let onSubmit {
+                onSubmit(NSApp.currentEvent?.modifierFlags.contains(.shift) == true); return true
+            }
+            return false
+        }
+    }
+}
+
+@MainActor private final class FocusableNativeTextField: NSTextField {
+    private var requestedFocus: UUID?
+    private var appliedFocus: UUID?
+    private var focusScheduled = false
+    func requestFocus(_ request: UUID?) { requestedFocus = request; scheduleFocus() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleFocus() }
+    override func viewDidUnhide() { super.viewDidUnhide(); scheduleFocus() }
+    override func layout() { super.layout(); scheduleFocus() }
+    private func scheduleFocus() {
+        guard requestedFocus != nil, requestedFocus != appliedFocus, !focusScheduled else { return }
+        focusScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            focusScheduled = false
+            guard let request = requestedFocus, request != appliedFocus,
+                  let window, !isHiddenOrHasHiddenAncestor, window.attachedSheet == nil else { return }
+            if window.makeFirstResponder(self) { appliedFocus = request }
+        }
     }
 }
 

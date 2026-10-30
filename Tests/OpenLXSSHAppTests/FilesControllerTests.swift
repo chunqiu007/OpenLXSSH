@@ -25,6 +25,38 @@ import OpenLXSSHTrust
         model.connect(input()); await model.waitUntilCurrentWorkCompletes()
         XCTAssertEqual(model.state, .ready)
     }
+    private func refreshedMetadata(_ host: HostConfiguration) -> HostConfiguration {
+        var refreshed = host
+        refreshed.name = "updated display name"
+        refreshed.isFavorite = true; refreshed.favoriteOrder = 4
+        refreshed.lastConnectedAt = Date(timeIntervalSince1970: 123)
+        return refreshed
+    }
+    private func waitForBoundary(_ condition: @MainActor () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !(await condition()) {
+            guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "files-controller-test-boundary") }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+    private func waitForScriptedPrompt(_ model: FilesController, _ connector: ScriptedFilesConnector) async throws {
+        try await waitForBoundary {
+            let waiting = await connector.isWaitingForRound()
+            return waiting && (model.keyboardPrompt != nil || model.trustPrompt != nil)
+        }
+    }
+    private func scripted(_ script: ScriptedFilesConnector.Script) async throws -> (FilesController, ScriptedFilesConnector, HostConfiguration) {
+        let root = try root(), connector = ScriptedFilesConnector(root: root, script: script)
+        let model = FilesController(connector: connector, idleTimeout: nil), original = host()
+        addTeardownBlock {
+            await MainActor.run { model.cancelCurrent() }
+            await connector.releaseRound()
+            await model.closeForWindow()
+        }
+        model.show(host: original); await model.waitUntilCurrentWorkCompletes()
+        model.connect(input())
+        return (model, connector, original)
+    }
     func testStartsHiddenAndRepeatedShowDoesNotConnect() async throws {
         let (_, connector, model) = try local()
         XCTAssertFalse(model.visible)
@@ -103,6 +135,143 @@ import OpenLXSSHTrust
         XCTAssertEqual(awaited: await connector.lastHost?.port, 2228)
         XCTAssertEqual(awaited: await connector.lastHost?.username, "changed")
         await model.closeForWindow()
+    }
+    func testReadyMetadataRefreshPreservesConnectorServiceManagerAndJobIdentity() async throws {
+        let (remote, connector, model) = try local(), source = try root()
+        addTeardownBlock { await model.closeForWindow() }
+        try Data("new".utf8).write(to: source.appendingPathComponent("report"))
+        try Data("existing".utf8).write(to: remote.appendingPathComponent("report"))
+        await connect(model)
+        let original = try XCTUnwrap(model.selectedHost), manager = model.manager
+        let context = try model.transferContext(upload: true), entries = model.entries
+        let ids = try await model.enqueueUploads([source.appendingPathComponent("report")], context: context).value
+        let id = try XCTUnwrap(ids.first)
+        try await waitForBoundary { await manager.snapshot().jobs.first { $0.id == id }?.state == .waitingConflict }
+        let before = await manager.snapshot(), labels = model.transferLabels[id]
+        let unrelated = AppIssue(code: "files.permissionDenied", message: "fixture permission failure")
+        model.issue = unrelated
+
+        let refreshed = refreshedMetadata(original)
+        model.show(host: refreshed)
+        XCTAssertEqual(model.selectedHost, refreshed)
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.entries, entries)
+        XCTAssertEqual(model.issue, unrelated)
+        XCTAssertTrue(model.manager === manager)
+        let afterContext = try model.transferContext(upload: false)
+        XCTAssertEqual(afterContext.serviceID, context.serviceID)
+        XCTAssertEqual(afterContext.lifetime, context.lifetime)
+        XCTAssertEqual(afterContext.hostID, context.hostID)
+        let after = await manager.snapshot(), count = await connector.count
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(after.jobs, before.jobs)
+        XCTAssertEqual(model.transferLabels[id]?.endpoint, labels?.endpoint)
+        XCTAssertEqual(model.transferLabels[id]?.localRoots, labels?.localRoots)
+    }
+    func testRevertingSameIDConnectionEditClearsPendingUpdateWithoutClearingOtherIssues() async throws {
+        for preserveOtherIssue in [false, true] {
+            let (_, connector, model) = try local()
+            addTeardownBlock { await model.closeForWindow() }
+            await connect(model)
+            let original = try XCTUnwrap(model.selectedHost), manager = model.manager
+            let context = try model.transferContext(upload: false)
+            var edited = original; edited.port += 1
+            model.show(host: edited)
+            XCTAssertEqual(model.issue?.code, "files.hostChanged")
+            let unrelated = AppIssue(code: "files.permissionDenied", message: "fixture permission failure")
+            if preserveOtherIssue { model.issue = unrelated }
+
+            let reverted = refreshedMetadata(original)
+            model.show(host: reverted)
+            XCTAssertEqual(model.selectedHost, reverted)
+            XCTAssertEqual(model.issue, preserveOtherIssue ? unrelated : nil)
+            XCTAssertEqual(model.state, .ready)
+            XCTAssertTrue(model.manager === manager)
+            XCTAssertEqual(try model.transferContext(upload: false).serviceID, context.serviceID)
+            model.cancelCurrent(); await model.waitUntilCurrentWorkCompletes()
+            XCTAssertEqual(model.selectedHost, reverted)
+            model.connect(input()); await model.waitUntilCurrentWorkCompletes()
+            let count = await connector.count, connectedHost = await connector.lastHost
+            XCTAssertEqual(count, 2)
+            XCTAssertEqual(connectedHost, reverted)
+        }
+    }
+    func testPendingKeyboardMetadataRefreshKeepsCurrentAnswerAuthorized() async throws {
+        let (model, connector, original) = try await scripted(.keyboard)
+        try await waitForScriptedPrompt(model, connector)
+        let first = try XCTUnwrap(model.keyboardPrompt)
+        let refreshed = refreshedMetadata(original)
+        model.show(host: refreshed)
+        XCTAssertEqual(model.selectedHost, refreshed)
+        XCTAssertEqual(model.keyboardPrompt?.id, first.id)
+        XCTAssertTrue(model.isCurrent(first.request))
+        XCTAssertTrue(model.answerKeyboard(first, answers: [.init(utf8: "one"), .init(utf8: "two")]))
+        await connector.releaseRound()
+        try await waitForScriptedPrompt(model, connector)
+        let zero = try XCTUnwrap(model.keyboardPrompt)
+        XCTAssertTrue(zero.prompts.isEmpty)
+        XCTAssertTrue(model.answerKeyboard(zero, answers: []))
+        await connector.releaseRound()
+        try await waitForBoundary { model.canTransfer }
+        let resolved = await connector.repliesAlreadyResolved
+        XCTAssertEqual(resolved, [true, true])
+        XCTAssertEqual(model.selectedHost, refreshed)
+    }
+    func testPendingKeyboardEndpointOrAuthenticationChangeRejectsOldAnswer() async throws {
+        for authenticationChange in [false, true] {
+            let (model, connector, original) = try await scripted(.keyboard)
+            try await waitForScriptedPrompt(model, connector)
+            let prompt = try XCTUnwrap(model.keyboardPrompt)
+            var changed = original
+            if authenticationChange { changed.authentication = .passwordWithMFA }
+            else { changed.port += 1 }
+            model.show(host: changed)
+            XCTAssertFalse(model.isCurrent(prompt.request))
+            XCTAssertFalse(model.answerKeyboard(prompt, answers: [.init(utf8: "one"), .init(utf8: "two")]))
+            XCTAssertNil(model.keyboardPrompt)
+            await connector.releaseRound()
+            try await waitForBoundary { model.canConnect }
+            XCTAssertEqual(model.selectedHost, changed)
+            XCTAssertEqual(model.state, .disconnected)
+            let resolved = await connector.repliesAlreadyResolved
+            XCTAssertEqual(resolved, [true])
+        }
+    }
+    func testPendingTrustMetadataRefreshKeepsCurrentAnswerAuthorized() async throws {
+        let (model, connector, original) = try await scripted(.trust)
+        try await waitForScriptedPrompt(model, connector)
+        let prompt = try XCTUnwrap(model.trustPrompt)
+        let refreshed = refreshedMetadata(original)
+        model.show(host: refreshed)
+        XCTAssertEqual(model.selectedHost, refreshed)
+        XCTAssertEqual(model.trustPrompt?.id, prompt.id)
+        XCTAssertTrue(model.isCurrent(prompt.request))
+        XCTAssertTrue(model.answerTrust(prompt, verified: true))
+        await connector.releaseRound()
+        try await waitForBoundary { model.canTransfer }
+        let resolved = await connector.repliesAlreadyResolved
+        XCTAssertEqual(resolved, [true])
+        XCTAssertEqual(model.selectedHost, refreshed)
+    }
+    func testPendingTrustEndpointOrAuthenticationChangeRejectsOldAnswer() async throws {
+        for authenticationChange in [false, true] {
+            let (model, connector, original) = try await scripted(.trust)
+            try await waitForScriptedPrompt(model, connector)
+            let prompt = try XCTUnwrap(model.trustPrompt)
+            var changed = original
+            if authenticationChange { changed.authentication = .passwordWithMFA }
+            else { changed.port += 1 }
+            model.show(host: changed)
+            XCTAssertFalse(model.isCurrent(prompt.request))
+            XCTAssertFalse(model.answerTrust(prompt, verified: true))
+            XCTAssertNil(model.trustPrompt)
+            await connector.releaseRound()
+            try await waitForBoundary { model.canConnect }
+            XCTAssertEqual(model.selectedHost, changed)
+            XCTAssertEqual(model.state, .disconnected)
+            let resolved = await connector.repliesAlreadyResolved
+            XCTAssertEqual(resolved, [true])
+        }
     }
     func testWindowCloseCancelsPreparationAndReopenCreatesFreshManager() async throws {
         let root = try root(), pause = FilesTestPause()
@@ -360,8 +529,19 @@ private actor FilesTestPause {
     private var observer: CheckedContinuation<Void, Never>?
     func arm() { armed = true; arrived = false }
     func suspendIfArmed() async { guard armed else { return }; arrived = true; observer?.resume(); observer = nil; await withCheckedContinuation { waiter = $0 } }
+    func suspendIfArmed(token: CancellationToken) async throws {
+        guard armed else { return }
+        arrived = true; observer?.resume(); observer = nil
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while armed {
+            try token.check()
+            guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "scripted-files-test-round") }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
     func waitForArrival() async { if !arrived { await withCheckedContinuation { observer = $0 } } }
     func release() { armed = false; waiter?.resume(); waiter = nil }
+    var isWaiting: Bool { arrived && armed }
 }
 @MainActor private final class FilesTestEvent {
     private var arrived = false
@@ -404,8 +584,8 @@ private actor ScriptedFilesConnector: FilesConnecting {
                 await round.arm()
                 let reply = ChallengeReply<[Data]>()
                 keyboard(FilesKeyboardChallenge(name: Data("name".utf8), instruction: Data("instruction\u{1B}".utf8), prompts: prompts.map { ($0.0, $0.1) }), reply)
-                await round.suspendIfArmed()
-                repliesAlreadyResolved.append(!reply.resolve([]))
+                defer { repliesAlreadyResolved.append(!reply.resolve([])) }
+                try await round.suspendIfArmed(token: token)
                 try token.check()
             }
         case .trust, .changed:
@@ -417,8 +597,8 @@ private actor ScriptedFilesConnector: FilesConnecting {
                 await round.arm()
                 let reply = ChallengeReply<FileHostTrustAnswer>()
                 trust(.pending(decision), reply)
-                await round.suspendIfArmed()
-                repliesAlreadyResolved.append(!reply.resolve(.reject))
+                defer { repliesAlreadyResolved.append(!reply.resolve(.reject)) }
+                try await round.suspendIfArmed(token: token)
                 try token.check()
             } else {
                 _ = try await store.confirm(decision, displayedFingerprint: decision.fingerprint)
@@ -432,6 +612,8 @@ private actor ScriptedFilesConnector: FilesConnecting {
     }
     private let round = FilesTestPause()
     func advanceRound() async { await round.waitForArrival(); await round.release() }
+    func releaseRound() async { await round.release() }
+    func isWaitingForRound() async -> Bool { await round.isWaiting }
 }
 
 private func XCTAssertEqual<T: Equatable>(awaited value: T, _ expected: T, file: StaticString = #filePath, line: UInt = #line) {

@@ -110,7 +110,13 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
     func show(host: HostConfiguration?) {
         guard !terminating, !windowClosing, !admissionFrozen, windowTask == nil else { return }
         visible = true
-        guard selectedHost != host else { return }
+        let sameConnection = selectedHost?.id == host?.id && selectedHost?.connectionIdentity == host?.connectionIdentity
+        guard !sameConnection else {
+            // Preserve the request, service and transfer manager for the same connection.
+            selectedHost = host; pendingHostUpdate = nil
+            if issue?.code == "files.hostChanged" { issue = nil }
+            return
+        }
         if serviceID != nil, selectedHost?.id == host?.id {
             // Configuration edits do not tear down a service possibly owned by
             // future transfer jobs. The connected snapshot stays explicit until
@@ -186,10 +192,13 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
         }
     }
     func isCurrent(_ supplied: FilesRequest) -> Bool {
-        !terminating && !windowClosing && windowTask == nil && request == supplied && selectedHost == supplied.host && token?.isCancelled == false && !Task.isCancelled
+        !terminating && !windowClosing && windowTask == nil && request == supplied
+            && selectedHost?.matchesConnection(of: supplied.host) == true
+            && token?.isCancelled == false && !Task.isCancelled
     }
     private func receiveTrust(_ event: FileHostTrustEvent, reply: ChallengeReply<FileHostTrustAnswer>, request: FilesRequest) {
-        guard !terminating, !windowClosing, windowTask == nil, self.request == request, selectedHost == request.host else { reply.resolve(.reject); return }
+        guard !terminating, !windowClosing, windowTask == nil, self.request == request,
+              selectedHost?.matchesConnection(of: request.host) == true else { reply.resolve(.reject); return }
         switch event {
         case .pending(let pending):
             guard isCurrent(request), trustReply == nil, keyboardReply == nil else { reply.resolve(.reject); return }

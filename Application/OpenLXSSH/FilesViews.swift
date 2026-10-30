@@ -11,6 +11,7 @@ struct FilesDialog: Identifiable {
 }
 struct FilesPanelView: View {
     @ObservedObject var model: FilesController
+    var returnToVault: (() -> Void)? = nil
     @State private var dialog: FilesDialog?
     @State private var selected: Set<FileName> = []
     @State private var address = ""
@@ -22,7 +23,9 @@ struct FilesPanelView: View {
             HStack {
                 Text("SFTP 文件").font(.headline)
                 Spacer()
-                NativeButton(title: "隐藏", id: "files.hide") { model.hide() }.fixedSize()
+                if let returnToVault {
+                    NativeButton(title: "返回保险箱", id: "files.hide") { initialSecret = ""; returnToVault() }.fixedSize()
+                }
             }
             Text(model.selectedHost.map { $0.username + "@" + $0.address + ":" + String($0.port) } ?? "请先在主机列表选择主机")
                 .font(.caption).lineLimit(2)
@@ -77,9 +80,12 @@ struct FilesPanelView: View {
                 ForEach(probe.retainedPaths, id: \.self) { Text(verbatim: "待人工核对的自有残留：" + FileDisplay.path($0)).font(.caption2) }
             }
             IssueView(issue: model.issue) { model.issue = nil }
-        }.padding(12).frame(minWidth: 410, idealWidth: 470, maxWidth: 580)
+        }.padding(12).frame(minWidth: 410, maxWidth: .infinity)
         .onChange(of: model.path) { _, _ in address = "" }
-        .onChange(of: model.selectedHost) { _, _ in initialSecret = ""; selected = []; dialog = nil; address = ""; useSaved = false; keyboardOnly = false }
+        .onChange(of: model.selectedHost) { oldHost, newHost in
+            guard oldHost?.id != newHost?.id || oldHost?.connectionIdentity != newHost?.connectionIdentity else { return }
+            initialSecret = ""; selected = []; dialog = nil; address = ""; useSaved = false; keyboardOnly = false
+        }
         .onChange(of: model.state) { _, _ in
             switch dialog?.content {
             case .trust(let p): if model.trustPrompt?.id != p.id { dialog = nil }

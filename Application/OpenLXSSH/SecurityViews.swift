@@ -21,8 +21,9 @@ struct SecurityManagerView: View {
     @StateObject private var model: SecurityViewModel
     @State private var presentation: SecurityPresentation?
     var dismiss: () -> Void
-    init(app: AppModel, dismiss: @escaping () -> Void) {
-        self.app = app; self.dismiss = dismiss
+    let embedded: Bool
+    init(app: AppModel, embedded: Bool = false, dismiss: @escaping () -> Void) {
+        self.app = app; self.dismiss = dismiss; self.embedded = embedded
         _model = StateObject(wrappedValue: SecurityViewModel(coordinator: app.security))
     }
     var body: some View {
@@ -88,7 +89,7 @@ struct SecurityManagerView: View {
             if model.copied { Text("仅公钥已复制到剪贴板。").font(.caption).foregroundStyle(.secondary) }
             IssueView(issue: model.issue) { model.issue = nil }
             HStack { Spacer(); NativeButton(title: "完成", id: "security.done", enabled: !model.busy) { dismiss() }.fixedSize() }
-        }.padding(24).frame(width: 660)
+        }.padding(24).frame(width: embedded ? nil : 660).frame(maxWidth: embedded ? .infinity : nil)
         .task { await model.retry(); await model.load() }
         // The AppKit presenter owns the exact child window throughout async refreshes.
         .nativeSheet(item: $presentation) { value in

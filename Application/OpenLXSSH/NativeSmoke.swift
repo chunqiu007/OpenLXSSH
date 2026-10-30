@@ -21,7 +21,7 @@ import OpenLXSSHFiles
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["exercise", "reopen", "sessions", "sessions-exit", "sessions-pressure", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["workspace", "exercise", "reopen", "sessions", "sessions-exit", "sessions-pressure", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
@@ -57,7 +57,8 @@ import OpenLXSSHFiles
             try await wait("initial-load") { self.model.didLoad && !self.model.isLoading }
             try check("native-main-window", delegate.mainWindow?.isVisible == true)
             try check("startup-no-session", model.connectionNotice == nil)
-            if options.phase == "exercise" { try await exercise() }
+            if options.phase == "workspace" { try await workspaceExercise() }
+            else if options.phase == "exercise" { try await exercise() }
             else if options.phase == "reopen" { try await verifyRelaunch() }
             else if options.phase == "security-sheets" { try await securitySheets() }
             else if options.phase == "sessions" || options.phase == "sessions-exit" { try await sessionExercise() }
@@ -84,6 +85,164 @@ import OpenLXSSHFiles
             try? finish(success: false, failure: code)
             exit(1)
         }
+    }
+
+    /// U1 routing/focus only: real AppKit menus/fields, synthetic terminal driver,
+    /// local file fixture. No SSH, Keychain operation or pixel-parity claim.
+    private func workspaceExercise() async throws {
+        try await click("host.add")
+        try await type("host.name", "Workspace fixture")
+        try await type("host.address", "never-connected.invalid")
+        try await type("host.username", "fixture")
+        try await click("host.save")
+        try await wait("workspace-host") { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        try await selectFirstHost()
+        try await doubleClickFirstHost()
+        try await wait("workspace-session-A") { self.model.sessions.selectedTab?.driver != nil }
+        let a = try require(model.sessions.selectedTab, "tab-A")
+        let driver = try require(a.driver as? ProbeSessionDriver, "logic-driver")
+        let terminal = driver.terminal, token = driver.token
+        try await wait("terminal-mounted") { terminal.superview != nil }
+        let terminalParent = terminal.superview
+        let manager = model.files.manager, files = model.files
+        delegate.mainWindow?.makeFirstResponder(terminal)
+        try await menuKey("f")
+        try await wait("search-focused-A") { self.find("terminal.search", as: NSTextField.self)?.currentEditor() === self.delegate.mainWindow?.firstResponder }
+        try await type("terminal.search", "logic substitute")
+        try await click("terminal.search.next")
+        try check("cmd-F-has-search-consumer", a.searchVisible && a.searchFound == true)
+        try await click("terminal.search.previous")
+        try check("search-previous-result", a.searchFound == true)
+        let searchA = try require(find("terminal.search", as: NSTextField.self), "search-A")
+        try check("search-can-be-first-responder", delegate.mainWindow?.makeFirstResponder(searchA) == true)
+        try check("search-has-real-field-editor", searchA.currentEditor() != nil && delegate.mainWindow?.firstResponder === searchA.currentEditor())
+        let command = model.workspaceCommand
+        try check("find-disabled-in-text-editor", !delegate.validateMenuItem(try workspaceMenu("findInWorkspace")))
+        _ = NSApp.mainMenu?.performKeyEquivalent(with: try keyEvent("f"))
+        try check("text-editor-find-not-stolen", model.workspaceCommand == command)
+        let inputBeforeEdit = driver.terminalMetrics.input.count
+        let editor = try require(searchA.currentEditor() as? NSTextView, "search-editor")
+        editor.selectAll(nil)
+        editor.insertText("logic substitute", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try check("native-text-edit-not-terminal-input", driver.terminalMetrics.input.count == inputBeforeEdit)
+        model.requestSession(hostID: a.hostID, mode: .newSession)
+        try await wait("workspace-session-B") { self.model.sessions.tabs.count == 2 && self.model.sessions.selectedTab?.driver != nil }
+        let b = try require(model.sessions.selectedTab, "tab-B")
+        try check("hidden-search-loses-field-editor", searchA.currentEditor() == nil && searchA.isHiddenOrHasHiddenAncestor)
+        try check("search-B-independent", b.searchText.isEmpty && !b.searchVisible && b.searchFound == nil)
+        delegate.mainWindow?.makeFirstResponder(b.driver?.terminal)
+        try await menuKey("f")
+        try await type("terminal.search", "B-no-match")
+        try await click("terminal.search.next")
+        try check("search-B-result-independent", b.searchFound == false)
+        try await menuAction("showVault")
+        delegate.mainWindow?.makeFirstResponder(nil)
+        try await menuKey("f")
+        try await wait("host-search-focused") { self.find("hosts.search", as: NSTextField.self)?.currentEditor() === self.delegate.mainWindow?.firstResponder }
+        let hostSearch = try require(find("hosts.search", as: NSTextField.self), "hosts.search")
+        try await menuAction("showSFTP")
+        try check("hidden-vault-native-field-editor-resigned", hostSearch.currentEditor() == nil && hostSearch.isHiddenOrHasHiddenAncestor)
+        try check("SFTP-find-explicitly-disabled", !delegate.validateMenuItem(try workspaceMenu("findInWorkspace")))
+        let sftpPage = try require(workspacePage("workspace.page.sftp"), "page-sftp")
+        let vaultPage = try require(workspacePage("workspace.page.vault"), "page-vault")
+        try check("hidden-page-not-hittable", vaultPage.isHidden && vaultPage.hitTest(NSPoint(x: 40, y: 40)) == nil && !sftpPage.isHidden)
+        try await type("files.initial.secret", UUID().uuidString)
+        let secretField = try require(find("files.initial.secret", as: NSSecureTextField.self), "files.initial.secret")
+        let secretBeforeMetadata = secretField.stringValue
+        var metadataOnly = try require(model.files.selectedHost, "sftp-selected-host")
+        metadataOnly.name = "Workspace renamed"; metadataOnly.isFavorite.toggle(); metadataOnly.lastConnectedAt = Date()
+        model.files.show(host: metadataOnly)
+        try await pause()
+        try check("SFTP-metadata-keeps-unsent-input", secretField.stringValue == secretBeforeMetadata)
+        try await click("files.hide")
+        try check("SFTP-return-visible-without-owner-reset", model.workspacePage == .vault && model.files === files && model.files.manager === manager)
+        for visible in [false, true] {
+            model.files.tasksVisible = visible
+            try await click("transfers.open")
+            try check("queue-entry-always-expands-" + String(visible), model.workspacePage == .sftp && model.files.tasksVisible)
+            try await menuAction("showVault")
+        }
+        model.showWorkspace(.session(a.id)); try await pause()
+        try check("A-search-and-result-retained", a.searchVisible && a.searchText == "logic substitute" && a.searchFound == true)
+        try check("native-terminal-owner-view-token-not-rebuilt", a.driver === driver && driver.terminal === terminal && driver.token == token && terminal.superview === terminalParent && model.files.manager === manager)
+        try await click("terminal.search.close")
+        try await wait("terminal-focus-after-close") { self.delegate.mainWindow?.firstResponder === terminal }
+        try await menuKey("f")
+        try await wait("search-editor-after-reopen") { self.find("terminal.search", as: NSTextField.self)?.currentEditor() != nil }
+        let reopenedSearch = try require(find("terminal.search", as: NSTextField.self), "reopened-search")
+        let reopenedEditor = try require(reopenedSearch.currentEditor() as? NSTextView, "reopened-editor")
+        reopenedEditor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        try await wait("terminal-focus-after-Escape") { !a.searchVisible && self.delegate.mainWindow?.firstResponder === terminal }
+        driver.showAuthentication()
+        try await click("terminal.authenticate")
+        try await wait("auth-sheet") { self.find("authentication.answer", as: NSSecureTextField.self) != nil }
+        try await type("authentication.answer", UUID().uuidString)
+        for action in ["disconnectSession", "reconnectSession", "connectionInfo", "nextWorkspace", "previousWorkspace", "newConnection"] {
+            let item = try workspaceMenu(action)
+            try check("sheet-disables-" + action, !delegate.validateMenuItem(item))
+            if let selector = item.action { _ = NSApp.sendAction(selector, to: item.target, from: item) }
+        }
+        try check("sheet-actions-cannot-touch-workspace", model.workspacePage == .session(a.id) && driver.token == token && driver.responseCount == 0 && a.authentication != nil)
+        try await menuKey("w")
+        try await wait("cmd-W-dismisses-sheet") { self.delegate.mainWindow?.attachedSheet == nil }
+        try check("cmd-W-sheet-preserves-tab", model.sessions.tabs.count == 2 && driver.responseCount == 0)
+        try await click("terminal.authenticate")
+        try await wait("fresh-answer-editor") { self.find("authentication.answer", as: NSSecureTextField.self) != nil }
+        try check("old-answer-never-revived", find("authentication.answer", as: NSSecureTextField.self)?.stringValue.isEmpty == true)
+        model.showWorkspace(.session(b.id))
+        try await wait("tab-change-dismisses-auth") { self.delegate.mainWindow?.attachedSheet == nil }
+        model.showWorkspace(.session(a.id)); try await pause()
+        try check("tab-change-does-not-reopen-or-submit-auth", delegate.mainWindow?.attachedSheet == nil && a.dialog == nil && driver.responseCount == 0)
+        try await menuKey("t")
+        try await wait("cmd-T-chooser") { self.delegate.mainWindow?.attachedSheet != nil }
+        try await menuKey("w")
+        try await wait("chooser-dismissed") { self.delegate.mainWindow?.attachedSheet == nil }
+        try await menuKey("w")
+        try await wait("cmd-W-closes-current-SSH") { self.model.sessions.tabs.count == 1 && self.model.workspacePage == .session(b.id) }
+        try await menuKey("w")
+        try await wait("last-SSH-returns-Vault") { self.model.sessions.tabs.isEmpty && self.model.workspacePage == .vault }
+        try check("last-tab-clears-workspace-visibility", !model.sessions.workspaceVisible && model.files.manager === manager)
+        try capture("workspace-r5.png")
+        try await menuAction("showSFTP")
+        try await menuKey("w")
+        try await wait("fixed-page-Cmd-W-closes-window") { self.delegate.mainWindow == nil }
+        try check("fixed-page-close-is-window-context", model.workspacePage == .vault && model.sessions.tabs.isEmpty)
+    }
+
+    private func require<T>(_ value: T?, _ label: String) throws -> T {
+        guard let value else { throw Failure.missing(label) }; return value
+    }
+    private func workspacePage(_ id: String) -> NativeWorkspacePageView? {
+        func visit(_ view: NSView) -> NativeWorkspacePageView? {
+            if view.identifier?.rawValue == id { return view as? NativeWorkspacePageView }
+            return view.subviews.compactMap(visit).first
+        }
+        return delegate.mainWindow?.contentView.flatMap(visit)
+    }
+    private func workspaceMenu(_ action: String) throws -> NSMenuItem {
+        func visit(_ menu: NSMenu) -> NSMenuItem? {
+            for item in menu.items {
+                if item.action == Selector(action) { return item }
+                if let submenu = item.submenu, let found = visit(submenu) { return found }
+            }
+            return nil
+        }
+        return try require(NSApp.mainMenu.flatMap(visit), "menu-" + action)
+    }
+    private func menuAction(_ action: String) async throws {
+        let item = try workspaceMenu(action)
+        guard delegate.validateMenuItem(item), let selector = item.action,
+              NSApp.sendAction(selector, to: item.target, from: item) else { throw Failure.check("menu-" + action) }
+        actions.append("menu." + action); try await pause()
+    }
+    private func keyEvent(_ key: String) throws -> NSEvent {
+        try require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: delegate.mainWindow?.windowNumber ?? 0, context: nil, characters: key, charactersIgnoringModifiers: key,
+            isARepeat: false, keyCode: 0), "menu-key-event")
+    }
+    private func menuKey(_ key: String) async throws {
+        guard NSApp.mainMenu?.performKeyEquivalent(with: try keyEvent(key)) == true else { throw Failure.check("menu-key-" + key) }
+        actions.append("menu-key." + key); try await pause()
     }
 
     private func exercise() async throws {
@@ -850,6 +1009,7 @@ import OpenLXSSHFiles
     }
     private func find<T: NSView>(_ id: String, as type: T.Type) -> T? {
         func visit(_ view: NSView) -> T? {
+            guard !view.isHiddenOrHasHiddenAncestor else { return nil }
             if view.identifier?.rawValue == id, let value = view as? T { return value }
             for child in view.subviews { if let value = visit(child) { return value } }
             return nil

@@ -30,7 +30,7 @@ import OpenLXSSHFiles
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     let model: AppModel
     private(set) var mainWindow: NSWindow?
     private var terminating = false
@@ -294,19 +294,87 @@ import OpenLXSSHFiles
         let app = NSMenuItem(); menu.addItem(app)
         let appMenu = NSMenu(title: "OpenLXSSH"); app.submenu = appMenu
         appMenu.addItem(withTitle: "关于 OpenLXSSH", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let settings = appMenu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ","); settings.target = self
+        appMenu.addItem(.separator())
+        let services = NSMenu(title: "服务"); let servicesItem = NSMenuItem(title: "服务", action: nil, keyEquivalent: ""); servicesItem.submenu = services; appMenu.addItem(servicesItem); NSApp.servicesMenu = services
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏 OpenLXSSH", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 OpenLXSSH", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let file = NSMenuItem(); menu.addItem(file)
-        let fileMenu = NSMenu(title: "文件"); file.submenu = fileMenu
+        let fileMenu = NSMenu(title: "会话"); file.submenu = fileMenu
         let reopen = fileMenu.addItem(withTitle: "打开主窗口", action: #selector(showMainWindow), keyEquivalent: "n"); reopen.target = self
-        fileMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        for (title, action, key) in [("新连接…", #selector(newConnection), "t"), ("新建主机…", #selector(newHost), ""), ("当前连接信息", #selector(connectionInfo), ""), ("断开当前连接", #selector(disconnectSession), ""), ("重新连接", #selector(reconnectSession), "")] {
+            let item = fileMenu.addItem(withTitle: title, action: action, keyEquivalent: key); item.target = self
+        }
+        fileMenu.addItem(.separator())
+        let close = fileMenu.addItem(withTitle: "关闭当前标签或窗口", action: #selector(closeWorkspace), keyEquivalent: "w"); close.target = self
         let edit = NSMenuItem(); menu.addItem(edit)
         let editMenu = NSMenu(title: "编辑"); edit.submenu = editMenu
         for (title, selector, key) in [("撤销", "undo:", "z"), ("剪切", "cut:", "x"), ("复制", "copy:", "c"), ("粘贴", "paste:", "v"), ("全选", "selectAll:", "a")] {
             editMenu.addItem(withTitle: title, action: Selector(selector), keyEquivalent: key)
         }
+        let find = editMenu.addItem(withTitle: "查找", action: #selector(findInWorkspace), keyEquivalent: "f"); find.target = self
+        let viewItem = NSMenuItem(); menu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "显示"); viewItem.submenu = viewMenu
+        for (title, action, key) in [("保险箱", #selector(showVault), "1"), ("SFTP", #selector(showSFTP), "2"), ("下一个标签", #selector(nextWorkspace), "]"), ("上一个标签", #selector(previousWorkspace), "[")] {
+            let item = viewMenu.addItem(withTitle: title, action: action, keyEquivalent: key); item.target = self
+            if key == "]" || key == "[" { item.keyEquivalentModifierMask = [.command, .shift] }
+        }
+        let windowItem = NSMenuItem(); menu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "窗口"); windowItem.submenu = windowMenu; NSApp.windowsMenu = windowMenu
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let fullScreen = windowMenu.addItem(withTitle: "进入全屏幕", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f"); fullScreen.keyEquivalentModifierMask = [.command, .control]
         NSApp.mainMenu = menu
+    }
+    private var interactionContext: WorkspaceInteractionContext {
+        let keyWindow = NSApp.keyWindow
+        let responder = (keyWindow ?? mainWindow)?.firstResponder
+        return WorkspaceInteractionContext(hasAttachedSheet: mainWindow?.attachedSheet != nil,
+            hasModalWindow: NSApp.modalWindow != nil || transferClosePrompt != nil,
+            hasOtherKeyWindow: keyWindow != nil && keyWindow !== mainWindow,
+            isEditingText: responder is NSTextView || responder is NSTextField)
+    }
+    private var allowsWorkspaceActions: Bool {
+        !terminating && !windowClosing && !model.lifecycle.terminating && interactionContext.allowsWorkspaceActions
+    }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard !terminating, !model.lifecycle.terminating else { return false }
+        if menuItem.action == #selector(closeWorkspace) { return transferClosePrompt == nil && !windowClosing }
+        guard allowsWorkspaceActions else { return false }
+        if menuItem.action == #selector(findInWorkspace) { return model.canSearchWorkspace && interactionContext.allowsWorkspaceSearch }
+        if menuItem.action == #selector(disconnectSession) { return model.workspacePage.sessionID != nil && model.sessions.selectedTab?.isReusable == true }
+        if menuItem.action == #selector(reconnectSession) { return model.workspacePage.sessionID != nil && model.sessions.selectedTab?.canReconnect == true }
+        if menuItem.action == #selector(connectionInfo) { return model.workspacePage.sessionID != nil }
+        return true
+    }
+    @objc private func newConnection() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.sendWorkspaceCommand(.newConnection) }
+    @objc private func newHost() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.showWorkspace(.vault); model.sendWorkspaceCommand(.newHost) }
+    @objc private func openSettings() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.sendWorkspaceCommand(.settings) }
+    @objc private func showVault() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.showWorkspace(.vault) }
+    @objc private func showSFTP() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.showWorkspace(.sftp) }
+    @objc private func nextWorkspace() { guard allowsWorkspaceActions else { return }; model.switchWorkspace(by: 1) }
+    @objc private func previousWorkspace() { guard allowsWorkspaceActions else { return }; model.switchWorkspace(by: -1) }
+    @objc private func connectionInfo() { guard allowsWorkspaceActions else { return }; model.sendWorkspaceCommand(.connectionInfo) }
+    @objc private func findInWorkspace() {
+        guard allowsWorkspaceActions, interactionContext.allowsWorkspaceSearch else { return }
+        model.sendWorkspaceCommand(.search)
+    }
+    @objc private func disconnectSession() { guard allowsWorkspaceActions else { return }; if let id = model.workspacePage.sessionID { model.sessions.disconnect(id) } }
+    @objc private func reconnectSession() { guard allowsWorkspaceActions else { return }; if let id = model.workspacePage.sessionID { model.sessions.reconnect(id) } }
+    @objc private func closeWorkspace() {
+        guard !terminating, !windowClosing, transferClosePrompt == nil else { return }
+        if let sheet = mainWindow?.attachedSheet {
+            var current = sheet
+            while let nested = current.attachedSheet { current = nested }
+            if let parent = current.sheetParent { parent.endSheet(current, returnCode: .cancel); current.orderOut(nil) }
+            else { current.performClose(nil) }
+            return
+        }
+        if let modal = NSApp.modalWindow { modal.performClose(nil); return }
+        if let keyWindow = NSApp.keyWindow, keyWindow !== mainWindow { keyWindow.performClose(nil); return }
+        if model.workspacePage.sessionID != nil { Task { _ = await model.closeCurrentWorkspace() } }
+        else { mainWindow?.performClose(nil) }
     }
 }

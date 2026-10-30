@@ -9,6 +9,7 @@ struct AppSnapshot: Sendable {
     var folders: [HostFolder]
     var keys: [ManagedKeyReference]
     var settings: AppSettings
+    var allHosts: [HostConfiguration]? = nil
 }
 
 protocol AppRepositoryProtocol: Sendable {
@@ -110,7 +111,7 @@ actor AppRepository: AppRepositoryProtocol {
 
     func snapshot(query: HostQuery) throws -> AppSnapshot {
         let db = try opened()
-        let snapshot = AppSnapshot(hosts: try db.hosts(query), folders: try db.folders(), keys: try db.keys(), settings: try db.settings())
+        let snapshot = AppSnapshot(hosts: try db.hosts(query), folders: try db.folders(), keys: try db.keys(), settings: try db.settings(), allHosts: try db.hosts())
         _ = try location.databaseDirectory()
         return snapshot
     }

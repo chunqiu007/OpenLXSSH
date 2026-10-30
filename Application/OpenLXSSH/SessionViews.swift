@@ -6,18 +6,16 @@ struct SessionWorkspaceView: View {
     @ObservedObject var controller: SessionController
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    ForEach(controller.tabs) { tab in
-                        SessionTabButton(tab: tab, controller: controller)
-                    }
-                }.padding(6)
-            }.frame(height: 44)
-            Divider()
             IssueView(issue: controller.issue) { controller.issue = nil }.padding(.horizontal, 10)
-            if let tab = controller.selectedTab {
-                SessionDetailView(tab: tab, controller: controller).id(tab.id)
-            } else { Text("选择主机并打开 SSH。不会恢复先前会话。").frame(maxWidth: .infinity, maxHeight: .infinity) }
+            ZStack {
+                if controller.tabs.isEmpty { Text("选择主机并打开 SSH。不会恢复先前会话。").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                ForEach(controller.tabs) { tab in
+                    NativeWorkspacePage(id: "workspace.session." + tab.id.uuidString,
+                                        isVisible: controller.workspaceVisible && controller.selectedTabID == tab.id) {
+                        SessionDetailView(tab: tab, controller: controller)
+                    }
+                }
+            }
         }
     }
 }
@@ -32,70 +30,66 @@ private struct SessionTabButton: View {
         }.help(tab.status)
     }
 }
-private enum SessionDialog: Identifiable {
-    case trust(SessionTrustPrompt), authentication(SessionAuthenticationPrompt)
-    var id: UUID { switch self { case .trust(let p): p.id; case .authentication(let p): p.id } }
-}
 private struct SessionDetailView: View {
     @ObservedObject var tab: SessionTab
     @ObservedObject var controller: SessionController
-    @State private var search = ""
-    @State private var found: Bool?
-    @State private var dialog: SessionDialog?
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(tab.status).font(.caption)
                 Spacer()
-                NativeButton(title: "断开", id: "terminal.disconnect", enabled: tab.isReusable) { controller.disconnect(tab.id) }.fixedSize()
-                NativeButton(title: "手动重连", id: "terminal.reconnect", enabled: tab.canReconnect) { controller.reconnect(tab.id) }.fixedSize()
-            }
-            HStack {
                 NativeButton(title: "复制", id: "terminal.copy", enabled: tab.driver != nil) { tab.driver?.terminal.copy(NSNull()) }.fixedSize()
                 NativeButton(title: "粘贴", id: "terminal.paste", enabled: tab.isReusable) {
                     if let text = NSPasteboard.general.string(forType: .string) { tab.driver?.terminal.pasteFromApplication(text) }
                 }.fixedSize()
-                NativeField(placeholder: "当前标签历史搜索（不持久化）", id: "terminal.search", text: $search).frame(height: 25)
-                NativeButton(title: "上一处", id: "terminal.search.previous", enabled: !search.isEmpty) { found = tab.driver?.terminal.search(search, backwards: true) }.fixedSize()
-                NativeButton(title: "下一处", id: "terminal.search.next", enabled: !search.isEmpty) { found = tab.driver?.terminal.search(search) }.fixedSize()
+                NativeButton(title: "断开", id: "terminal.disconnect", enabled: tab.isReusable) { controller.disconnect(tab.id) }.fixedSize()
+                NativeButton(title: "手动重连", id: "terminal.reconnect", enabled: tab.canReconnect) { controller.reconnect(tab.id) }.fixedSize()
             }
-            if found == false { Text("未找到匹配内容").font(.caption).foregroundStyle(.secondary) }
+            if tab.searchVisible {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    NativeField(placeholder: "搜索当前标签历史", id: "terminal.search", text: $tab.searchText,
+                                focusRequest: tab.searchFocusRequest,
+                                onSubmit: { tab.searchHistory(backwards: $0) }, onCancel: { tab.closeSearch() })
+                        .frame(maxWidth: 360).frame(height: 25)
+                    NativeButton(title: "上一处", id: "terminal.search.previous", enabled: !tab.searchText.isEmpty) { tab.searchHistory(backwards: true) }.fixedSize()
+                    NativeButton(title: "下一处", id: "terminal.search.next", enabled: !tab.searchText.isEmpty) { tab.searchHistory() }.fixedSize()
+                    if tab.searchFound == false { Text("未找到匹配内容").font(.caption).foregroundStyle(.secondary) }
+                    Spacer(minLength: 0)
+                    NativeButton(title: "关闭搜索", id: "terminal.search.close") { tab.closeSearch() }.fixedSize()
+                }
+            }
             if let prompt = tab.trust.first {
-                NativeButton(title: "核实主机身份…", id: "terminal.trust") { dialog = .trust(prompt) }.fixedSize()
+                NativeButton(title: "核实主机身份…", id: "terminal.trust") { controller.present(.trust(prompt), tabID: tab.id) }.fixedSize()
             }
             if let prompt = tab.authentication {
-                NativeButton(title: "继续认证…", id: "terminal.authenticate") { dialog = .authentication(prompt) }.fixedSize()
+                NativeButton(title: "继续认证…", id: "terminal.authenticate") { controller.present(.authentication(prompt), tabID: tab.id) }.fixedSize()
             }
             Text("只管理最外层直连。内层 SSH / sudo / MFA 在终端手动输入，绝不扫描终端提示投递本机秘密。macOS 26 自动密码尚未列入验证白名单时会回退人工；不会无限尝试。")
                 .font(.caption2).foregroundStyle(.secondary)
             IssueView(issue: tab.issue) { tab.issue = nil }
             if let driver = tab.driver {
-                RetainedTerminalView(terminal: driver.terminal).frame(maxWidth: .infinity, maxHeight: .infinity)
+                RetainedTerminalView(terminal: driver.terminal, focusRequest: tab.terminalFocusRequest).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if tab.state == .preparing {
                 ProgressView("准备受控 SSH 配置…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text("未启动 SSH。可修正配置或签名条件后手动重试。").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.padding(10)
-        .nativeSheet(item: $dialog) { value in
-            switch value {
-            case .trust(let prompt): TrustChallengeView(tab: tab, controller: controller, prompt: prompt) { dialog = nil }
-            case .authentication(let prompt): AuthenticationChallengeView(tab: tab, controller: controller, prompt: prompt) { dialog = nil }
-            }
-        }
-        .onChange(of: tab.state) { _, _ in
-            switch dialog {
-            case .trust(let prompt): if !tab.trust.contains(prompt) { dialog = nil }
-            case .authentication(let prompt): if tab.authentication != prompt { dialog = nil }
-            case nil: break
+        .nativeSheet(item: $tab.dialog, isEnabled: controller.workspaceVisible && controller.selectedTabID == tab.id) { value in
+            switch value.content {
+            case .trust(let prompt): TrustChallengeView(tab: tab, controller: controller, prompt: prompt) { tab.dialog = nil }
+            case .authentication(let prompt): AuthenticationChallengeView(tab: tab, controller: controller, prompt: prompt) { tab.dialog = nil }
             }
         }
     }
 }
 
-/// The same transport-owned NSView is reattached, not reconstructed, on tab switching.
+/// Each page keeps the same transport-owned NSView mounted until the tab closes.
 struct RetainedTerminalView: NSViewRepresentable {
     let terminal: NativeTerminalView
+    var focusRequest: UUID? = nil
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView {
         let container = TerminalContainerView()
         container.clipsToBounds = true
@@ -107,7 +101,16 @@ struct RetainedTerminalView: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         if terminal.superview !== view { terminal.removeFromSuperview(); view.addSubview(terminal) }
         terminal.frame = view.bounds
+        if let focusRequest, context.coordinator.focusRequest != focusRequest {
+            context.coordinator.focusRequest = focusRequest
+            Task { @MainActor [weak terminal] in
+                guard let terminal, !terminal.isHiddenOrHasHiddenAncestor,
+                      let window = terminal.window, window.attachedSheet == nil else { return }
+                _ = window.makeFirstResponder(terminal)
+            }
+        }
     }
+    final class Coordinator { var focusRequest: UUID? }
 }
 @MainActor private final class TerminalContainerView: NSView {
     override func layout() { super.layout(); subviews.first?.frame = bounds }

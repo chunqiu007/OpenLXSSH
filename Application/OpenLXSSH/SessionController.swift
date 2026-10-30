@@ -22,6 +22,14 @@ struct SessionAuthenticationPrompt: Identifiable, Equatable {
     let text: String
 }
 
+struct SessionDialog: Identifiable, Equatable {
+    enum Content: Equatable { case trust(SessionTrustPrompt), authentication(SessionAuthenticationPrompt) }
+    let id = UUID() // A fresh editor even when the same pending request is reopened.
+    let content: Content
+    static func trust(_ prompt: SessionTrustPrompt) -> Self { Self(content: .trust(prompt)) }
+    static func authentication(_ prompt: SessionAuthenticationPrompt) -> Self { Self(content: .authentication(prompt)) }
+}
+
 /// Logic-test doubles implement this boundary, never a second SSH/PTY implementation.
 @MainActor protocol SessionDriving: AnyObject {
     var terminal: NativeTerminalView { get }
@@ -111,6 +119,12 @@ struct ReadySession {
     @Published var issue: AppIssue?
     @Published var trust: [SessionTrustPrompt] = []
     @Published var authentication: SessionAuthenticationPrompt?
+    @Published var searchText = "" { didSet { if searchText != oldValue { searchFound = nil } } }
+    @Published private(set) var searchFound: Bool?
+    @Published private(set) var searchVisible = false
+    @Published private(set) var searchFocusRequest: UUID?
+    @Published private(set) var terminalFocusRequest: UUID?
+    @Published var dialog: SessionDialog?
     var driver: (any SessionDriving)?
     var host: HostConfiguration?
     var configuration: SSHSessionConfiguration?
@@ -118,7 +132,21 @@ struct ReadySession {
     var operation = UUID()
     var lastActivity: UInt64 = 0
     var markedGeneration: UInt64?
-    init(id: UUID = UUID(), host: HostConfiguration) { self.id = id; hostID = host.id; title = host.name }
+    var customTitle: String?
+    init(id: UUID = UUID(), host: HostConfiguration) { self.id = id; hostID = host.id; title = host.name; self.host = host }
+    func showSearch() { searchVisible = true; searchFocusRequest = UUID() }
+    func closeSearch() { searchVisible = false; terminalFocusRequest = UUID() }
+    func searchHistory(backwards: Bool = false) {
+        guard !searchText.isEmpty else { searchFound = nil; return }
+        searchFound = driver?.terminal.search(searchText, backwards: backwards) ?? false
+    }
+    func reconcileDialog() {
+        switch dialog?.content {
+        case .trust(let prompt): if state != .awaitingTrust || !trust.contains(prompt) || driver?.token != prompt.token { dialog = nil }
+        case .authentication(let prompt): if state != .authenticating || authentication != prompt || driver?.token != prompt.token { dialog = nil }
+        case nil: break
+        }
+    }
     var isReusable: Bool {
         switch state {
         case .preparing, .awaitingTrust, .authenticating, .connectionPending, .connected: true
@@ -165,6 +193,8 @@ struct ReadySession {
     private let builder: any SessionBuilding
     private var settings = AppSettings()
     private var activity: UInt64 = 0
+    @Published private(set) var workspaceVisible = true
+    var onSelectionChanged: ((UUID?) -> Void)?
     var onAuthenticatedMetadata: (() -> Void)?
     init(repository: any AppRepositoryProtocol, credentials: any CredentialAccess, builder: any SessionBuilding) {
         self.repository = repository; self.credentials = credentials; self.builder = builder
@@ -172,7 +202,7 @@ struct ReadySession {
     var selectedTab: SessionTab? { tabs.first { $0.id == selectedTabID } }
     @discardableResult func open(_ host: HostConfiguration, mode: SessionOpenMode) -> UUID? {
         guard !closingAll, !terminating, !windowCleanupAdmissionClosed else { return nil }
-        if mode == .reuse, let existing = tabs.filter({ $0.hostID == host.id && $0.isReusable }).max(by: { $0.lastActivity < $1.lastActivity }) {
+        if mode == .reuse, let existing = tabs.filter({ $0.hostID == host.id && $0.host?.connectionIdentity == host.connectionIdentity && $0.isReusable }).max(by: { $0.lastActivity < $1.lastActivity }) {
             select(existing.id); return existing.id
         }
         let tab = SessionTab(host: host)
@@ -183,7 +213,48 @@ struct ReadySession {
     func select(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
         selectedTabID = id; activity &+= 1
-        for tab in tabs { tab.driver?.terminal.setVisible(tab.id == id); if tab.id == id { tab.lastActivity = activity } }
+        for tab in tabs {
+            tab.driver?.terminal.setVisible(workspaceVisible && tab.id == id)
+            if tab.id == id { tab.lastActivity = activity } else { tab.dialog = nil }
+        }
+        onSelectionChanged?(id)
+    }
+    func setWorkspaceVisible(_ visible: Bool) {
+        workspaceVisible = visible
+        for tab in tabs {
+            tab.driver?.terminal.setVisible(visible && tab.id == selectedTabID)
+            // Dismiss only the presentation, not the pending transport request.
+            // Reopening requires a fresh, empty editor for that exact request.
+            if !visible { tab.dialog = nil }
+        }
+    }
+    @discardableResult func showSearchInSelectedTab() -> Bool {
+        guard workspaceVisible, let selectedTab, selectedTab.driver != nil else { return false }
+        selectedTab.showSearch(); return true
+    }
+    @discardableResult func present(_ dialog: SessionDialog, tabID: UUID) -> Bool {
+        guard workspaceVisible, selectedTabID == tabID, let tab = selectedTab else { return false }
+        tab.dialog = dialog; tab.reconcileDialog()
+        return tab.dialog == dialog
+    }
+    func moveTab(_ id: UUID, before target: UUID) {
+        guard !closingAll, !terminating, id != target,
+              let source = tabs.firstIndex(where: { $0.id == id }), tabs.contains(where: { $0.id == target }) else { return }
+        let tab = tabs.remove(at: source)
+        guard let destination = tabs.firstIndex(where: { $0.id == target }) else { return }
+        tabs.insert(tab, at: destination)
+    }
+    func renameTab(_ id: UUID, title: String) {
+        let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.count <= 256,
+              !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let tab = tabs.first(where: { $0.id == id }) else { return }
+        tab.customTitle = value; tab.title = value
+    }
+    func displayTitle(for tab: SessionTab) -> String {
+        let same = tabs.filter { $0.title == tab.title }
+        guard same.count > 1, let index = same.firstIndex(where: { $0 === tab }) else { return tab.title }
+        return tab.title + " · " + String(index + 1)
     }
     private func prepare(_ tab: SessionTab) {
         let operation = UUID(); tab.operation = operation; tab.state = .preparing; tab.issue = nil
@@ -195,10 +266,10 @@ struct ReadySession {
                 guard !Task.isCancelled, tab.operation == operation, tabs.contains(where: { $0 === tab }) else {
                     ready.driver.closeTab(); return
                 }
-                tab.driver = ready.driver; tab.host = ready.host; tab.title = ready.host.name; tab.configuration = ready.configuration
+                tab.driver = ready.driver; tab.host = ready.host; tab.title = tab.customTitle ?? ready.host.name; tab.configuration = ready.configuration
                 installCallbacks(tab)
                 try applySettings(to: ready.driver.terminal)
-                ready.driver.terminal.setVisible(selectedTabID == tab.id)
+                ready.driver.terminal.setVisible(workspaceVisible && selectedTabID == tab.id)
                 _ = try ready.driver.connect(ready.configuration, savedPassword: authorization(for: tab))
             } catch {
                 guard tab.operation == operation, tab.state != .closing else { return }
@@ -214,6 +285,7 @@ struct ReadySession {
             tab.state = state
             if state != .awaitingTrust { tab.trust = [] }
             if state != .authenticating { tab.authentication = nil }
+            tab.reconcileDialog()
             if state == .connected, let token, tab.markedGeneration != token.generation {
                 tab.markedGeneration = token.generation
                 Task { [weak self, repository] in
@@ -225,11 +297,11 @@ struct ReadySession {
         }
         driver.onTrust = { [weak tab, weak driver] prompts in
             guard let tab, let driver, tab.driver === driver, tab.state == .awaitingTrust else { return }
-            tab.trust = prompts.filter { $0.token == driver.token }
+            tab.trust = prompts.filter { $0.token == driver.token }; tab.reconcileDialog()
         }
         driver.onAuthentication = { [weak tab, weak driver] prompt in
             guard let tab, let driver, tab.driver === driver, prompt.token == driver.token, tab.state == .authenticating else { return }
-            tab.authentication = prompt
+            tab.authentication = prompt; tab.reconcileDialog()
         }
     }
     private func authorization(for tab: SessionTab) -> SavedPasswordAuthorization? {
@@ -247,17 +319,17 @@ struct ReadySession {
         // Cancellation and tab/generation checks must precede accessing Keychain,
         // not merely dropping a secret after the asynchronous read completed.
         guard !Task.isCancelled, isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host),
-              before.hosts.contains(where: { $0 == host }), before.credentials.contains(where: { $0.id == ref && $0.purpose == .password && $0.isSavingAuthorized }) else { return nil }
+              before.hosts.contains(where: { $0.id == host.id && $0.connectionIdentity == host.connectionIdentity }), before.credentials.contains(where: { $0.id == ref && $0.purpose == .password && $0.isSavingAuthorized }) else { return nil }
         let result = await credentials.read(.init(id: ref, kind: .password))
         guard !Task.isCancelled, isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host),
               case .available(let secret) = result else { return nil }
         let after = try await repository.securityMetadata()
-        guard !Task.isCancelled, after.hosts.contains(where: { $0 == host }), after.credentials.contains(where: { $0.id == ref && $0.purpose == .password && $0.isSavingAuthorized }),
+        guard !Task.isCancelled, after.hosts.contains(where: { $0.id == host.id && $0.connectionIdentity == host.connectionIdentity }), after.credentials.contains(where: { $0.id == ref && $0.purpose == .password && $0.isSavingAuthorized }),
               isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host) else { return nil }
         return try secret.withUnsafeBytes { try AuthenticationSecret(Data($0)) }
     }
     private func isCurrent(_ token: SessionToken, tab: SessionTab?, host: HostConfiguration) -> Bool {
-        guard !closingAll, !terminating, let tab, tabs.contains(where: { $0 === tab }), tab.host == host, tab.driver?.token == token else { return false }
+        guard !closingAll, !terminating, let tab, tabs.contains(where: { $0 === tab }), tab.host?.id == host.id, tab.host?.connectionIdentity == host.connectionIdentity, tab.driver?.token == token else { return false }
         return tab.isReusable
     }
     func reconnect(_ id: UUID) {
@@ -271,7 +343,7 @@ struct ReadySession {
             do {
                 let (host, configuration) = try await builder.configuration(hostID: tab.hostID)
                 guard tab.operation == operation, !Task.isCancelled else { throw TransportError.stale }
-                tab.host = host; tab.title = host.name; tab.configuration = configuration
+                tab.host = host; tab.title = tab.customTitle ?? host.name; tab.configuration = configuration
                 _ = try driver.connect(configuration, savedPassword: authorization(for: tab))
             } catch { if tab.operation == operation { tab.state = .failed(.invalidConfiguration); tab.issue = .session(error) } }
         }
@@ -280,7 +352,7 @@ struct ReadySession {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         guard tab.state != .closing && tab.state != .closed else { return }
         tab.operation = UUID(); tab.preparation?.cancel()
-        tab.trust = []; tab.authentication = nil
+        tab.trust = []; tab.authentication = nil; tab.dialog = nil
         if let driver = tab.driver { driver.cancel() } else { tab.state = .disconnected(nil) }
     }
     func closeTab(_ id: UUID) async {
@@ -289,16 +361,18 @@ struct ReadySession {
         // Revoke admission/requests synchronously before the cleanup task can
         // suspend. Every caller awaits this exact tab object's single cleanup.
         tab.operation = UUID(); let preparation = tab.preparation; preparation?.cancel()
-        tab.state = .closing; tab.trust = []; tab.authentication = nil
+        tab.state = .closing; tab.trust = []; tab.authentication = nil; tab.dialog = nil
         let task = Task { @MainActor in
             await preparation?.value
             tab.preparation = nil; tab.driver?.closeTab()
             while let driver = tab.driver, driver.state != .closed { try? await Task.sleep(for: .milliseconds(20)) }
             tab.driver?.onState = nil; tab.driver?.onTrust = nil; tab.driver?.onAuthentication = nil
+            let index = tabs.firstIndex(where: { $0 === tab }) ?? 0
             tabs.removeAll { $0 === tab }
             if selectedTabID == id {
                 selectedTabID = nil
-                if let next = tabs.max(by: { $0.lastActivity < $1.lastActivity }) { select(next.id) }
+                if !tabs.isEmpty { select(tabs[min(index, tabs.count - 1)].id) }
+                else { onSelectionChanged?(nil) }
             }
             tabCloseTasks[id] = nil
         }
@@ -310,7 +384,7 @@ struct ReadySession {
     /// call this; quit does, before its first asynchronous cleanup boundary.
     func beginTermination() {
         terminating = true
-        for tab in tabs { tab.trust = []; tab.authentication = nil }
+        for tab in tabs { tab.trust = []; tab.authentication = nil; tab.dialog = nil }
     }
     func closeAll() async {
         if let task = closeAllTask { await task.value; return }
@@ -318,7 +392,7 @@ struct ReadySession {
         let ids = tabs.map(\.id)
         for tab in tabs {
             tab.operation = UUID(); tab.preparation?.cancel()
-            tab.state = .closing; tab.trust = []; tab.authentication = nil
+            tab.state = .closing; tab.trust = []; tab.authentication = nil; tab.dialog = nil
         }
         let task = Task { @MainActor in
             for id in ids { await closeTab(id) }
@@ -331,13 +405,15 @@ struct ReadySession {
         await task.value
     }
     func accept(_ prompt: SessionTrustPrompt, tabID: UUID) async -> Bool {
-        guard !closingAll, !terminating, let tab = tabs.first(where: { $0.id == tabID }), tab.state == .awaitingTrust,
+        guard !closingAll, !terminating, workspaceVisible, selectedTabID == tabID,
+              let tab = tabs.first(where: { $0.id == tabID }), tab.state == .awaitingTrust,
               tab.trust.contains(prompt), tab.driver?.token == prompt.token, let driver = tab.driver else { return false }
         do { try await driver.accept(prompt); return true }
         catch { tab.issue = .session(error); return false }
     }
     func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt, tabID: UUID) -> Bool {
-        guard !closingAll, !terminating, let tab = tabs.first(where: { $0.id == tabID }), tab.authentication == prompt,
+        guard !closingAll, !terminating, workspaceVisible, selectedTabID == tabID,
+              let tab = tabs.first(where: { $0.id == tabID }), tab.authentication == prompt,
               tab.state == .authenticating, tab.driver?.token == prompt.token, let driver = tab.driver else { return false }
         do { try driver.respond(response, to: prompt); tab.authentication = nil; return true }
         catch { tab.issue = .session(error); return false }

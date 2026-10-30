@@ -16,6 +16,45 @@ import OpenLXSSHSecurity
     private func plan(_ connector: LibSSH2FilesConnector, host: HostConfiguration, input: FilesConnectInput, token: CancellationToken = .init(), current: FilesAuthCurrent = .init()) async throws -> FilesAuthenticationPlan {
         try await connector.prepareAuthentication(request: request(host), input: input, token: token, keyboard: { _, reply in reply.resolve([]) }, isCurrent: { await current.value })
     }
+    private func waitForPause(_ pause: FilesAuthPause) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !(await pause.isWaiting) {
+            guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "files-auth-test-boundary") }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+    private func privateKeyAcrossFinalMetadataRead(_ host: HostConfiguration, security: SecurityCoordinator,
+                                                 repository: FilesAuthRepository,
+                                                 mutation: @MainActor () async throws -> Void) async throws -> OpenLXSSHSecurity.SecretBytes {
+        await repository.pause.arm()
+        let task = Task { try await security.privateKeyForFileAuthentication(host: host, authorized: true) }
+        do {
+            try await waitForPause(repository.pause)
+            await repository.pauseBeforeNextMetadataRead()
+            await repository.pause.release()
+            try await waitForPause(repository.beforeRead)
+            try await mutation()
+            await repository.beforeRead.release()
+            return try await task.value
+        } catch {
+            task.cancel()
+            await repository.pause.release(); await repository.beforeRead.release()
+            _ = await task.result
+            throw error
+        }
+    }
+    private enum PrivateKeyHostChange: CaseIterable { case endpoint, authentication, deletion, differentRowID }
+    private func apply(_ change: PrivateKeyHostChange, to host: HostConfiguration, repository: AppRepository) async throws {
+        var changed = host
+        switch change {
+        case .endpoint: changed.port += 1; try await repository.apply([.updateHost(changed)])
+        case .authentication: changed.authentication = .privateKeyWithMFA; try await repository.apply([.updateHost(changed)])
+        case .deletion: try await repository.apply([.deleteHost(host.id)])
+        case .differentRowID:
+            changed.id = UUID()
+            try await repository.apply([.deleteHost(host.id), .insertHost(changed)])
+        }
+    }
     func testProductionManualAndKeyboardOnlyPlansNeverReadSavedSecret() async throws {
         let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
         let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
@@ -31,6 +70,149 @@ import OpenLXSSHSecurity
         let reads = await credentials.readCount
         XCTAssertEqual(reads, 0)
         try await security.close(); try await repo.close()
+    }
+    func testMetadataOnlyHostRefreshKeepsRequestAndPreparedPasswordAuthorized() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
+        let connector = LibSSH2FilesConnector(repository: repo, security: security, environment: SessionEnvironment(location: .isolated(root)))
+        var host = host(); let ref = UUID(); host.credentialRef = ref; host.savePasswordAuthorized = true
+        try await repo.apply([.registerCredential(.init(id: ref, purpose: .password, isSavingAuthorized: true)), .insertHost(host)])
+        let current = FilesAuthCurrent()
+        let request = FilesRequest(id: UUID(), generation: 7, host: host)
+        let prepared = try await connector.prepareAuthentication(request: request, input: .init(primary: .saved), token: .init(),
+            keyboard: { _, reply in reply.resolve([]) }, isCurrent: { await current.value })
+
+        var refreshed = host
+        let folder = HostFolder(name: "display-only folder")
+        try await repo.apply([.saveFolder(folder)])
+        refreshed.name = "display-only rename"
+        refreshed.folderID = folder.id
+        refreshed.isFavorite = true
+        refreshed.favoriteOrder = 4
+        refreshed.lastConnectedAt = Date(timeIntervalSince1970: 123)
+        XCTAssertEqual(request, FilesRequest(id: request.id, generation: request.generation, host: refreshed))
+        try await repo.apply([.updateHost(refreshed)])
+        try await connector.validatePreparedPlan(prepared, request: request, token: .init(), isCurrent: { await current.value })
+        let reads = await credentials.readCount
+        XCTAssertEqual(reads, 1)
+        try await security.close(); try await repo.close()
+    }
+
+    func testPreparedPlanRejectsTrueIdentityChangeDeletionAndDifferentRowID() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
+        let connector = LibSSH2FilesConnector(repository: repo, security: security, environment: SessionEnvironment(location: .isolated(root)))
+
+        var identityHost = host(); identityHost.name = "identity-change"
+        var deletedHost = host(); deletedHost.name = "deleted"
+        var replacedHost = host(); replacedHost.name = "replaced"
+        try await repo.apply([.insertHost(identityHost), .insertHost(deletedHost), .insertHost(replacedHost)])
+        let identityRequest = request(identityHost)
+        let deletedRequest = request(deletedHost)
+        let replacedRequest = request(replacedHost)
+        let identityPlan = try await connector.prepareAuthentication(request: identityRequest,
+            input: .init(primary: .manual(.init(utf8: "identity"))), token: .init(),
+            keyboard: { _, reply in reply.resolve([]) }, isCurrent: { true })
+        let deletedPlan = try await connector.prepareAuthentication(request: deletedRequest,
+            input: .init(primary: .manual(.init(utf8: "deleted"))), token: .init(),
+            keyboard: { _, reply in reply.resolve([]) }, isCurrent: { true })
+        let replacedPlan = try await connector.prepareAuthentication(request: replacedRequest,
+            input: .init(primary: .manual(.init(utf8: "replaced"))), token: .init(),
+            keyboard: { _, reply in reply.resolve([]) }, isCurrent: { true })
+
+        var changed = identityHost; changed.port += 1
+        try await repo.apply([.updateHost(changed)])
+        do {
+            try await connector.validatePreparedPlan(identityPlan, request: identityRequest, token: .init(), isCurrent: { true })
+            XCTFail("A true connection identity change passed prepared-plan validation")
+        } catch let error as FileServiceError { XCTAssertEqual(error.kind, .cancelled) }
+
+        try await repo.apply([.deleteHost(deletedHost.id)])
+        do {
+            try await connector.validatePreparedPlan(deletedPlan, request: deletedRequest, token: .init(), isCurrent: { true })
+            XCTFail("A deleted host passed prepared-plan validation")
+        } catch let error as FileServiceError { XCTAssertEqual(error.kind, .cancelled) }
+
+        var replacement = replacedHost; replacement.id = UUID()
+        try await repo.apply([.deleteHost(replacedHost.id), .insertHost(replacement)])
+        do {
+            try await connector.validatePreparedPlan(replacedPlan, request: replacedRequest, token: .init(), isCurrent: { true })
+            XCTFail("A different row with the same connection parameters passed validation")
+        } catch let error as FileServiceError { XCTAssertEqual(error.kind, .cancelled) }
+
+        try await security.close(); try await repo.close()
+    }
+    func testDirectPrivateKeyMetadataRefreshBeforeAndAcrossFinalReadReturnsSameMaterial() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let wrapped = FilesAuthRepository(base: repo)
+        let security = SecurityCoordinator(repository: wrapped, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let keyID = try await security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+        try await repo.apply([.insertHost(host)])
+        let original = try await security.privateKeyForFileAuthentication(host: host, authorized: true)
+        XCTAssertFalse(original.withUnsafeBytes { $0.isEmpty })
+
+        let folder = HostFolder(name: "private-key display folder")
+        try await repo.apply([.saveFolder(folder)])
+        var refreshed = host
+        refreshed.name = "display-only key host rename"; refreshed.folderID = folder.id
+        refreshed.isFavorite = true; refreshed.favoriteOrder = 4
+        refreshed.lastConnectedAt = Date(timeIntervalSince1970: 123)
+        try await repo.apply([.updateHost(refreshed)])
+        let before = try await security.privateKeyForFileAuthentication(host: host, authorized: true)
+        XCTAssertTrue(original.matches(before))
+
+        var across = refreshed
+        across.name = "display-only rename across final read"; across.folderID = nil
+        across.isFavorite = false; across.favoriteOrder = 8
+        across.lastConnectedAt = Date(timeIntervalSince1970: 456)
+        let after = try await privateKeyAcrossFinalMetadataRead(refreshed, security: security, repository: wrapped) {
+            try await repo.apply([.updateHost(across)])
+        }
+        XCTAssertTrue(original.matches(after))
+        let metadata = try await repo.securityMetadata(), reads = await credentials.readCount
+        XCTAssertEqual(metadata.hosts.first { $0.id == host.id }, across)
+        XCTAssertTrue(metadata.keys.contains { $0.id == keyID })
+        XCTAssertEqual(reads, 0)
+    }
+    func testDirectPrivateKeyRejectsIdentityChangeDeletionAndDifferentIDBeforeRead() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let keyID = try await security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        for change in PrivateKeyHostChange.allCases {
+            var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+            try await repo.apply([.insertHost(host)])
+            try await apply(change, to: host, repository: repo)
+            do {
+                _ = try await security.privateKeyForFileAuthentication(host: host, authorized: true)
+                XCTFail("Changed host returned private key material: \(change)")
+            } catch let error as RepositoryError { XCTAssertEqual(error, .notFound) }
+        }
+        let reads = await credentials.readCount
+        XCTAssertEqual(reads, 0)
+    }
+    func testDirectPrivateKeyRejectsIdentityChangeDeletionAndDifferentIDAcrossFinalRead() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let wrapped = FilesAuthRepository(base: repo)
+        let security = SecurityCoordinator(repository: wrapped, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let keyID = try await security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        for change in PrivateKeyHostChange.allCases {
+            var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+            try await repo.apply([.insertHost(host)])
+            do {
+                _ = try await privateKeyAcrossFinalMetadataRead(host, security: security, repository: wrapped) {
+                    try await self.apply(change, to: host, repository: repo)
+                }
+                XCTFail("Host changed during final metadata read returned private key material: \(change)")
+            } catch let error as SecurityUIFailure {
+                if case .notAuthorized = error {} else { XCTFail("Expected final authorization rejection") }
+            }
+        }
+        let reads = await credentials.readCount
+        XCTAssertEqual(reads, 0)
     }
     func testProductionFirstMetadataCancellationOrRequestChangePreventsCredentialRead() async throws {
         for invalidation in 0...1 {
@@ -250,6 +432,7 @@ private actor FilesAuthPause {
     func wait() async { guard armed else { return }; reached = true; observer?.resume(); observer = nil; await withCheckedContinuation { waiting = $0 } }
     func arrived() async { if !reached { await withCheckedContinuation { observer = $0 } } }
     func release() { armed = false; waiting?.resume(); waiting = nil }
+    var isWaiting: Bool { waiting != nil }
 }
 private actor FilesAuthCredentials: CredentialAccess {
     let pause = FilesAuthPause()

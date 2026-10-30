@@ -20,6 +20,139 @@ import OpenLXSSHTrust
     }
     private func host() -> HostConfiguration { HostConfiguration(name: "logic only", address: "never-connected.invalid", username: "fixture") }
 
+    func testWorkspaceVisibilityAndOrderingDoNotRecreateOwners() async throws {
+        let (repo, controller, builder, _) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let first = try XCTUnwrap(controller.open(host, mode: .newSession))
+        let second = try XCTUnwrap(controller.open(host, mode: .newSession))
+        let third = try XCTUnwrap(controller.open(host, mode: .newSession))
+        try await wait { builder.drivers.count == 3 && controller.tabs.allSatisfy { $0.preparation == nil } }
+        let view = try XCTUnwrap(controller.tabs.first?.driver?.terminal)
+        for _ in 0..<20 {
+            controller.setWorkspaceVisible(false)
+            XCTAssertTrue(builder.drivers.allSatisfy { $0.terminal.isHidden })
+            controller.select(first)
+            controller.setWorkspaceVisible(true)
+            XCTAssertFalse(view.isHidden)
+        }
+        controller.moveTab(third, before: first)
+        XCTAssertEqual(controller.tabs.map(\.id), [third, first, second])
+        XCTAssertEqual(controller.tabs.first(where: { $0.id == first })?.driver?.terminal, view)
+        XCTAssertTrue(builder.drivers.allSatisfy { $0.connectCount == 1 })
+        controller.renameTab(first, title: "临时标签")
+        XCTAssertEqual(controller.tabs.first(where: { $0.id == first })?.title, "临时标签")
+        let savedName = try await repo.securityMetadata().hosts.first?.name
+        XCTAssertEqual(savedName, host.name)
+        await controller.closeTab(first)
+        XCTAssertEqual(controller.selectedTabID, second)
+        await controller.closeAll(); try await repo.close()
+    }
+
+    func testPerSessionSearchSurvivesTabAndFixedPageRoutingWithoutRebuildingTerminal() async throws {
+        let (repo, _, builder, directory) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let model = AppModel(repository: repo, location: .isolated(directory), sessionBuilder: builder)
+        let loaded = await model.reload(); XCTAssertTrue(loaded)
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let a = try XCTUnwrap(model.sessions.selectedTab); await a.preparation?.value
+        let driver = try XCTUnwrap(a.driver), terminal = driver.terminal, token = driver.token
+        terminal.feed(text: "R5-A-MATCH\r\n")
+        XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        a.searchText = "R5-A-MATCH"; a.searchHistory()
+        XCTAssertEqual(a.searchFound, true)
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let b = try XCTUnwrap(model.sessions.selectedTab); await b.preparation?.value
+        XCTAssertFalse(b.searchVisible); XCTAssertTrue(b.searchText.isEmpty); XCTAssertNil(b.searchFound)
+        XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        b.searchText = "missing-B"; b.searchHistory(); XCTAssertEqual(b.searchFound, false)
+        model.showWorkspace(.vault); model.showWorkspace(.sftp); model.showWorkspace(.session(a.id))
+        XCTAssertTrue(a.searchVisible); XCTAssertEqual(a.searchText, "R5-A-MATCH"); XCTAssertEqual(a.searchFound, true)
+        XCTAssertEqual(b.searchText, "missing-B"); XCTAssertEqual(b.searchFound, false)
+        XCTAssertTrue(a.driver === driver); XCTAssertTrue(a.driver?.terminal === terminal); XCTAssertEqual(a.driver?.token, token)
+        XCTAssertTrue(builder.drivers.allSatisfy { $0.connectCount == 1 })
+        a.closeSearch(); XCTAssertFalse(a.searchVisible); XCTAssertNotNil(a.terminalFocusRequest)
+        await model.sessions.closeTab(b.id)
+        XCTAssertEqual(model.workspacePage, .session(a.id))
+        await model.sessions.closeTab(a.id)
+        XCTAssertEqual(model.workspacePage, .vault); XCTAssertFalse(model.sessions.workspaceVisible)
+        await model.files.closeForWindow(); try await repo.close()
+    }
+
+    func testDialogPresentationCannotCrossTabOrReplayExpiredRequest() async throws {
+        let (repo, controller, builder, _) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let aID = try XCTUnwrap(controller.open(host, mode: .newSession))
+        let a = try XCTUnwrap(controller.selectedTab); await a.preparation?.value
+        let bID = try XCTUnwrap(controller.open(host, mode: .newSession))
+        await controller.selectedTab?.preparation?.value
+        let driver = builder.drivers[0], token = try XCTUnwrap(builder.drivers[0].token)
+        driver.set(.authenticating)
+        let prompt = SessionAuthenticationPrompt(token: token, id: UUID(), kind: .unknownMasked, text: "logic-only")
+        driver.onAuthentication?(prompt)
+        XCTAssertFalse(controller.present(.authentication(prompt), tabID: aID))
+        XCTAssertFalse(controller.respond(.acknowledge, to: prompt, tabID: aID))
+        controller.select(aID)
+        XCTAssertTrue(controller.present(.authentication(prompt), tabID: aID))
+        let presentation = a.dialog?.id
+        controller.select(bID); XCTAssertNil(a.dialog); XCTAssertEqual(a.authentication, prompt)
+        controller.select(aID); XCTAssertNil(a.dialog)
+        XCTAssertTrue(controller.present(.authentication(prompt), tabID: aID))
+        XCTAssertNotEqual(a.dialog?.id, presentation)
+        let replacement = SessionAuthenticationPrompt(token: token, id: UUID(), kind: .unknownMasked, text: "new request")
+        driver.onAuthentication?(replacement)
+        XCTAssertNil(a.dialog)
+        XCTAssertFalse(controller.respond(.acknowledge, to: prompt, tabID: aID))
+        XCTAssertTrue(controller.present(.authentication(replacement), tabID: aID))
+        controller.setWorkspaceVisible(false)
+        XCTAssertNil(a.dialog)
+        XCTAssertFalse(controller.respond(.acknowledge, to: replacement, tabID: aID))
+        controller.setWorkspaceVisible(true)
+        XCTAssertNil(a.dialog)
+        XCTAssertTrue(controller.respond(.acknowledge, to: replacement, tabID: aID))
+        XCTAssertEqual(driver.responseCount, 1)
+        driver.set(.awaitingTrust)
+        let trust = SessionTrustPrompt(token: token, id: UUID(), host: try XCTUnwrap(a.configuration?.connection.host),
+            algorithm: "ssh-ed25519", fingerprint: "SHA256:LOGIC-ONLY", source: "logic", transport: nil)
+        driver.onTrust?([trust]); XCTAssertTrue(controller.present(.trust(trust), tabID: aID))
+        driver.onTrust?([]); XCTAssertNil(a.dialog)
+        let rejectedTrust = await controller.accept(trust, tabID: aID); XCTAssertFalse(rejectedTrust)
+        await controller.closeAll(); try await repo.close()
+    }
+
+    func testReuseRequiresConnectionSnapshotButIgnoresPresentationMetadata() async throws {
+        let (repo, controller, builder, _) = try fixture(); var host = host()
+        try await repo.apply([.insertHost(host)])
+        let original = try XCTUnwrap(controller.open(host, mode: .reuse))
+        try await wait { builder.drivers.count == 1 && controller.tabs[0].preparation == nil }
+        host.name = "renamed"; host.isFavorite = true; host.lastConnectedAt = Date()
+        try await repo.apply([.updateHost(host)])
+        XCTAssertEqual(controller.open(host, mode: .reuse), original)
+        host.username = "another-user"
+        try await repo.apply([.updateHost(host)])
+        let updated = try XCTUnwrap(controller.open(host, mode: .reuse))
+        XCTAssertNotEqual(updated, original)
+        try await wait { builder.drivers.count == 2 && controller.tabs.allSatisfy { $0.preparation == nil } }
+        XCTAssertEqual(controller.tabs.first(where: { $0.id == original })?.host?.username, "fixture")
+        XCTAssertEqual(controller.tabs.first(where: { $0.id == updated })?.host?.username, "another-user")
+        XCTAssertEqual(builder.drivers[0].connectCount, 1)
+        await controller.closeAll(); try await repo.close()
+    }
+
+    func testConnectionIdentityCoversAuthorizationAndKeepaliveNotDisplayFields() {
+        let original = host()
+        var changed = original; changed.name = "new name"; changed.folderID = UUID(); changed.isFavorite = true; changed.favoriteOrder = 8; changed.lastConnectedAt = Date()
+        XCTAssertEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.address = "other.invalid"; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.port = 2222; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.username = "other"; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.authentication = .privateKey; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.keyRef = UUID(); XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.credentialRef = UUID(); XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.savePasswordAuthorized = true; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.keepaliveInterval = 9; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+        changed = original; changed.keepaliveCountMax = 1; XCTAssertNotEqual(changed.connectionIdentity, original.connectionIdentity)
+    }
+
     func testReuseNewMostRecentAndDisconnectedNeverAutoReconnect() async throws {
         let (repo, controller, builder, _) = try fixture(); let host = host()
         try await repo.apply([.insertHost(host)])
