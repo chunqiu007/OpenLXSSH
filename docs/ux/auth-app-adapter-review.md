@@ -10,7 +10,7 @@
 - `NativeSessionDriver` 使用成熟 `LibSSH2ShellSession`；同 tab 终端实例、一个输出 pull、64 KiB 输出上限、256 KiB / 128 项输入准入、串行写入与 latest resize 合并。
 - typed primary provider 与未知 keyboard-interactive mailbox 分离；saved read 前后及最终 material 返回前独立校验当前 metadata。未知 KI 不持有 saved reader 或一次性 intent。
 - 两主认证的多字段、echo、零输入通知与取消进入实际 App model / View；当前候选预算 10 / 120 / 300 秒，liveness 为 nil。
-- SSH/SFTP 首次信任三按钮、当前 owner 自动呈现以及 changed 拒绝界面已接源码；真实回调 race 尚未修复，不能据 model 测试称完整 changed 门通过。
+- SSH/SFTP首次信任三按钮、当前owner自动呈现和changed拒绝已接源码；后续typed事实包门strict180/主管22及AppChanged53/主管53已过，见`native-failure-package-review.md`及`native-changed-app-review.md`。实际新界面信任/网络仍单列，不由模型测试外推。
 
 原始 19 文件冻结与本轮 before 增量：`DerivedData/UXVerification/AuthAppAdapter-R1/source-ready-r1.json`、`source-ready-r1.patch`。联合 KeyDuplicate 7 文件后的去重 25 源摘要已另记；`SecurityCoordinator` 的变化来自已协调的独立导入任务，不假称旧摘要一致。
 
@@ -57,5 +57,5 @@
 
 - 新 App 真实密码 / key / 两类 MFA、once/persistent、changed、并发取消、真实终端/TUI/粘贴/资源门均未通过。
 - CUA 本次只读 list_apps 仍全部 active false；不据此推断锁屏或擅改系统权限。当前没有新版像素验收或截图通过。
-- Native liveness 默认未接；normal 有限候选门见 `native-liveness-live-finite.md`，DROP 与 MaxSessions 不通过/未执行。
+- Native liveness仍未接用户设置；旧候选normal、MaxSessions拒绝和严格DROP有限门均已通过，见`native-liveness-live-finite.md`，不自动覆盖后续runtime或App。新版typed/sealed runtime五真实consumer分项另已通过，见`native-failure-live-finite.md`；保活兼容/实际App/TUI仍待。
 - 不切生产默认，不标 UX_READY_FOR_USER，不推送，不生成新最终发行包或提交 Apple 公证。
