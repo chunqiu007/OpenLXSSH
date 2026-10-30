@@ -148,7 +148,8 @@ actor SecurityCoordinator {
         try Task.checkCancellation()
         let after = try await repository.securityMetadata()
         try Task.checkCancellation()
-        guard after.hosts.contains(where: { $0.matchesConnection(of: host) }), after.keys.contains(reference) else { throw SecurityUIFailure.notAuthorized }
+        guard after.hosts.contains(where: { $0.matchesConnection(of: host) }),
+              after.keys.contains(where: { $0.authenticationIdentity == reference.authenticationIdentity }) else { throw SecurityUIFailure.notAuthorized }
         return secret
     }
     func publicKey(_ id: UUID) async throws -> PublicKey {

@@ -563,6 +563,110 @@ final class VaultMetadataTests: XCTestCase {
         try checkIntegrity()
     }
 
+    func testRecursiveFolderCopyKeepsSubtreeTagsSharedReferencesAndOriginals() throws {
+        let parent = HostFolder(name: "outside parent")
+        let root = HostFolder(name: "source", sortOrder: 7, parentID: parent.id)
+        let child = HostFolder(name: "same", sortOrder: 2, parentID: root.id)
+        let sibling = HostFolder(name: "same", sortOrder: 3, parentID: root.id)
+        let leaf = HostFolder(name: "leaf", parentID: child.id)
+        let tag = HostTag(name: "shared tag")
+        let password = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        let phrase = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let key = ManagedKeyReference(algorithm: .ed25519, passphraseCredentialRef: phrase.id, label: "shared key")
+        let saved = HostConfiguration(name: "saved", address: "saved.invalid", username: "fixture", authentication: .passwordWithMFA,
+            credentialRef: password.id, savePasswordAuthorized: true, folderID: root.id, isFavorite: true, favoriteOrder: 9, lastConnectedAt: Date(timeIntervalSince1970: 30))
+        let keyed = HostConfiguration(name: "keyed", address: "key.invalid", username: "fixture", authentication: .privateKeyWithMFA, keyRef: key.id, folderID: leaf.id)
+        let plain = host("plain", folderID: sibling.id)
+        let outside = host("outside", folderID: parent.id)
+        try database.apply([.saveFolder(parent), .saveFolder(root), .saveFolder(child), .saveFolder(sibling), .saveFolder(leaf),
+                            .registerCredential(password), .registerCredential(phrase), .registerKey(key), .addTag(tag),
+                            .insertHost(saved), .insertHost(keyed), .insertHost(plain), .insertHost(outside),
+                            .assignTag(hostID: saved.id, tagID: tag.id), .assignTag(hostID: keyed.id, tagID: tag.id)])
+        let originalCatalog = try database.vaultMetadata()
+        let copy = try database.copyFolder(id: root.id, name: "copy")
+        XCTAssertNotEqual(copy.id, root.id)
+        XCTAssertEqual(copy.name, "copy")
+        XCTAssertEqual(copy.parentID, parent.id)
+        XCTAssertEqual(copy.sortOrder, root.sortOrder)
+        let copiedFolders = try database.folderPaths().filter { $0.folderIDs.contains(copy.id) }
+        XCTAssertEqual(copiedFolders.count, 4)
+        XCTAssertTrue(Set(copiedFolders.map(\.id)).isDisjoint(with: Set(originalCatalog.folders.map(\.id))))
+        let copiedChild = try XCTUnwrap(copiedFolders.first { $0.components.last?.sortOrder == child.sortOrder })
+        let copiedLeaf = try XCTUnwrap(copiedFolders.first { $0.components.last?.name == leaf.name })
+        XCTAssertEqual(copiedLeaf.components.last?.parentID, copiedChild.id)
+        let copiedHosts = try database.hostsMetadata(HostQuery(folder: .folderAndDescendants(copy.id)))
+        XCTAssertEqual(copiedHosts.count, 3)
+        for original in originalCatalog.hosts.filter({ $0.folderPath?.folderIDs.contains(root.id) == true }) {
+            let copied = try XCTUnwrap(copiedHosts.first { $0.host.name == original.host.name })
+            var expected = original.host
+            expected.id = copied.id; expected.folderID = copied.host.folderID; expected.lastConnectedAt = nil
+            XCTAssertNotEqual(copied.id, original.id)
+            XCTAssertEqual(copied.host, expected)
+            XCTAssertEqual(copied.tagIDs, original.tagIDs)
+        }
+        for original in originalCatalog.hosts { XCTAssertEqual(try database.hostMetadata(id: original.id), original) }
+        for original in originalCatalog.folders { XCTAssertEqual(try database.folderPath(id: original.id), original) }
+        XCTAssertEqual(try database.keys(), [key])
+        XCTAssertEqual(Set(try database.credentials().map(\.id)), [password.id, phrase.id])
+        XCTAssertTrue(try database.cleanupTickets(includeCompleted: true).isEmpty)
+        try reopen(); try checkIntegrity()
+    }
+
+    func testRecursiveFolderCopyRollsBackAllFoldersHostsAndTagsOnLateSQLFailure() throws {
+        let root = HostFolder(name: "root"), marker = HostTag(name: "tag")
+        let child = HostFolder(name: "child", parentID: root.id)
+        let source = host("fail copied host", folderID: child.id)
+        try database.apply([.saveFolder(root), .saveFolder(child), .insertHost(source), .addTag(marker), .assignTag(hostID: source.id, tagID: marker.id)])
+        let baseline = try database.vaultMetadata()
+        try database.queue.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER deny_copied_host BEFORE INSERT ON hosts
+                WHEN NEW.name = 'fail copied host'
+                BEGIN SELECT RAISE(ABORT, 'injected copy failure'); END;
+                """)
+        }
+        XCTAssertThrowsError(try database.copyFolder(id: root.id, name: "must roll back"))
+        XCTAssertEqual(try database.vaultMetadata(), baseline)
+        try database.queue.write { try $0.execute(sql: "DROP TRIGGER deny_copied_host") }
+        expect(.invalidField("folderName")) { _ = try database.copyFolder(id: root.id, name: "") }
+        expect(.notFound) { _ = try database.copyFolder(id: UUID()) }
+        XCTAssertEqual(try database.vaultMetadata(), baseline)
+        _ = try database.copyFolder(id: root.id)
+        XCTAssertEqual(try database.hosts().count, 2)
+        try checkIntegrity()
+    }
+
+    func testRecursiveFolderCopyWaitsForConcurrentWriterAndUsesCommittedAuthorization() throws {
+        let group = HostFolder(name: "source")
+        let credential = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        let source = HostConfiguration(name: "saved", address: "saved.invalid", username: "fixture",
+            credentialRef: credential.id, savePasswordAuthorized: true, folderID: group.id)
+        try database.apply([.saveFolder(group), .registerCredential(credential), .insertHost(source)])
+        let second = try OpenLXSSHDatabase(directory: directory)
+        defer { try? second.close() }
+        let acquired = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        let failure = CopyThreadFailure()
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                try second.queue.write { db in
+                    try db.execute(sql: "UPDATE hosts SET credentialRef = NULL, savePasswordAuthorized = 0 WHERE id = ?", arguments: [source.id])
+                    acquired.signal()
+                    Thread.sleep(forTimeInterval: 0.25)
+                }
+            } catch { failure.record(error); acquired.signal() }
+        }
+        XCTAssertEqual(acquired.wait(timeout: .now() + 5), .success)
+        let copiedFolder = try database.copyFolder(id: group.id)
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        XCTAssertNil(failure.error)
+        let copied = try XCTUnwrap(database.hosts(HostQuery(folder: .folder(copiedFolder.id))).first)
+        XCTAssertNil(copied.credentialRef)
+        XCTAssertFalse(copied.savePasswordAuthorized)
+        XCTAssertEqual(try database.credentials(), [credential])
+        try checkIntegrity()
+    }
+
     func testStructuredVaultSnapshotContainsPathsAndPerHostTagIDsWithoutSecretData() throws {
         let root = HostFolder(name: "root"), group = HostFolder(name: "group")
         let nested = HostFolder(id: group.id, name: group.name, parentID: root.id)
@@ -582,4 +686,11 @@ final class VaultMetadataTests: XCTestCase {
         XCTAssertEqual(try database.hostMetadata(id: plain.id)?.tagIDs, [])
         XCTAssertNil(try database.hostMetadata(id: UUID()))
     }
+}
+
+private final class CopyThreadFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+    func record(_ error: Error) { lock.lock(); defer { lock.unlock() }; stored = error }
+    var error: Error? { lock.lock(); defer { lock.unlock() }; return stored }
 }

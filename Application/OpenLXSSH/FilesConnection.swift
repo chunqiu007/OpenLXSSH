@@ -169,7 +169,9 @@ actor LibSSH2FilesConnector: FilesConnecting {
             let kind: OpenLXSSHSecurity.CredentialReference.Kind
             let purpose: OpenLXSSHCore.CredentialPurpose
             if privateKey {
-                guard let key, host.keyRef == key.id, metadata.keys.contains(key), let value = key.passphraseCredentialRef else {
+                guard let key, host.keyRef == key.id,
+                      metadata.keys.contains(where: { $0.authenticationIdentity == key.authenticationIdentity }),
+                      let value = key.passphraseCredentialRef else {
                     throw FileServiceError(.authentication, operation: "saved-passphrase-unavailable")
                 }
                 ref = value; kind = .privateKeyPassphrase; purpose = .privateKeyPassphrase

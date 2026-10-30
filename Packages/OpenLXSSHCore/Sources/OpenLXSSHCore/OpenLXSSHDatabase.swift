@@ -167,6 +167,46 @@ public final class OpenLXSSHDatabase: Sendable {
         }
     }
 
+    /// Recursively copies local organization and host configuration in one immediate transaction.
+    /// Concurrent writers cannot revoke/change a source reference between its read and insertion.
+    /// Only the root may be renamed; its original parent and all descendant relationships are kept.
+    @discardableResult
+    public func copyFolder(id: UUID, name: String? = nil) throws -> HostFolder {
+        try write { db in
+            let paths = try makeFolderPaths(fetchFolders(db: db))
+            guard let original = paths.first(where: { $0.id == id })?.components.last else { throw RepositoryError.notFound }
+            let subtree = paths.filter { $0.folderIDs.contains(id) }.sorted {
+                if $0.components.count != $1.components.count { return $0.components.count < $1.components.count }
+                return $0.identityPath < $1.identityPath
+            }
+            let copiedIDs = Dictionary(uniqueKeysWithValues: subtree.map { ($0.id, UUID()) })
+            guard let rootID = copiedIDs[id] else { throw RepositoryError.notFound }
+            var rootCopy = original
+            rootCopy.id = rootID; rootCopy.name = name ?? original.name
+            for path in subtree {
+                guard var folder = path.components.last, let copiedID = copiedIDs[folder.id] else { throw RepositoryError.notFound }
+                folder.id = copiedID
+                if path.id == id {
+                    folder.name = rootCopy.name
+                } else {
+                    guard let parent = folder.parentID, let copiedParent = copiedIDs[parent] else { throw RepositoryError.invalidField("folderParentID") }
+                    folder.parentID = copiedParent
+                }
+                try validateFolder(folder, db: db)
+                try folder.insert(db)
+            }
+            for originalHost in try fetchHosts(HostQuery(folder: .folderAndDescendants(id)), db: db) {
+                guard let folderID = originalHost.folderID, let copiedFolderID = copiedIDs[folderID] else { throw RepositoryError.invalidField("folderParentID") }
+                var host = originalHost
+                host.id = UUID(); host.folderID = copiedFolderID; host.lastConnectedAt = nil
+                try host.validate()
+                try host.insert(db)
+                try db.execute(sql: "INSERT INTO hostTags(hostID, tagID) SELECT ?, tagID FROM hostTags WHERE hostID = ?", arguments: [host.id, originalHost.id])
+            }
+            return rootCopy
+        }
+    }
+
     /// Changes execute in array order inside one immediate SQLite write transaction.
     public func apply(_ changes: [RepositoryChange]) throws {
         try applyTransaction(changes, beforeCommit: {})

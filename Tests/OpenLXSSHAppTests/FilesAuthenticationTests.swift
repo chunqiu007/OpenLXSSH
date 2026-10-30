@@ -393,6 +393,144 @@ import OpenLXSSHSecurity
         XCTAssertEqual(reads, 0)
         try await security.close(); try await repo.close()
     }
+    func testDirectPrivateKeyLabelRefreshBeforeAndAcrossFinalReadKeepsMaterial() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let wrapped = FilesAuthRepository(base: repo)
+        let security = SecurityCoordinator(repository: wrapped, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let keyID = try await security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+        try await repo.apply([.insertHost(host)])
+        let original = try await security.privateKeyForFileAuthentication(host: host, authorized: true)
+        try await repo.updateKeyLabel(keyID: keyID, label: "before material read")
+        let before = try await security.privateKeyForFileAuthentication(host: host, authorized: true)
+        XCTAssertTrue(original.matches(before))
+        let after = try await privateKeyAcrossFinalMetadataRead(host, security: security, repository: wrapped) {
+            try await repo.updateKeyLabel(keyID: keyID, label: "across final metadata read")
+        }
+        XCTAssertTrue(original.matches(after))
+        let metadata = try await repo.securityMetadata(), reads = await credentials.readCount
+        XCTAssertEqual(metadata.keys.first { $0.id == keyID }?.label, "across final metadata read")
+        XCTAssertEqual(reads, 0)
+    }
+
+    func testSavedKeyLabelChangesBeforeInitialSecretAcrossCredentialAwaitAndFinalPlanRemainAuthorized() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let wrapped = FilesAuthRepository(base: repo)
+        let security = SecurityCoordinator(repository: wrapped, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let phrase = OpenLXSSHSecurity.SecretBytes(utf8: UUID().uuidString)
+        let keyID = try await security.createKey(.generate, protection: .passphrase(phrase), rememberPassphrase: phrase).id
+        var host = host(); host.authentication = .privateKeyWithMFA; host.keyRef = keyID
+        try await repo.apply([.insertHost(host)])
+        try await repo.updateKeyLabel(keyID: keyID, label: "before plan")
+        let initialMetadata = try await repo.securityMetadata()
+        let initialKey = try XCTUnwrap(initialMetadata.keys.first { $0.id == keyID })
+        let connector = LibSSH2FilesConnector(repository: wrapped, security: security, environment: SessionEnvironment(location: .isolated(root)))
+        let request = request(host)
+        await wrapped.pause.arm(); await credentials.pause.arm()
+        let task = Task { try await connector.prepareAuthentication(request: request, input: .init(primary: .saved), token: .init(), keyboard: { _, reply in reply.resolve([]) }, isCurrent: { true }) }
+        let prepared: FilesAuthenticationPlan
+        do {
+            // The first metadata snapshot has the old label. initialSecret must compare its
+            // authentication identity with the renamed row rather than its full display metadata.
+            try await waitForPause(wrapped.pause)
+            try await repo.updateKeyLabel(keyID: keyID, label: "between initial snapshot and saved-secret authorization")
+            await wrapped.pause.release()
+            try await waitForPause(credentials.pause)
+            try await repo.updateKeyLabel(keyID: keyID, label: "across credential await")
+            await credentials.pause.release()
+            prepared = try await task.value
+        } catch {
+            task.cancel(); await wrapped.pause.release(); await credentials.pause.release()
+            _ = await task.result
+            throw error
+        }
+        XCTAssertEqual(prepared.methods.count, 2)
+        if case .publicKey(_, let bytes, let savedPhrase) = prepared.methods[0] {
+            XCTAssertFalse(bytes.isEmpty); XCTAssertFalse(savedPhrase?.isEmpty ?? true)
+        } else { XCTFail("Expected a memory-only saved private-key plan") }
+        try await repo.updateKeyLabel(keyID: keyID, label: "after plan")
+        try await connector.validatePreparedPlan(prepared, request: request, token: .init(), isCurrent: { true })
+        await wrapped.pauseBeforeNextMetadataRead()
+        let validation = Task { try await connector.validatePreparedPlan(prepared, request: request, token: .init(), isCurrent: { true }) }
+        do {
+            try await waitForPause(wrapped.beforeRead)
+            try await repo.updateKeyLabel(keyID: keyID, label: "across pre-TCP metadata await")
+            await wrapped.beforeRead.release()
+            try await validation.value
+        } catch {
+            validation.cancel(); await wrapped.beforeRead.release(); _ = await validation.result
+            throw error
+        }
+        let after = try await repo.securityMetadata(), reads = await credentials.readCount
+        XCTAssertEqual(after.keys.first { $0.id == keyID }?.authenticationIdentity, initialKey.authenticationIdentity)
+        XCTAssertEqual(after.keys.first { $0.id == keyID }?.label, "across pre-TCP metadata await")
+        XCTAssertEqual(after.credentials, initialMetadata.credentials)
+        XCTAssertEqual(reads, 1)
+    }
+
+    func testDirectPrivateKeyRejectsPassphraseAlgorithmAndKeyIDChangesAcrossFinalRead() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let wrapped = FilesAuthRepository(base: repo)
+        let security = SecurityCoordinator(repository: wrapped, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let keyID = try await security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+        let originalPhrase = OpenLXSSHCore.CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let replacement = OpenLXSSHCore.CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        try await repo.apply([.insertHost(host), .registerCredential(originalPhrase), .registerCredential(replacement), .updateKeyPassphrase(keyID: keyID, credentialRef: originalPhrase.id)])
+        for change in 0..<4 {
+            await wrapped.overrideKeys(nil)
+            try await repo.apply([.updateKeyPassphrase(keyID: keyID, credentialRef: originalPhrase.id)])
+            let metadata = try await repo.securityMetadata()
+            let key = try XCTUnwrap(metadata.keys.first { $0.id == keyID })
+            do {
+                _ = try await privateKeyAcrossFinalMetadataRead(host, security: security, repository: wrapped) {
+                    if change < 2 {
+                        try await repo.apply([.updateKeyPassphrase(keyID: keyID, credentialRef: change == 0 ? nil : replacement.id)])
+                    } else {
+                        // Production registration forbids algorithm/UUID mutation; the fake only
+                        // changes the final metadata reply to exercise this defensive boundary.
+                        var changed = key
+                        if change == 2 { changed.algorithm = .rsa } else { changed.id = UUID() }
+                        await wrapped.overrideKeys([changed])
+                    }
+                }
+                XCTFail("Changed key authentication identity returned material: \(change)")
+            } catch let error as SecurityUIFailure {
+                if case .notAuthorized = error {} else { XCTFail("Expected key identity rejection") }
+            }
+        }
+        let reads = await credentials.readCount
+        XCTAssertEqual(reads, 0)
+    }
+
+    func testPreparedSavedPlanRejectsAlgorithmAndKeyIDChangesButNotLabels() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let wrapped = FilesAuthRepository(base: repo)
+        let security = SecurityCoordinator(repository: wrapped, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let phrase = OpenLXSSHSecurity.SecretBytes(utf8: UUID().uuidString)
+        let keyID = try await security.createKey(.generate, protection: .passphrase(phrase), rememberPassphrase: phrase).id
+        var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+        try await repo.apply([.insertHost(host)])
+        let connector = LibSSH2FilesConnector(repository: wrapped, security: security, environment: SessionEnvironment(location: .isolated(root)))
+        let request = request(host)
+        let prepared = try await connector.prepareAuthentication(request: request, input: .init(primary: .saved), token: .init(), keyboard: { _, reply in reply.resolve([]) }, isCurrent: { true })
+        let metadata = try await repo.securityMetadata(), key = try XCTUnwrap(metadata.keys.first { $0.id == keyID })
+        for differentID in [false, true] {
+            var changed = key
+            if differentID { changed.id = UUID() } else { changed.algorithm = .rsa }
+            await wrapped.overrideKeys([changed])
+            do {
+                try await connector.validatePreparedPlan(prepared, request: request, token: .init(), isCurrent: { true })
+                XCTFail("Changed key ID/algorithm reused saved plan")
+            } catch let error as FileServiceError { XCTAssertEqual(error.kind, .cancelled) }
+        }
+        await wrapped.overrideKeys(nil)
+    }
+
     func testPreparedPlanRejectsWrongRequestAndCancellationOrStaleGenerationDuringFinalAwait() async throws {
         let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
         let wrapped = FilesAuthRepository(base: repo)
@@ -449,7 +587,9 @@ private actor FilesAuthRepository: AppRepositoryProtocol {
     private var savedReadCredentials: FilesAuthCredentials?
     private var pauseNextMetadataRead = false
     private(set) var metadataReadsAfterSavedRead = 0
+    private var overriddenKeys: [ManagedKeyReference]?
     init(base: AppRepository) { self.base = base }
+    func overrideKeys(_ keys: [ManagedKeyReference]?) { overriddenKeys = keys }
     func pauseBeforeFinalMetadataAfterSavedRead(_ credentials: FilesAuthCredentials) async {
         savedReadCredentials = credentials; metadataReadsAfterSavedRead = 0
         await beforeRead.arm()
@@ -467,7 +607,10 @@ private actor FilesAuthRepository: AppRepositoryProtocol {
             }
         }
         if shouldPause { await beforeRead.wait() }
-        let value = try await base.securityMetadata(); await pause.wait(); return value
+        var value = try await base.securityMetadata()
+        if let overriddenKeys { value.keys = overriddenKeys }
+        await pause.wait()
+        return value
     }
     func snapshot(query: HostQuery) async throws -> AppSnapshot { try await base.snapshot(query: query) }
     func apply(_ changes: [RepositoryChange]) async throws { try await base.apply(changes) }

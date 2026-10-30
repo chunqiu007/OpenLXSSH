@@ -10,10 +10,30 @@ struct AppSnapshot: Sendable {
     var keys: [ManagedKeyReference]
     var settings: AppSettings
     var allHosts: [HostConfiguration]? = nil
+    var folderPaths: [HostFolderPath] = []
+    var tags: [HostTag] = []
+    /// Filtered metadata follows hosts; the full catalog is never scoped to the current search/group/tags.
+    var hostMetadata: [HostMetadata] = []
+    var allHostMetadata: [HostMetadata]? = nil
+
+    var catalog: [HostMetadata] { allHostMetadata ?? hostMetadata }
+    var hostTagIDs: [UUID: Set<UUID>] { Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0.tagIDs) }) }
+    var keyHostReferenceCounts: [UUID: Int] { counts((allHosts ?? hosts).compactMap(\.keyRef)) }
+    var credentialHostReferenceCounts: [UUID: Int] { counts((allHosts ?? hosts).compactMap(\.credentialRef)) }
+    var credentialKeyReferenceCounts: [UUID: Int] { counts(keys.compactMap(\.passphraseCredentialRef)) }
+    var tagHostReferenceCounts: [UUID: Int] { counts(catalog.flatMap { $0.tagIDs }) }
+
+    private func counts(_ ids: [UUID]) -> [UUID: Int] {
+        ids.reduce(into: [:]) { $0[$1, default: 0] += 1 }
+    }
 }
 
 protocol AppRepositoryProtocol: Sendable {
     func snapshot(query: HostQuery) async throws -> AppSnapshot
+    func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot
+    func folderDeletionImpact(id: UUID) async throws -> FolderDeletionImpact
+    func tagDeletionImpact(id: UUID) async throws -> TagDeletionImpact
+    func updateKeyLabel(keyID: UUID, label: String) async throws
     func apply(_ changes: [RepositoryChange]) async throws
     func copyHost(id: UUID) async throws -> HostConfiguration
     func copyFolder(id: UUID) async throws -> HostFolder
@@ -32,6 +52,12 @@ struct SecurityMetadata: Sendable {
 }
 
 extension AppRepositoryProtocol {
+    // Older test repositories need not implement the new metadata surface. Unsupported operations
+    // fail explicitly instead of fabricating an empty catalog, a zero impact, or a successful save.
+    func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot { throw RepositoryError.notFound }
+    func folderDeletionImpact(id: UUID) async throws -> FolderDeletionImpact { throw RepositoryError.notFound }
+    func tagDeletionImpact(id: UUID) async throws -> TagDeletionImpact { throw RepositoryError.notFound }
+    func updateKeyLabel(keyID: UUID, label: String) async throws { throw RepositoryError.notFound }
     func securityMetadata() async throws -> SecurityMetadata { throw RepositoryError.notFound }
     func completeCleanup(_ id: UUID) async throws { throw RepositoryError.notFound }
     func recordCleanupFailure(_ id: UUID, failure: CleanupFailure) async throws { throw RepositoryError.notFound }
@@ -111,9 +137,32 @@ actor AppRepository: AppRepositoryProtocol {
 
     func snapshot(query: HostQuery) throws -> AppSnapshot {
         let db = try opened()
-        let snapshot = AppSnapshot(hosts: try db.hosts(query), folders: try db.folders(), keys: try db.keys(), settings: try db.settings(), allHosts: try db.hosts())
+        let filtered = try db.vaultMetadata(query)
+        let catalog = try db.hostsMetadata()
+        let snapshot = AppSnapshot(hosts: filtered.hosts.map(\.host), folders: filtered.folders.compactMap { $0.components.last },
+            keys: try db.keys(), settings: try db.settings(), allHosts: catalog.map(\.host),
+            folderPaths: filtered.folders, tags: filtered.tags, hostMetadata: filtered.hosts, allHostMetadata: catalog)
         _ = try location.databaseDirectory()
         return snapshot
+    }
+
+    func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot {
+        let value = try opened().vaultMetadata(query)
+        _ = try location.databaseDirectory()
+        return value
+    }
+    func folderDeletionImpact(id: UUID) async throws -> FolderDeletionImpact {
+        let value = try opened().folderDeletionImpact(id: id)
+        _ = try location.databaseDirectory()
+        return value
+    }
+    func tagDeletionImpact(id: UUID) async throws -> TagDeletionImpact {
+        let value = try opened().tagDeletionImpact(id: id)
+        _ = try location.databaseDirectory()
+        return value
+    }
+    func updateKeyLabel(keyID: UUID, label: String) async throws {
+        try apply([.updateKeyLabel(keyID: keyID, label: label)])
     }
 
     private func validateCommittedStorage() throws {
@@ -133,18 +182,12 @@ actor AppRepository: AppRepositoryProtocol {
         return copy
     }
 
-    /// Copy configuration in one transaction. Shared key/credential references stay shared;
-    /// neither external secrets nor connection history are copied or created here.
+    /// Recursively copies the subtree in Core's single SQLite transaction, not a read/apply
+    /// sequence that could resurrect another process's revoked authorization snapshot.
     func copyFolder(id: UUID) throws -> HostFolder {
         let db = try opened()
-        guard let original = try db.folders().first(where: { $0.id == id }) else { throw RepositoryError.notFound }
-        let copy = HostFolder(name: Self.copyName(original.name), sortOrder: original.sortOrder)
-        var changes: [RepositoryChange] = [.saveFolder(copy)]
-        for var host in try db.hosts(HostQuery(folder: .folder(id))) {
-            host.id = UUID(); host.folderID = copy.id; host.lastConnectedAt = nil
-            changes.append(.insertHost(host))
-        }
-        try db.apply(changes)
+        guard let original = try db.folder(id: id) else { throw RepositoryError.notFound }
+        let copy = try db.copyFolder(id: id, name: Self.copyName(original.name))
         try validateCommittedStorage()
         return copy
     }
