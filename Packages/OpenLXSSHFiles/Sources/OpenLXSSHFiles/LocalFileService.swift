@@ -81,6 +81,12 @@ public actor LocalFileService: RemoteFileService {
                               modifiedSeconds: UInt64(max(0, st.st_mtimespec.tv_sec)), modifiedNanoseconds: UInt32(st.st_mtimespec.tv_nsec),
                               identity: "\(st.st_dev):\(st.st_ino)")
     }
+    /// The selected directory is `/` in this confined service's namespace, not the
+    /// host filesystem root and not evidence of a real SFTP server's login directory.
+    public func initialDirectory(token: CancellationToken) async throws -> RemotePath {
+        try check(token)
+        return .root
+    }
     public func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes {
         try check(token)
         var st = stat()

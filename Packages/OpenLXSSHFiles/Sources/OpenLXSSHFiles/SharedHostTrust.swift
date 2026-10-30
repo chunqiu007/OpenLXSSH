@@ -9,10 +9,57 @@ public enum FileHostTrustEvent: Sendable {
 public enum FileHostTrustAnswer: Sendable {
     case reject
     case confirm(displayedFingerprint: String)
+    /// Exact key for the current handshake only; never persists or replaces a changed key.
+    case confirmOnce(displayedFingerprint: String)
 }
 public typealias FileHostTrustHandler = @Sendable (FileHostTrustEvent, ChallengeReply<FileHostTrustAnswer>) -> Void
 
+/// Internal scheduling seam: native callers pre-register callbacks before this dispatcher can
+/// enqueue them; offline tests can hold a queued callback without sleeping or running a server.
+struct FileTrustCallbackDispatcher: Sendable {
+    let submit: @Sendable (@escaping @Sendable () -> Void) -> Void
+    static let global = FileTrustCallbackDispatcher { work in DispatchQueue.global().async(execute: work) }
+}
+/// One actual connection attempt. The verified rejection is recorded before a lossy Bool reply
+/// or any best-effort UI callback. No callback/token lifetime can erase an observed fact.
+final class FileHostTrustAttempt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed: ChangedHostKey?
+    var changedHostKey: ChangedHostKey? { lock.withLock { changed } }
+    func record(_ fact: ChangedHostKey) { lock.withLock { if changed == nil { changed = fact } } }
+    func enriching(_ error: any Error) -> any Error {
+        guard let fact = changedHostKey else { return error }
+        if let typed = error as? FileServiceError {
+            return FileServiceError(typed.kind, operation: typed.operation, path: typed.path, code: typed.code,
+                                    changedHostKey: typed.changedHostKey ?? fact)
+        }
+        return error
+    }
+}
+
 enum SharedHostTrust {
+    /// Shared production Bool bridge. It stores changed facts inside verify before replying false;
+    /// the optional native registry owns this exact task without retaining a session/native owner.
+    static func respond(to key: HostKey, reply: ChallengeReply<Bool>, identity: HostIdentity,
+                        store: HostTrustStore, timeout: TimeInterval, token: CancellationToken,
+                        attempt: FileHostTrustAttempt, tasks: NativeShellInteractionTasks? = nil,
+                        dispatcher: FileTrustCallbackDispatcher = .global,
+                        lifetime: CancellationToken? = nil, handler: FileHostTrustHandler?) {
+        do {
+            let taskID = try tasks?.begin(provider: false)
+            let task = Task.detached {
+                defer { if let tasks, let taskID { tasks.finish(taskID) } }
+                do {
+                    try lifetime?.check(); try token.check()
+                    try await verify(key, identity: identity, store: store, timeout: timeout, token: token,
+                        attempt: attempt, tasks: tasks, dispatcher: dispatcher, lifetime: lifetime, handler: handler)
+                    try lifetime?.check(); try token.check()
+                    reply.resolve(true)
+                } catch { reply.resolve(false) }
+            }
+            if let tasks, let taskID { tasks.install(taskID) { reply.cancel(); task.cancel() } }
+        } catch { reply.cancel() }
+    }
     static func parse(_ key: HostKey) throws -> HostPublicKey {
         let algorithm: String
         switch key.algorithmCode {
@@ -28,7 +75,9 @@ enum SharedHostTrust {
     }
     static func verify(_ key: HostKey, identity: HostIdentity, store: HostTrustStore,
                        timeout: TimeInterval, token: CancellationToken,
-                       handler: FileHostTrustHandler?) async throws {
+                       attempt: FileHostTrustAttempt? = nil, tasks: NativeShellInteractionTasks? = nil,
+                       dispatcher: FileTrustCallbackDispatcher = .global,
+                       lifetime: CancellationToken? = nil, handler: FileHostTrustHandler?) async throws {
         guard timeout.isFinite, timeout > 0 else { throw FileServiceError(.timeout, operation: "host-key") }
         let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
         try token.check()
@@ -43,20 +92,38 @@ enum SharedHostTrust {
                 throw FileServiceError(.untrusted, operation: "trust-binding")
             }
         case .rejected(let changed):
-            if let handler { DispatchQueue.global().async { handler(.changed(changed), ChallengeReply<FileHostTrustAnswer>()) } }
-            throw FileServiceError(.untrusted, operation: "host-key-changed")
+            attempt?.record(changed)
+            if let handler {
+                // Delivery is best-effort and never a prerequisite for failure/close. The fact
+                // above survives a queued callback that is suppressed by later revocation.
+                let informational = ChallengeReply<FileHostTrustAnswer>()
+                informational.cancel()
+                try? dispatch(.changed(changed), reply: informational,
+                    token: token, lifetime: lifetime, tasks: tasks, dispatcher: dispatcher, handler: handler)
+            }
+            throw FileServiceError(.untrusted, operation: "host-key-changed", changedHostKey: changed)
         case .pending(let pending):
             do {
                 try token.check()
                 guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "host-key") }
                 guard let handler else { throw FileServiceError(.untrusted, operation: "host-key-needs-confirmation") }
                 let reply = ChallengeReply<FileHostTrustAnswer>()
-                DispatchQueue.global().async { handler(.pending(pending), reply) }
+                defer { reply.cancel() }
+                try dispatch(.pending(pending), reply: reply, token: token, lifetime: lifetime,
+                             tasks: tasks, dispatcher: dispatcher, handler: handler)
                 let answer = try await reply.waitAsync(token: token, deadline: deadline)
                 try token.check()
                 guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "host-key") }
-                guard case .confirm(let fingerprint) = answer else { throw FileServiceError(.untrusted, operation: "host-key-rejected") }
-                let accepted = try await store.confirm(pending, displayedFingerprint: fingerprint)
+                let accepted: TrustedHostKey
+                switch answer {
+                case .reject: throw FileServiceError(.untrusted, operation: "host-key-rejected")
+                case .confirm(let fingerprint):
+                    accepted = try await store.confirm(pending, displayedFingerprint: fingerprint)
+                case .confirmOnce(let fingerprint):
+                    accepted = try await store.confirmOnce(pending, displayedFingerprint: fingerprint)
+                }
+                try token.check()
+                guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "host-key") }
                 guard accepted.host == identity, accepted.key.blob == key.rawKey else {
                     throw FileServiceError(.untrusted, operation: "trust-binding")
                 }
@@ -64,6 +131,17 @@ enum SharedHostTrust {
         }
         try token.check()
         guard ContinuousClock.now < deadline else { throw FileServiceError(.timeout, operation: "host-key") }
+    }
+    private static func dispatch(_ event: FileHostTrustEvent, reply: ChallengeReply<FileHostTrustAnswer>,
+                                 token: CancellationToken, lifetime: CancellationToken?,
+                                 tasks: NativeShellInteractionTasks?, dispatcher: FileTrustCallbackDispatcher,
+                                 handler: @escaping FileHostTrustHandler) throws {
+        let work: @Sendable () -> Void = {
+            guard !token.isCancelled, lifetime?.isCancelled != true else { reply.cancel(); return }
+            handler(event, reply)
+        }
+        if let tasks { try tasks.dispatch(using: dispatcher, cancel: { reply.cancel() }, work: work) }
+        else { dispatcher.submit(work) }
     }
 }
 
@@ -77,19 +155,15 @@ extension LibSSH2FileService {
         let socket = try await TCPConnector.connect(configuration.host, timeout: connectionTimeout, token: token)
         defer { socket.close() }
         let service = try LibSSH2FileService(connectedSocket: socket.descriptor, operationTimeout: operationTimeout)
+        let attempt = FileHostTrustAttempt()
         do {
             let identity = try ServerIdentity(host: configuration.host.address.value, port: configuration.host.port.value)
             try await service.establish(identity: identity, username: Data(configuration.user.value.utf8),
                 authentication: authentication, hostKeyHandler: { key, reply in
-                    Task.detached {
-                        do {
-                            try await SharedHostTrust.verify(key, identity: configuration.host, store: trustStore,
-                                                             timeout: operationTimeout, token: token, handler: trustHandler)
-                            reply.resolve(true)
-                        } catch { reply.resolve(false) }
-                    }
+                    SharedHostTrust.respond(to: key, reply: reply, identity: configuration.host, store: trustStore,
+                        timeout: operationTimeout, token: token, attempt: attempt, handler: trustHandler)
                 }, token: token)
             return service
-        } catch { await service.close(); throw error }
+        } catch { await service.close(); throw attempt.enriching(error) }
     }
 }

@@ -1,5 +1,6 @@
 import COpenLXSSHFiles
 import Foundation
+import OpenLXSSHTrust
 
 /// Protocol paths are raw POSIX bytes, rooted at `/`. No Unicode normalization or shell parsing.
 /// Noncanonical components are rejected rather than silently rewritten.
@@ -78,8 +79,15 @@ public struct FileServiceError: Error, Equatable, Sendable {
     public let operation: String
     public let path: RemotePath?
     public let code: Int64?
+    /// An observed rejection bound to this handshake's endpoint and exact presented key.
+    public let changedHostKey: ChangedHostKey?
     public init(_ kind: Kind, operation: String, path: RemotePath? = nil, code: Int64? = nil) {
+        self.init(kind, operation: operation, path: path, code: code, changedHostKey: nil)
+    }
+    public init(_ kind: Kind, operation: String, path: RemotePath? = nil, code: Int64? = nil,
+                changedHostKey: ChangedHostKey?) {
         self.kind = kind; self.operation = operation; self.path = path; self.code = code
+        self.changedHostKey = changedHostKey
     }
 }
 public final class CancellationToken: @unchecked Sendable {
@@ -140,6 +148,10 @@ public struct CommitRequest: Sendable {
 public protocol RemoteFileService: AnyObject, Sendable {
     var capabilities: FileServiceCapabilities { get }
     var serverBinding: UUID? { get }
+    /// Resolves the session's login directory to an absolute, canonical raw-byte path.
+    /// This is independent of a terminal's working directory. Unsupported backends must
+    /// throw, never substitute `/` or infer a home directory from the username.
+    func initialDirectory(token: CancellationToken) async throws -> RemotePath
     func commit(_ source: RemotePath, to destination: RemotePath, request: CommitRequest, token: CancellationToken) async throws
     func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry]
     func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes
@@ -158,6 +170,10 @@ public protocol RemoteFileService: AnyObject, Sendable {
     func close() async
 }
 extension RemoteFileService {
+    public func initialDirectory(token: CancellationToken) async throws -> RemotePath {
+        try token.check()
+        throw FileServiceError(.unsupported, operation: "initial-directory")
+    }
     public func fstat(_ handle: FileHandleID, token: CancellationToken) async throws -> FileAttributes? {
         try token.check(); return nil
     }
@@ -180,6 +196,12 @@ public final class ChallengeReply<Value: Sendable>: @unchecked Sendable {
         condition.lock(); defer { condition.unlock() }
         guard !resolved else { return false }
         resolved = true; self.answer = answer; condition.broadcast(); return true
+    }
+    /// Revokes this reply, including a resolved answer not yet consumed by its single waiter.
+    /// Cancellation of an interaction must also cancel its operation token; an empty answer is
+    /// still a successful answer (notably for zero-prompt notifications), never cancellation.
+    public func cancel() {
+        condition.lock(); resolved = true; answer = nil; condition.broadcast(); condition.unlock()
     }
     private func snapshot() -> (Bool, Value?) {
         condition.lock(); defer { condition.unlock() }; return (resolved, answer)

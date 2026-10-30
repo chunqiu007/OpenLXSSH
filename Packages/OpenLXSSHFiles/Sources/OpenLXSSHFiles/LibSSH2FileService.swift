@@ -265,6 +265,46 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
                               permissions: hasPermissions ? mode : nil,
                               modifiedSeconds: a.flags & UInt(LIBSSH2_SFTP_ATTR_ACMODTIME) == 0 ? nil : UInt64(a.mtime))
     }
+    public func initialDirectory(token: CancellationToken) async throws -> RemotePath {
+        let path = try await Self.resolveInitialDirectory(token: token) {
+            try await self.perform(token) { c in
+                try self.requireReady()
+                var bytes = [CChar](repeating: 0, count: Int(RF_SFTP_REALPATH_CAPACITY))
+                let rc = rf_sftp_initial_directory(c, &bytes, bytes.count, token.native, self.timeout)
+                try token.check()
+                if rc == Int32(LIBSSH2_ERROR_BUFFER_TOO_SMALL) {
+                    throw FileServiceError(.invalidPath, operation: "sftp-realpath", code: Int64(rc))
+                }
+                try self.check(rc, c, operation: "sftp-realpath")
+                return try Self.initialDirectoryPath(buffer: bytes, length: rc)
+            }
+        }
+        try lifetime.check()
+        return path
+    }
+    /// Internal seams exercise byte validation and cancellation around the native await offline;
+    /// they never stand in for real SFTP interoperability evidence.
+    static func resolveInitialDirectory(token: CancellationToken,
+        resolve: @Sendable () async throws -> RemotePath) async throws -> RemotePath {
+        try token.check()
+        do {
+            let path = try await resolve()
+            try token.check()
+            return path
+        } catch {
+            try token.check()
+            throw error
+        }
+    }
+    static func initialDirectoryPath(buffer: [CChar], length: Int32) throws -> RemotePath {
+        guard buffer.count >= 2, buffer.count <= Int(RF_SFTP_REALPATH_CAPACITY),
+              length > 0, Int(length) < buffer.count else {
+            throw FileServiceError(.invalidPath, operation: "sftp-realpath-length")
+        }
+        // The native count is authoritative: do not use strlen/String(cString:), which
+        // would hide embedded NULs or replace undecodable bytes before path validation.
+        return try RemotePath(bytes: Data(buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }))
+    }
     public func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes {
         try await perform(token) { c in
             try self.requireReady()

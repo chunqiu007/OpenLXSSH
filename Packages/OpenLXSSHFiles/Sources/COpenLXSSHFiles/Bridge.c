@@ -11,6 +11,8 @@
 #include <string.h>
 #include <time.h>
 #include <limits.h>
+#include <float.h>
+#include <math.h>
 
 struct rf_cancel { atomic_int flag; };
 typedef union rf_allocation rf_allocation;
@@ -21,6 +23,13 @@ union rf_allocation {
 struct rf_connection {
     LIBSSH2_SESSION *session;
     LIBSSH2_SFTP *sftp;
+    LIBSSH2_CHANNEL *shell;
+    LIBSSH2_CHANNEL *probe;
+    int probe_open_pending;
+    int probe_close_complete;
+    int shell_pty;
+    int shell_started;
+    int shell_close_sent;
     int socket;
     int handshaken;
     int trusted;
@@ -28,6 +37,8 @@ struct rf_connection {
     rf_keyboard_responder responder;
     void *responder_context;
     int response_failed;
+    int measure_interaction;
+    double interaction_seconds;
     rf_cancel *operation_cancel;
     rf_allocation *allocations;
     LIBSSH2_SFTP_HANDLE *handles[64];
@@ -87,6 +98,7 @@ rf_cancel *rf_cancel_create(void) {
 void rf_cancel_set(rf_cancel *c) { if(c) atomic_store(&c->flag, 1); }
 int rf_cancelled(const rf_cancel *c) { return c ? atomic_load(&c->flag) : 0; }
 void rf_cancel_destroy(rf_cancel *c) { free(c); }
+void rf_wipe(void *bytes, size_t length) { if(bytes && length) OPENSSL_cleanse(bytes, length); }
 const char *rf_libssh2_version(void) { return libssh2_version(0); }
 const char *rf_openssl_version(void) { return OpenSSL_version(OPENSSL_VERSION); }
 const char *rf_architecture(void) {
@@ -209,11 +221,14 @@ int rf_publickey(rf_connection *c, const char *user, size_t ulen,
 }
 static LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC(keyboard_callback) {
     rf_connection *c = *abstract;
+    double started = c && c->measure_interaction ? now() : 0;
     if(!c || !c->responder || atomic_load(&c->cancelled) ||
+       (c->measure_interaction && rf_cancelled(c->operation_cancel)) ||
        c->responder(c->responder_context, name, name_len, instruction, instruction_len,
                     num_prompts, prompts, responses) != 0) {
         if(c) { c->response_failed = 1; rf_connection_cancel(c); }
     }
+    if(c && c->measure_interaction) c->interaction_seconds += now() - started;
 }
 int rf_keyboard_set_response(rf_connection *c, LIBSSH2_USERAUTH_KBDINT_RESPONSE *responses, int index,
                              const uint8_t *bytes, size_t length) {
@@ -243,11 +258,253 @@ int rf_keyboard(rf_connection *c, const char *user, unsigned int ulen,
     c->responder = NULL; c->responder_context = NULL; c->operation_cancel = NULL;
     return rc;
 }
+int rf_shell_packet_read_timeout(rf_connection *c, int seconds) {
+    int rc = auth_guard(c); if(rc) return rc;
+    if(seconds < 1 || seconds > 3600) return RF_INVALID;
+    libssh2_session_set_read_timeout(c->session, seconds);
+    return (int)libssh2_session_get_read_timeout(c->session);
+}
+int rf_shell_keyboard(rf_connection *c, const char *user, unsigned int ulen,
+                      rf_keyboard_responder responder, void *ctx, rf_cancel *cancel,
+                      double network_timeout, double overall_timeout) {
+    int rc = auth_guard(c); if(rc) return rc;
+    if(!user || !ulen || !responder || !isfinite(network_timeout) || network_timeout <= 0 || network_timeout > 300 ||
+       !isfinite(overall_timeout) || overall_timeout <= 0 || overall_timeout > 300) return RF_INVALID;
+    c->responder = responder; c->responder_context = ctx; c->response_failed = 0;
+    c->operation_cancel = cancel; c->measure_interaction = 1; c->interaction_seconds = 0;
+    const double started = now(), overall_deadline = started + overall_timeout;
+    /* Public packet timeout includes human time inside libssh2's callback. The Swift owner
+     * enforces the tighter monotonic overall deadline, never silently truncating it at 60s. */
+    long previous_read_timeout = libssh2_session_get_read_timeout(c->session);
+    int packet_seconds = (int)ceil(overall_timeout) + 2;
+    libssh2_session_set_read_timeout(c->session, packet_seconds);
+    for(;;) {
+        double network_deadline = started + network_timeout + c->interaction_seconds;
+        double deadline = fmin(network_deadline, overall_deadline);
+        rc = check(c, cancel, deadline); if(rc) break;
+        rc = libssh2_userauth_keyboard_interactive_ex(c->session, user, ulen, keyboard_callback);
+        if(c->response_failed) { rc = RF_CANCELLED; break; }
+        /* No API success after the native callback consumed the remaining overall budget. */
+        deadline = fmin(started + network_timeout + c->interaction_seconds, overall_deadline);
+        int interrupted = check(c, cancel, deadline);
+        if(interrupted) { rc = interrupted; break; }
+        if(rc != LIBSSH2_ERROR_EAGAIN) break;
+        rc = wait_ready(c, cancel, deadline); if(rc) break;
+    }
+    c->responder = NULL; c->responder_context = NULL; c->operation_cancel = NULL;
+    c->measure_interaction = 0; c->interaction_seconds = 0;
+    libssh2_session_set_read_timeout(c->session, previous_read_timeout);
+    return rc;
+}
 int rf_authenticated(rf_connection *c) {
     return c && c->session && c->trusted && libssh2_userauth_authenticated(c->session);
 }
+int rf_auth_methods(rf_connection *c, const char *user, unsigned int ulen,
+                    char *bytes, size_t capacity, size_t *length, rf_cancel *cancel, double timeout) {
+    int rc = auth_guard(c); if(rc) return rc;
+    if(!user || !ulen || ulen > 1024 || !bytes || !capacity || capacity > 65536 || !length ||
+       !isfinite(timeout) || timeout <= 0 || timeout > 300) return RF_INVALID;
+    *length = 0;
+    double deadline = now() + timeout;
+    for(;;) {
+        rc = check(c, cancel, deadline); if(rc) return rc;
+        const char *methods = libssh2_userauth_list(c->session, user, ulen);
+        if(methods) {
+            size_t len = strnlen(methods, capacity + 1);
+            if(len > capacity) return RF_INVALID;
+            memcpy(bytes, methods, len); *length = len; return 0;
+        }
+        if(rf_authenticated(c)) return 0;
+        rc = libssh2_session_last_errno(c->session);
+        if(rc != LIBSSH2_ERROR_EAGAIN) return rc ? rc : LIBSSH2_ERROR_AUTHENTICATION_FAILED;
+        rc = wait_ready(c, cancel, deadline); if(rc) return rc;
+    }
+}
+static int shell_guard(rf_connection *c, rf_cancel *cancel) {
+    int rc = check(c, cancel, DBL_MAX); if(rc) return rc;
+    if(!c->trusted) return RF_UNTRUSTED;
+    if(!rf_authenticated(c)) return LIBSSH2_ERROR_AUTHENTICATION_FAILED;
+    return 0;
+}
+static int shell_channel_guard(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_guard(c, cancel); if(rc) return rc;
+    return c->shell ? 0 : RF_CLOSED;
+}
+int rf_shell_open(rf_connection *c, rf_cancel *cancel, double timeout) {
+    int rc = shell_guard(c, cancel); if(rc) return rc;
+    if(c->sftp || c->shell || !isfinite(timeout) || timeout <= 0 || timeout > 300) return RF_INVALID;
+    double deadline = now() + timeout;
+    for(;;) {
+        rc = check(c, cancel, deadline); if(rc) return rc;
+        /* Bound the SSH receive window as well as the Swift pull buffer. No SFTP init. */
+        c->shell = libssh2_channel_open_ex(c->session, "session", 7, RF_SHELL_WINDOW,
+                                          RF_SHELL_MAX_WRITE, NULL, 0);
+        if(c->shell) return 0;
+        rc = libssh2_session_last_errno(c->session);
+        if(rc != LIBSSH2_ERROR_EAGAIN) return rc ? rc : LIBSSH2_ERROR_CHANNEL_FAILURE;
+        rc = wait_ready(c, cancel, deadline); if(rc) return rc;
+    }
+}
+int rf_shell_request_pty(rf_connection *c, int columns, int rows, rf_cancel *cancel, double timeout) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(columns < 1 || columns > 65535 || rows < 1 || rows > 65535 || c->shell_pty ||
+       !isfinite(timeout) || timeout <= 0 || timeout > 300) return RF_INVALID;
+    double deadline = now() + timeout;
+    for(;;) {
+        rc = check(c, cancel, deadline); if(rc) return rc;
+        rc = libssh2_channel_request_pty_ex(c->shell, "xterm-256color", 14, NULL, 0, columns, rows, 0, 0);
+        if(rc == 0) { c->shell_pty = 1; return 0; }
+        if(rc != LIBSSH2_ERROR_EAGAIN) return rc;
+        rc = wait_ready(c, cancel, deadline); if(rc) return rc;
+    }
+}
+int rf_shell_start(rf_connection *c, rf_cancel *cancel, double timeout) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(c->shell_started || !c->shell_pty || !isfinite(timeout) || timeout <= 0 || timeout > 300) return RF_INVALID;
+    double deadline = now() + timeout;
+    for(;;) {
+        rc = check(c, cancel, deadline); if(rc) return rc;
+        /* Merge extended data for a terminal, never discard stderr bytes. */
+        rc = libssh2_channel_handle_extended_data2(c->shell, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE);
+        if(rc == 0) break;
+        if(rc != LIBSSH2_ERROR_EAGAIN) return rc;
+        rc = wait_ready(c, cancel, deadline); if(rc) return rc;
+    }
+    for(;;) {
+        rc = check(c, cancel, deadline); if(rc) return rc;
+        rc = libssh2_channel_process_startup(c->shell, "shell", 5, NULL, 0);
+        if(rc == 0) { c->shell_started = 1; return 0; }
+        if(rc != LIBSSH2_ERROR_EAGAIN) return rc;
+        rc = wait_ready(c, cancel, deadline); if(rc) return rc;
+    }
+}
+int rf_shell_poll(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    int result = 0;
+    struct pollfd fd = {c->socket, POLLIN | POLLOUT, 0};
+    rc = poll(&fd, 1, 0);
+    if(rc < 0 && errno != EINTR) return LIBSSH2_ERROR_SOCKET_RECV;
+    if(fd.revents & POLLIN) result |= RF_SHELL_POLL_READABLE;
+    if(fd.revents & POLLOUT) result |= RF_SHELL_POLL_WRITABLE;
+    if(fd.revents & (POLLHUP | POLLERR | POLLNVAL)) result |= RF_SHELL_POLL_HANGUP;
+    if(libssh2_poll_channel_read(c->shell, 0)) result |= RF_SHELL_POLL_BUFFERED;
+    int directions = libssh2_session_block_directions(c->session);
+    if(directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) result |= RF_SHELL_POLL_OUTBOUND;
+    if(directions & LIBSSH2_SESSION_BLOCK_INBOUND) result |= RF_SHELL_POLL_INBOUND;
+    return result;
+}
+int rf_shell_read_step(rf_connection *c, char *bytes, size_t length, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->shell_started || !bytes || length < 1 || length > RF_SHELL_MAX_CHUNK) return RF_INVALID;
+    return (int)libssh2_channel_read_ex(c->shell, 0, bytes, length);
+}
+int rf_shell_write_step(rf_connection *c, const char *bytes, size_t length, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->shell_started || !bytes || length < 1 || length > RF_SHELL_MAX_WRITE) return RF_INVALID;
+    return (int)libssh2_channel_write_ex(c->shell, 0, bytes, length);
+}
+int rf_shell_resize_step(rf_connection *c, int columns, int rows, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->shell_started || columns < 1 || columns > 65535 || rows < 1 || rows > 65535) return RF_INVALID;
+    return libssh2_channel_request_pty_size_ex(c->shell, columns, rows, 0, 0);
+}
+int rf_shell_send_eof_step(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->shell_started) return RF_INVALID;
+    return libssh2_channel_send_eof(c->shell);
+}
+int rf_shell_eof(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    return libssh2_channel_eof(c->shell);
+}
+int rf_shell_exit_step(rf_connection *c, rf_shell_exit *result, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!result) return RF_INVALID;
+    if(!libssh2_channel_eof(c->shell)) return LIBSSH2_ERROR_EAGAIN;
+    /* Do not call libssh2_poll here: fixed 1.11.1 may drive transport I/O even at timeout=0.
+     * wait_closed is the public nonblocking EOF->close API and retains its own EAGAIN state. */
+    rc = libssh2_channel_wait_closed(c->shell);
+    if(rc) return rc;
+    memset(result, 0, sizeof(*result));
+    result->status = libssh2_channel_get_exit_status(c->shell);
+    char *signal = NULL; size_t length = 0;
+    rc = libssh2_channel_get_exit_signal(c->shell, &signal, &length, NULL, NULL, NULL, NULL);
+    if(rc == 0 && length > sizeof(result->signal)) rc = RF_INVALID;
+    if(rc == 0 && signal) { memcpy(result->signal, signal, length); result->signal_length = length; }
+    if(signal) libssh2_free(c->session, signal);
+    return rc;
+}
+int rf_shell_close_step(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    rc = libssh2_channel_close(c->shell);
+    if(rc == 0) c->shell_close_sent = 1;
+    return rc;
+}
+int rf_shell_free_step(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->shell_close_sent) return RF_INVALID;
+    rc = libssh2_channel_free(c->shell);
+    if(rc == 0) { c->shell = NULL; c->shell_started = 0; c->shell_pty = 0; }
+    return rc;
+}
+int rf_shell_probe_rejection_is_reply(int code, const char *message, size_t length) {
+    /* Fixed public source gate: libssh2 1.11.1 channel.c SHA256
+     * 79c49c36e65178847087eb3a1c140772c291899b838c705b579214929a14742e.
+     * In _libssh2_channel_open these five static messages occur ONLY in the actual
+     * SSH_MSG_CHANNEL_OPEN_FAILURE branch. Propagated/local failures overwrite the
+     * message with "Unexpected error" or "Unable to send channel-open request".
+     * verify_native_source.py verifies the pinned archive, exact source and linked archive.
+     * No remote description, private struct, trace callback or raw-recv guess is used. */
+    static const char *const reasons[] = {
+        "Channel open failure (administratively prohibited)",
+        "Channel open failure (connect failed)",
+        "Channel open failure (unknown channel type)",
+        "Channel open failure (resource shortage)",
+        "Channel open failure"
+    };
+    if(code != LIBSSH2_ERROR_CHANNEL_FAILURE || !message ||
+       strcmp(libssh2_version(0), "1.11.1") != 0) return 0;
+    for(size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
+        size_t expected = strlen(reasons[i]);
+        if(length == expected && memcmp(message, reasons[i], expected) == 0) return 1;
+    }
+    return 0;
+}
+int rf_shell_probe_open_step(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->shell_started || c->sftp || c->probe) return RF_INVALID;
+    c->probe_open_pending = 1;
+    /* Stable parameters for every continuation of this one open. No startup request. */
+    LIBSSH2_CHANNEL *probe = libssh2_channel_open_ex(c->session, "session", 7, 1024, 1024, NULL, 0);
+    if(probe) {
+        c->probe = probe; c->probe_open_pending = 0; c->probe_close_complete = 0;
+        return RF_SHELL_PROBE_CONFIRMED;
+    }
+    char *message = NULL; int length = 0;
+    rc = libssh2_session_last_error(c->session, &message, &length, 0);
+    if(rc == LIBSSH2_ERROR_EAGAIN) return rc;
+    c->probe_open_pending = 0;
+    if(length >= 0 && rf_shell_probe_rejection_is_reply(rc, message, (size_t)length))
+        return RF_SHELL_PROBE_REJECTED;
+    return rc ? rc : LIBSSH2_ERROR_PROTO;
+}
+int rf_shell_probe_close_step(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->probe || c->probe_open_pending) return RF_INVALID;
+    rc = libssh2_channel_close(c->probe);
+    if(rc == 0) c->probe_close_complete = 1;
+    return rc;
+}
+int rf_shell_probe_free_step(rf_connection *c, rf_cancel *cancel) {
+    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
+    if(!c->probe || c->probe_open_pending || !c->probe_close_complete) return RF_INVALID;
+    rc = libssh2_channel_free(c->probe);
+    if(rc == 0) { c->probe = NULL; c->probe_close_complete = 0; }
+    return rc;
+}
 int rf_start_sftp(rf_connection *c, rf_cancel *cancel, double timeout) {
     if(!rf_authenticated(c)) return RF_UNTRUSTED;
+    if(c->shell) return RF_INVALID;
     double deadline = now() + timeout;
     for(;;) {
         int rc = check(c, cancel, deadline); if(rc) return rc;
@@ -351,7 +608,9 @@ void rf_connection_close(rf_connection *c) {
         if(c->handles[i]) { libssh2_sftp_close_handle(c->handles[i]); c->handles[i] = NULL; }
     }
     if(c->sftp) { libssh2_sftp_shutdown(c->sftp); c->sftp = NULL; }
-    int free_rc = libssh2_session_free(c->session);
+    int free_rc = libssh2_session_free(c->session); // Also frees an independently opened shell channel.
+    c->shell = NULL; c->shell_started = 0; c->shell_pty = 0;
+    c->probe = NULL; c->probe_open_pending = 0; c->probe_close_complete = 0;
     if(free_rc == 0) {
         while(c->allocations) {
             void *abstract = c;
@@ -362,3 +621,24 @@ void rf_connection_close(rf_connection *c) {
     close(c->socket); c->socket = -1;
 }
 void rf_connection_destroy(rf_connection *c) { rf_connection_close(c); free(c); }
+
+/* SFTP login-directory capability; no terminal cwd, shell command or guessed root. */
+int rf_sftp_initial_directory(rf_connection *c, char *bytes, size_t capacity,
+                              rf_cancel *cancel, double timeout) {
+    if(!bytes || capacity < 2 || capacity > RF_SFTP_REALPATH_CAPACITY ||
+       !isfinite(timeout) || timeout <= 0 || timeout > 300) return RF_INVALID;
+    int rc = check(c, cancel, DBL_MAX); if(rc) return rc;
+    if(!c->sftp) return RF_CLOSED;
+    double deadline = now() + timeout;
+    for(;;) {
+        rc = check(c, cancel, deadline); if(rc) return rc;
+        /* Public libssh2 1.11.1 macro: symlink_ex with LIBSSH2_SFTP_REALPATH.
+         * It fails BUFFER_TOO_SMALL rather than silently truncating the byte path. */
+        rc = libssh2_sftp_realpath(c->sftp, ".", bytes, (unsigned int)capacity);
+        if(rc != LIBSSH2_ERROR_EAGAIN) {
+            int interrupted = check(c, cancel, deadline);
+            return interrupted ? interrupted : rc;
+        }
+        rc = wait_ready(c, cancel, deadline); if(rc) return rc;
+    }
+}
