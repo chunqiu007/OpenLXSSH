@@ -87,6 +87,44 @@ struct OpenSSHEnvelope {
     }
 }
 
+/// A review binds both the safely opened source identity and its exact bytes. This is
+/// internal memory-only state; it is never returned as public display metadata.
+struct KeySourceSnapshot: Sendable {
+    let url: URL
+    let bytes: Data
+    let identity: KeyFileIdentity
+    let parentDevice: dev_t
+    let parentInode: ino_t
+
+    func validateCurrent() throws {
+        let current = try PrivateDirectory.sourceSnapshot(url)
+        guard current.identity == identity, current.parentDevice == parentDevice,
+              current.parentInode == parentInode, current.bytes == bytes else {
+            throw KeyImportReviewFailure.staleReview
+        }
+    }
+}
+
+struct KeyFileIdentity: Equatable, Sendable {
+    let device: dev_t
+    let inode: ino_t
+    let owner: uid_t
+    let mode: mode_t
+    let links: nlink_t
+    let size: off_t
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+    let changedSeconds: Int
+    let changedNanoseconds: Int
+
+    init(_ value: stat) {
+        device = value.st_dev; inode = value.st_ino; owner = value.st_uid
+        mode = value.st_mode; links = value.st_nlink; size = value.st_size
+        modifiedSeconds = value.st_mtimespec.tv_sec; modifiedNanoseconds = value.st_mtimespec.tv_nsec
+        changedSeconds = value.st_ctimespec.tv_sec; changedNanoseconds = value.st_ctimespec.tv_nsec
+    }
+}
+
 /// Descriptor-relative file operations, owner-only permissions, no extended filesystem ACLs,
 /// and explicit rejection of every symlink/path-traversal component. Even deny-only/empty
 /// extended ACLs are conservatively rejected; this type never clears an existing or inherited
@@ -187,7 +225,9 @@ final class PrivateDirectory {
         try Self.requireNoExtendedACL(lockFD)
     }
 
-    static func readSource(_ url: URL) throws -> Data {
+    static func readSource(_ url: URL) throws -> Data { try sourceSnapshot(url).bytes }
+
+    static func sourceSnapshot(_ url: URL) throws -> KeySourceSnapshot {
         guard url.isFileURL, !url.path.utf8.contains(0) else { throw KeyFailure.invalidPath }
         let components = url.path.split(separator: "/")
         guard !components.contains(".."), !components.contains("."), let name = components.last else {
@@ -196,7 +236,11 @@ final class PrivateDirectory {
         let parent = "/" + components.dropLast().joined(separator: "/")
         let parentFD = try openDirectory(parent)
         defer { _ = Darwin.close(parentFD) }
-        return try read(at: parentFD, name: String(name))
+        var info = stat()
+        guard fstat(parentFD, &info) == 0 else { throw KeyFailure.systemCall("stat source directory", errno) }
+        let result = try readChecked(at: parentFD, name: String(name))
+        return KeySourceSnapshot(url: url, bytes: result.bytes, identity: result.identity,
+                                 parentDevice: info.st_dev, parentInode: info.st_ino)
     }
 
     func read(_ name: String) throws -> Data {
@@ -214,6 +258,10 @@ final class PrivateDirectory {
     }
 
     private static func read(at directory: Int32, name: String) throws -> Data {
+        try readChecked(at: directory, name: name).bytes
+    }
+
+    private static func readChecked(at directory: Int32, name: String) throws -> (bytes: Data, identity: KeyFileIdentity) {
         let file = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard file >= 0 else {
             if errno == ELOOP { throw KeyFailure.symbolicLinkOrEscape }
@@ -247,12 +295,14 @@ final class PrivateDirectory {
             throw KeyFailure.unsafePermissions
         }
         try requireNoExtendedACL(file)
-        guard bytes.count == Int(before.st_size), before.st_size == after.st_size,
-              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
-              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
-              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { throw KeyFailure.changedWhileReading }
-        return bytes
+        guard bytes.count == Int(before.st_size), KeyFileIdentity(before) == KeyFileIdentity(after) else {
+            throw KeyFailure.changedWhileReading
+        }
+        // A rename during the read must not leave a snapshot bound to an unlinked inode.
+        var named = stat()
+        guard fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              KeyFileIdentity(named) == KeyFileIdentity(after) else { throw KeyFailure.changedWhileReading }
+        return (bytes, KeyFileIdentity(after))
     }
 
     func exists(_ name: String) throws -> Bool {

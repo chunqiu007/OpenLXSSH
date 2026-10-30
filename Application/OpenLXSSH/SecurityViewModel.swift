@@ -13,6 +13,7 @@ extension AppIssue {
         if let repository = error as? RepositoryError { return .sanitized(repository) }
         if let failure = error as? KeyOperationFailure { return security(SecurityUIFailure.key(failure.primary)) }
         if let failure = error as? KeyFailure { return security(SecurityUIFailure.key(failure)) }
+        if error is KeyImportReviewFailure { return security(SecurityUIFailure.staleKeyImportReview) }
         guard let error = error as? SecurityUIFailure else {
             return AppIssue(code: "security.failed", message: "安全资源操作失败。未展示系统详细错误或秘密，请重试或取消。")
         }
@@ -43,6 +44,8 @@ extension AppIssue {
         case .pendingCleanup: return AppIssue(code: "security.cleanupPending", message: "配置已更新，但精确资源清理尚未完成。请在密钥与凭据管理中重试清理。")
         case .preparedIntent: return AppIssue(code: "security.uncertainIntent", message: "上次操作在确认创建前中断；记录不证明资源存在或归属，不能自动删除外部资源。可核对并仅丢弃非秘密恢复记录。")
         case .staleRecoveryReview: return AppIssue(code: "security.staleRecoveryReview", message: "恢复记录或关联已变化，此确认已失效。请刷新并重新核对；未删除任何文件或 Keychain 项目。")
+        case .staleKeyImportReview: return AppIssue(code: "key.importReviewExpired", message: "导入审查已过期，或源文件／已登记密钥已变化。未采用替换文件或保存新口令；请取消后重新选择文件核对。")
+        case .duplicatePublicKey: return AppIssue(code: "key.duplicatePublicKey", message: "相同公钥已存在。未创建副本或保存新口令；请在导入审查中选择复用已有密钥，或取消。")
         }
     }
 }
@@ -173,6 +176,29 @@ extension AppIssue {
     func create(_ creation: KeyCreation, protection: KeyProtection, remember: SecretBytes?) async -> Bool {
         await createKey(creation, protection: protection, remember: remember) != nil
     }
+    func reviewImport(from source: URL, protection: KeyProtection, remember: SecretBytes?) async -> SecurityKeyImportReview? {
+        guard !busy else { return nil }
+        busy = true; clearCreationResult(); defer { busy = false }
+        do {
+            let review = try await coordinator.reviewKeyImport(from: source, protection: protection, rememberPassphrase: remember)
+            issue = nil
+            return review
+        } catch { issue = .security(error); await load(); return nil }
+    }
+    func confirmImport(_ review: SecurityKeyImportReview, choice: KeyImportChoice) async -> KeyImportOutcome? {
+        guard !busy else { return nil }
+        busy = true; defer { busy = false }
+        do {
+            let outcome = try await coordinator.confirmKeyImport(review, choice: choice)
+            issue = nil
+            await load()
+            return outcome
+        } catch { issue = .security(error); await load(); return nil }
+    }
+    func cancelImport(_ review: SecurityKeyImportReview) async {
+        do { try await coordinator.cancelKeyImport(review) }
+        catch { issue = .security(error) }
+    }
     func publishCreatedKey(_ outcome: KeyCreationOutcome, label: String) {
         lastCreatedKey = outcome; lastCreatedKeyLabel = label
     }
@@ -250,6 +276,8 @@ extension AppIssue {
 /// label on that immutable UUID. It can never re-enter generation/import in this editor.
 @MainActor final class KeyCreationEditorState: ObservableObject {
     @Published private(set) var created: KeyCreationOutcome?
+    @Published private(set) var importReview: SecurityKeyImportReview?
+    @Published private(set) var reused: ManagedKeyReference?
     @Published private(set) var savedLabel = ""
     @Published private(set) var labelPending = false
     @Published private(set) var busy = false
@@ -257,16 +285,53 @@ extension AppIssue {
     private var epoch = UUID()
 
     func close() { active = false; epoch = UUID() }
+    func cancelImport(model: SecurityViewModel) async {
+        let review = importReview
+        importReview = nil
+        if let review { await model.cancelImport(review) }
+    }
+    func reuse(_ id: UUID, model: SecurityViewModel, ownsPresentation: @MainActor () -> Bool) async -> Bool {
+        guard active, !busy, !model.busy, ownsPresentation(), let review = importReview else { return false }
+        let owner = epoch
+        busy = true; defer { busy = false }
+        let result = await model.confirmImport(review, choice: .reuse(id))
+        guard active, epoch == owner, ownsPresentation(), !Task.isCancelled else { return false }
+        guard case .some(.reused(let key)) = result else { return false }
+        reused = key; savedLabel = key.label; importReview = nil
+        return true
+    }
     func submit(model: SecurityViewModel, creation: KeyCreation, protection: KeyProtection, remember: SecretBytes?,
                 label: String, ownsPresentation: @MainActor () -> Bool) async -> Bool {
         guard active, !busy, !model.busy, ownsPresentation(), !Task.isCancelled else { return false }
+        if reused != nil { return true }
         let owner = epoch
         busy = true; defer { busy = false }
         if created == nil {
-            guard let outcome = await model.createKey(creation, protection: protection, remember: remember) else { return false }
+            if case .importFile(let source) = creation {
+                // Once a duplicate has been reviewed, this editor only offers reuse/cancel.
+                guard importReview == nil else { return false }
+                guard let review = await model.reviewImport(from: source, protection: protection, remember: remember) else { return false }
+                guard active, epoch == owner, ownsPresentation(), !Task.isCancelled else {
+                    await model.cancelImport(review); return false
+                }
+                importReview = review
+                if !review.candidates.isEmpty { return false }
+                let result = await model.confirmImport(review, choice: .create)
+                importReview = nil
+                switch result {
+                case .some(.created(let outcome)): created = outcome
+                case .some(.duplicate(let updated)):
+                    if active, epoch == owner, ownsPresentation(), !Task.isCancelled { importReview = updated }
+                    else { await model.cancelImport(updated) }
+                    return false
+                default: return false
+                }
+            } else {
+                guard let outcome = await model.createKey(creation, protection: protection, remember: remember) else { return false }
+                created = outcome
+            }
             // Keep the exact committed result even if this editor was closed while awaiting.
             // Do not begin a label write or publish UI selection for an expired owner.
-            created = outcome
             guard active, epoch == owner, ownsPresentation(), !Task.isCancelled else { return false }
         }
         guard let outcome = created, active, epoch == owner, ownsPresentation(), !Task.isCancelled else { return false }
@@ -285,7 +350,14 @@ extension AppIssue {
         return saved
     }
     func publishCompletion(to model: SecurityViewModel, ownsPresentation: @MainActor () -> Bool) -> Bool {
-        guard active, !busy, ownsPresentation(), let created else { return false }
+        guard active, !busy, ownsPresentation() else { return false }
+        if let reused {
+            // Compatibility with the existing management/inline-picker completion channel.
+            // Reuse is not a creation and never enters created/label-retry state.
+            model.publishCreatedKey(.init(id: reused.id, cleanupPending: false), label: reused.label)
+            return true
+        }
+        guard let created else { return false }
         model.publishCreatedKey(created, label: savedLabel)
         return true
     }

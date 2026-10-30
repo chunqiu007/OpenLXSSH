@@ -426,6 +426,199 @@ import OpenLXSSHTrust
     }
 }
 
+@MainActor final class KeyDuplicateImportRegressionTests: XCTestCase {
+    private func fixture() throws -> (URL, AppRepository, FakeCredentials, SecurityCoordinator) {
+        let directory = try AppDataLocation.canonical(FileManager.default.temporaryDirectory)
+            .appendingPathComponent("OpenLXSSH-AppTests-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        let repository = AppRepository(location: .isolated(directory)), credentials = FakeCredentials()
+        return (directory, repository, credentials, SecurityCoordinator(repository: repository, location: .isolated(directory), credentials: credentials))
+    }
+    private func source(_ directory: URL, encrypted: Bool = false) async throws -> (KeyStore, URL, SecretBytes?) {
+        let store = try KeyStore(directory: directory.appendingPathComponent("Source-" + UUID().uuidString))
+        let phrase = encrypted ? SecretBytes(utf8: UUID().uuidString) : nil
+        let key = try await store.generateEd25519(protection: phrase.map { .passphrase($0) } ?? .unencrypted)
+        return (store, store.rootURL.appendingPathComponent(key.id.uuidString + ".openssh"), phrase)
+    }
+    private func expectRejected(_ operation: () async throws -> Void) async {
+        do { try await operation(); XCTFail("Expected rejection") } catch {}
+    }
+
+    func testSamePublicKeyDifferentFilenameAndCommentOffersReuseWithoutCredentialAccess() async throws {
+        let (directory, repository, credentials, coordinator) = try fixture()
+        let (sourceStore, originalURL, suppliedPhrase) = try await source(directory, encrypted: true)
+        let phrase = try XCTUnwrap(suppliedPhrase)
+        let first = try await coordinator.createKey(.importFile(originalURL), protection: .passphrase(phrase), rememberPassphrase: phrase)
+        try await repository.updateKeyLabel(keyID: first.id, label: "Existing exact label")
+        let renamed = directory.appendingPathComponent("different-filename")
+        // Only re-wrap the standard envelope base64; do not parse or alter private crypto.
+        let text = try String(contentsOf: originalURL, encoding: .utf8)
+        let encoded = text.components(separatedBy: "\n").dropFirst().dropLast(2).joined()
+        let lines = stride(from: 0, to: encoded.count, by: 48).map { start -> String in
+            let lower = encoded.index(encoded.startIndex, offsetBy: start)
+            return String(encoded[lower..<encoded.index(lower, offsetBy: min(48, encoded.count - start))])
+        }
+        try FileManager.default.copyItem(at: originalURL, to: renamed)
+        try ("-----BEGIN OPENSSH PRIVATE KEY-----\n" + lines.joined(separator: "\n") + "\n-----END OPENSSH PRIVATE KEY-----\n").write(to: renamed, atomically: false, encoding: .utf8)
+        let before = try Data(contentsOf: renamed)
+        let saves = await credentials.saveCount
+        let journalBefore = try Data(contentsOf: directory.appendingPathComponent("Recovery/security-intents.json"))
+        let review = try await coordinator.reviewKeyImport(from: renamed, protection: .passphrase(phrase), rememberPassphrase: phrase)
+        checkEqual(review.candidates.map(\.id), [first.id]); checkEqual(review.candidates.first?.label, "Existing exact label")
+        guard case .reused(let existing) = try await coordinator.confirmKeyImport(review, choice: .reuse(first.id)) else { return XCTFail("Expected reuse") }
+        checkEqual(existing.id, first.id)
+        checkEqual(await credentials.saveCount, saves); checkEqual(await credentials.readCount, 0); checkEqual(await credentials.deleteCount, 0)
+        checkEqual(try await repository.securityMetadata().keys.map(\.id), [first.id])
+        checkEqual(try await repository.securityMetadata().credentials.count, 1)
+        checkEqual(try Data(contentsOf: renamed), before)
+        checkEqual(try Data(contentsOf: directory.appendingPathComponent("Recovery/security-intents.json")), journalBefore)
+        checkTrue(FileManager.default.fileExists(atPath: originalURL.path))
+        try await sourceStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testSamePublicKeyWithChangedCommentAndLegacyUnrememberedAuthorizationIsNotExpanded() async throws {
+        let (directory, repository, credentials, coordinator) = try fixture()
+        let (sourceStore, url, _) = try await source(directory)
+        let first = try await coordinator.createKey(.importFile(url), protection: .unencrypted, rememberPassphrase: nil)
+        let renamed = directory.appendingPathComponent("comment-reencoded")
+        try FileManager.default.copyItem(at: url, to: renamed)
+        // No secret is used in this unencrypted fixture; mature ssh-keygen changes only
+        // its comment. A filename or whole-file/string hash would incorrectly differ.
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        process.arguments = ["-q", "-c", "-C", "different public fixture comment", "-P", "", "-f", renamed.path]
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); checkEqual(process.terminationStatus, 0)
+        checkFalse(try Data(contentsOf: url) == Data(contentsOf: renamed))
+        let review = try await coordinator.reviewKeyImport(from: renamed, protection: .unencrypted, rememberPassphrase: nil)
+        checkEqual(review.candidates.map(\.id), [first.id])
+        guard case .reused(let existing) = try await coordinator.confirmKeyImport(review, choice: .reuse(first.id)) else { return XCTFail("Expected same canonical public identity") }
+        checkNil(existing.passphraseCredentialRef)
+        checkEqual(await credentials.saveCount, 0); checkEqual(await credentials.readCount, 0); checkEqual(await credentials.deleteCount, 0)
+        try await sourceStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testDuplicateCancelAndCompatibilityImportDoNotChangeSavedAuthorizationOrSelection() async throws {
+        let (directory, repository, credentials, coordinator) = try fixture()
+        let (sourceStore, url, _) = try await source(directory)
+        let first = try await coordinator.createKey(.importFile(url), protection: .unencrypted, rememberPassphrase: nil)
+        let model = SecurityViewModel(coordinator: coordinator), editor = KeyCreationEditorState()
+        let selection = KeyLabelSelectionModel(); selection.select(id: UUID(), label: "Unrelated draft")
+        let selected = selection.selectedKeyID
+        checkFalse(await editor.submit(model: model, creation: .importFile(url), protection: .unencrypted, remember: nil,
+                                       label: "Must not replace existing label", ownsPresentation: { true }))
+        checkEqual(editor.importReview?.candidates.map(\.id), [first.id]); checkNil(editor.created)
+        checkFalse(editor.publishCompletion(to: model, ownsPresentation: { true }))
+        await editor.cancelImport(model: model)
+        checkEqual(selection.selectedKeyID, selected); checkEqual(selection.labelDraft, "Unrelated draft"); checkNil(model.lastCreatedKey)
+        await expectRejected { _ = try await coordinator.createKey(.importFile(url), protection: .unencrypted, rememberPassphrase: nil) }
+        checkEqual(try await repository.securityMetadata().keys.count, 1)
+        checkEqual(await credentials.saveCount, 0); checkEqual(await credentials.readCount, 0); checkEqual(await credentials.deleteCount, 0)
+        try await sourceStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testReusePublishesExistingActualLabelAndNeverEntersCreationRetry() async throws {
+        let (directory, repository, credentials, coordinator) = try fixture()
+        let (sourceStore, url, _) = try await source(directory)
+        let first = try await coordinator.createKey(.importFile(url), protection: .unencrypted, rememberPassphrase: nil)
+        try await repository.updateKeyLabel(keyID: first.id, label: "Actual existing label")
+        let model = SecurityViewModel(coordinator: coordinator), editor = KeyCreationEditorState()
+        checkFalse(await editor.submit(model: model, creation: .importFile(url), protection: .unencrypted, remember: nil,
+                                       label: "Uncommitted draft label", ownsPresentation: { true }))
+        checkTrue(await editor.reuse(first.id, model: model, ownsPresentation: { true }))
+        checkNil(editor.created); checkEqual(editor.reused?.id, first.id)
+        checkTrue(editor.publishCompletion(to: model, ownsPresentation: { true }))
+        checkEqual(model.lastCreatedKey?.id, first.id); checkEqual(model.lastCreatedKeyLabel, "Actual existing label")
+        checkTrue(await editor.submit(model: model, creation: .generate, protection: .unencrypted, remember: nil,
+                                      label: "Must not relabel reused key", ownsPresentation: { true }))
+        checkEqual(try await repository.securityMetadata().keys.first?.label, "Actual existing label")
+        checkEqual(try await repository.securityMetadata().keys.count, 1); checkEqual(await credentials.readCount, 0)
+        try await sourceStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testReviewRechecksNewDuplicateAndRejectsDeletedReuseAndReplacedSource() async throws {
+        let (directory, repository, credentials, coordinator) = try fixture()
+        let (sourceStore, url, _) = try await source(directory)
+        let firstReview = try await coordinator.reviewKeyImport(from: url, protection: .unencrypted, rememberPassphrase: nil)
+        checkTrue(firstReview.candidates.isEmpty)
+        let first = try await coordinator.createKey(.importFile(url), protection: .unencrypted, rememberPassphrase: nil)
+        // Superseding the source review invalidates the old token, rather than duplicating.
+        await expectRejected { _ = try await coordinator.confirmKeyImport(firstReview, choice: .create) }
+        let duplicate = try await coordinator.reviewKeyImport(from: url, protection: .unencrypted, rememberPassphrase: nil)
+        try await coordinator.deleteKey(first.id)
+        await expectRejected { _ = try await coordinator.confirmKeyImport(duplicate, choice: .reuse(first.id)) }
+        checkTrue(try await repository.securityMetadata().keys.isEmpty)
+        let review = try await coordinator.reviewKeyImport(from: url, protection: .unencrypted, rememberPassphrase: nil)
+        let replacement = directory.appendingPathComponent("replaced-source")
+        try FileManager.default.copyItem(at: url, to: replacement)
+        try FileManager.default.removeItem(at: url); try FileManager.default.moveItem(at: replacement, to: url)
+        await expectRejected { _ = try await coordinator.confirmKeyImport(review, choice: .create) }
+        checkTrue(try await repository.securityMetadata().keys.isEmpty)
+        checkEqual(await credentials.saveCount, 0); checkEqual(await credentials.readCount, 0)
+        try await sourceStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testLegacyDuplicatesHaveStableChoicesAndCreateRecheckReturnsDuplicate() async throws {
+        let (directory, repository, credentials, coordinator) = try fixture()
+        let (sourceStore, url, _) = try await source(directory)
+        let review = try await coordinator.reviewKeyImport(from: url, protection: .unencrypted, rememberPassphrase: nil)
+        let ids = [UUID(), UUID()].sorted { $0.uuidString < $1.uuidString }
+        for (index, id) in ids.enumerated() {
+            let path = directory.appendingPathComponent("Keys/" + id.uuidString + ".openssh")
+            try FileManager.default.copyItem(at: url, to: path)
+            try await repository.apply([.registerKey(.init(id: id, algorithm: .ed25519, label: "Legacy \(index)"))])
+        }
+        guard case .duplicate(let updated) = try await coordinator.confirmKeyImport(review, choice: .create) else { return XCTFail("Expected current duplicate review") }
+        checkEqual(updated.candidates.map(\.id), ids)
+        guard case .reused(let key) = try await coordinator.confirmKeyImport(updated, choice: .reuse(ids[1])) else { return XCTFail("Expected explicit legacy choice") }
+        checkEqual(key.id, ids[1]); checkEqual(try await repository.securityMetadata().keys.count, 2)
+        checkEqual(await credentials.saveCount, 0); checkEqual(await credentials.readCount, 0); checkEqual(await credentials.deleteCount, 0)
+        try await sourceStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testDifferentKeysWithSameFilenameCommitAndLabelOnlyTheirOwnUUID() async throws {
+        let (directory, repository, _, coordinator) = try fixture()
+        let (firstStore, firstURL, _) = try await source(directory)
+        let (secondStore, secondURL, _) = try await source(directory)
+        let a = firstURL.deletingLastPathComponent().appendingPathComponent("same-name")
+        let b = secondURL.deletingLastPathComponent().appendingPathComponent("same-name")
+        try FileManager.default.copyItem(at: firstURL, to: a); try FileManager.default.copyItem(at: secondURL, to: b)
+        let model = SecurityViewModel(coordinator: coordinator), first = KeyCreationEditorState(), second = KeyCreationEditorState()
+        checkTrue(await first.submit(model: model, creation: .importFile(a), protection: .unencrypted, remember: nil,
+                                     label: "First", ownsPresentation: { true }))
+        checkTrue(await second.submit(model: model, creation: .importFile(b), protection: .unencrypted, remember: nil,
+                                      label: "Second", ownsPresentation: { true }))
+        let metadata = try await repository.securityMetadata()
+        checkEqual(metadata.keys.count, 2)
+        checkEqual(metadata.keys.first { $0.id == first.created?.id }?.label, "First")
+        checkEqual(metadata.keys.first { $0.id == second.created?.id }?.label, "Second")
+        try await firstStore.close(); try await secondStore.close(); try await coordinator.close(); try await repository.close()
+    }
+
+    func testBusyMutationRejectsImportAndLateReviewOwnerCannotPublishOrLabel() async throws {
+        let (directory, base, credentials, _) = try fixture()
+        let repository = KeyTrustLabelRepository(base: base)
+        let coordinator = SecurityCoordinator(repository: repository, location: .isolated(directory), credentials: credentials)
+        let gate = KeyTrustTestGate(); await repository.pauseNextRegistration(on: gate)
+        let creation = Task { try await coordinator.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil) }
+        await gate.waitUntilEntered()
+        let (sourceStore, url, _) = try await source(directory)
+        await expectRejected { _ = try await coordinator.reviewKeyImport(from: url, protection: .unencrypted, rememberPassphrase: nil) }
+        await gate.release(); _ = try await creation.value
+        let model = SecurityViewModel(coordinator: coordinator), editor = KeyCreationEditorState()
+        let lateGate = KeyTrustTestGate(); await repository.pauseNextRegistration(on: lateGate)
+        let late = Task { await editor.submit(model: model, creation: .importFile(url), protection: .unencrypted, remember: nil,
+                                             label: "Must not write after owner closes", ownsPresentation: { true }) }
+        await lateGate.waitUntilEntered(); editor.close(); await lateGate.release()
+        checkFalse(await late.value)
+        let committed = try XCTUnwrap(editor.created)
+        checkFalse(editor.publishCompletion(to: model, ownsPresentation: { true }))
+        checkEqual(try await base.securityMetadata().keys.first { $0.id == committed.id }?.label, "")
+        checkTrue(await repository.labelKeyIDs.isEmpty); checkEqual(await credentials.readCount, 0)
+        try await sourceStore.close(); try await coordinator.close(); try await base.close()
+    }
+}
+
 @MainActor final class TrustManagementRegressionTests: XCTestCase {
     private let edLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE7UT0nd6jwWZVEVSodMrNLwfp8wralbSFtJ5vUAuvqg"
     private let changedLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICVjCQeOke+c616gj3L7T3Xi0vvxcnF4wNs5FYMv6g3C"

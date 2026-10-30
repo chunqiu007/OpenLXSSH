@@ -37,10 +37,15 @@ actor SystemCredentials: CredentialAccess {
 
 enum SecurityUIFailure: Error {
     case credential(CredentialFailure), key(KeyFailure), journal, busy, notAuthorized, pendingCleanup, preparedIntent, staleRecoveryReview
+    case staleKeyImportReview, duplicatePublicKey
 }
 enum PasswordChoice: Sendable { case preserve, manual, forget, remember(SecretBytes) }
 enum KeyCreation: Sendable { case generate, importFile(URL) }
 enum SecuritySaveOutcome: Sendable { case saved, savedWithCleanupPending }
+struct SecurityKeyAuthenticationMaterial: Sendable {
+    let bytes: SecretBytes
+    let encrypted: Bool
+}
 struct SecurityHostSaveResult: Sendable {
     let host: HostConfiguration
     let outcome: SecuritySaveOutcome
@@ -49,6 +54,21 @@ struct KeyCreationOutcome: Equatable, Sendable {
     let id: UUID
     let cleanupPending: Bool
     // A returned value always means the key and its metadata have already committed.
+}
+struct SecurityKeyImportReview: Equatable, Sendable {
+    let id: UUID
+    let key: KeyImportReview
+    let candidates: [ManagedKeyReference]
+    var publicKey: PublicKey { key.publicKey }
+    var encrypted: Bool { key.encrypted }
+}
+enum KeyImportChoice: Sendable { case create, reuse(UUID) }
+enum KeyImportOutcome: Sendable {
+    case created(KeyCreationOutcome), reused(ManagedKeyReference), duplicate(SecurityKeyImportReview)
+}
+private struct PendingSecurityKeyImport {
+    var review: SecurityKeyImportReview
+    var remember: SecretBytes?
 }
 struct RecoveryReview: Equatable, Identifiable, Sendable {
     let intent: SecurityIntent
@@ -74,6 +94,8 @@ actor SecurityCoordinator {
     private let journalWriteCheck: @Sendable () throws -> Void
     private var busy = false
     private var closing = false
+    private var pendingKeyImport: PendingSecurityKeyImport?
+    private var keyImportExpiry: Task<Void, Never>?
 
     init(repository: any AppRepositoryProtocol, location: AppDataLocation = .applicationSupport,
          credentials: any CredentialAccess = SystemCredentials(),
@@ -156,6 +178,27 @@ actor SecurityCoordinator {
               after.keys.contains(where: { $0.authenticationIdentity == reference.authenticationIdentity }) else { throw SecurityUIFailure.notAuthorized }
         return secret
     }
+    /// The encryption fact is read from KeyStore's validated envelope, never guessed
+    /// from an authentication failure or a server's untrusted prompt text.
+    func keyAuthenticationMaterial(host: HostConfiguration, expectedKey: ManagedKeyReference) async throws -> SecurityKeyAuthenticationMaterial {
+        guard !Task.isCancelled, host.authentication.needsKey, host.keyRef == expectedKey.id else { throw SecurityUIFailure.notAuthorized }
+        let before = try await repository.securityMetadata()
+        try Task.checkCancellation()
+        guard before.hosts.contains(where: { $0.matchesConnection(of: host) }),
+              before.keys.contains(where: { $0.authenticationIdentity == expectedKey.authenticationIdentity }) else { throw SecurityUIFailure.notAuthorized }
+        let keys = try storage().0
+        let key = try await keys.key(id: expectedKey.id)
+        try Task.checkCancellation()
+        guard (expectedKey.algorithm == .ed25519 && key.publicKey.algorithm == .ed25519)
+                || (expectedKey.algorithm == .rsa && key.publicKey.algorithm == .rsa) else { throw KeyFailure.invalidOpenSSH }
+        let bytes = try await keys.privateKeyForAuthentication(id: expectedKey.id)
+        try Task.checkCancellation()
+        let after = try await repository.securityMetadata()
+        try Task.checkCancellation()
+        guard after.hosts.contains(where: { $0.matchesConnection(of: host) }),
+              after.keys.contains(where: { $0.authenticationIdentity == expectedKey.authenticationIdentity }) else { throw SecurityUIFailure.notAuthorized }
+        return SecurityKeyAuthenticationMaterial(bytes: bytes, encrypted: key.encrypted)
+    }
     func publicKey(_ id: UUID) async throws -> PublicKey {
         guard try await repository.securityMetadata().keys.contains(where: { $0.id == id }) else { throw RepositoryError.notFound }
         return try await storage().0.publicKey(for: id)
@@ -221,9 +264,136 @@ actor SecurityCoordinator {
         }
     }
 
-    func createKey(_ creation: KeyCreation, protection: KeyProtection, rememberPassphrase: SecretBytes?) async throws -> KeyCreationOutcome {
+    func reviewKeyImport(from source: URL, protection: KeyProtection, rememberPassphrase: SecretBytes?) async throws -> SecurityKeyImportReview {
         try begin(); defer { busy = false }
+        try await clearKeyImport()
         if let rememberPassphrase {
+            guard case .passphrase(let supplied) = protection, supplied.matches(rememberPassphrase) else { throw SecurityUIFailure.notAuthorized }
+        }
+        let keys = try storage().0
+        var reviewed: KeyImportReview?
+        do {
+            let key = try await keys.reviewImport(from: source, protection: protection)
+            reviewed = key
+            if rememberPassphrase != nil, !key.encrypted { throw SecurityUIFailure.notAuthorized }
+            let candidates = try await duplicateCandidates(for: key.publicKey, keys: keys)
+            try Task.checkCancellation()
+            let review = SecurityKeyImportReview(id: UUID(), key: key, candidates: candidates)
+            pendingKeyImport = .init(review: review, remember: candidates.isEmpty && key.encrypted ? rememberPassphrase : nil)
+            keyImportExpiry = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(120)) } catch { return }
+                await self?.expireKeyImport(review.id)
+            }
+            return review
+        } catch {
+            if let reviewed { try? await keys.cancelImportReview(reviewed) }
+            try await recordImportCleanup(error)
+            throw error
+        }
+    }
+
+    func confirmKeyImport(_ review: SecurityKeyImportReview, choice: KeyImportChoice) async throws -> KeyImportOutcome {
+        try begin(); defer { busy = false }
+        guard let pending = pendingKeyImport, pending.review == review else { throw SecurityUIFailure.staleKeyImportReview }
+        let keys = try storage().0
+        do {
+            try await keys.validateImportReview(review.key)
+            let current = try await duplicateCandidates(for: review.publicKey, keys: keys)
+            try await keys.validateImportReview(review.key)
+            try Task.checkCancellation()
+            guard pendingKeyImport?.review == review else { throw SecurityUIFailure.staleKeyImportReview }
+            switch choice {
+            case .reuse(let id):
+                // Bind the explicit choice to the exact reference shown in the review,
+                // including its existing saved-secret authorization. Never read its secret.
+                guard let selected = review.candidates.first(where: { $0.id == id }),
+                      current.contains(selected) else { throw SecurityUIFailure.staleKeyImportReview }
+                try await clearKeyImport()
+                return .reused(selected)
+            case .create:
+                if !current.isEmpty {
+                    let refreshed = SecurityKeyImportReview(id: review.id, key: review.key, candidates: current)
+                    pendingKeyImport = .init(review: refreshed, remember: nil)
+                    return .duplicate(refreshed)
+                }
+                // A duplicate review may never silently become a fresh import after deletion.
+                guard review.candidates.isEmpty else { throw SecurityUIFailure.staleKeyImportReview }
+                pendingKeyImport = nil; keyImportExpiry?.cancel(); keyImportExpiry = nil
+                let result = try await createKeyCommit(nil, protection: .unencrypted,
+                                                       rememberPassphrase: pending.remember, reviewed: review.key)
+                return .created(result)
+            }
+        } catch {
+            try? await clearKeyImport()
+            try? await keys.cancelImportReview(review.key)
+            throw error
+        }
+    }
+
+    func cancelKeyImport(_ review: SecurityKeyImportReview) async throws {
+        try begin(); defer { busy = false }
+        guard pendingKeyImport?.review.id == review.id else { return }
+        try await clearKeyImport()
+    }
+    private func clearKeyImport() async throws {
+        let previous = pendingKeyImport
+        pendingKeyImport = nil; keyImportExpiry?.cancel(); keyImportExpiry = nil
+        if let previous { try await keys?.cancelImportReview(previous.review.key) }
+    }
+    private func expireKeyImport(_ id: UUID) async {
+        guard pendingKeyImport?.review.id == id else { return }
+        try? await clearKeyImport()
+    }
+    private func duplicateCandidates(for publicKey: PublicKey, keys: KeyStore) async throws -> [ManagedKeyReference] {
+        let before = try await repository.securityMetadata().keys.sorted { $0.id.uuidString < $1.id.uuidString }
+        var matches: [ManagedKeyReference] = []
+        for reference in before {
+            try Task.checkCancellation()
+            let managed = try await keys.key(id: reference.id)
+            guard (reference.algorithm == .ed25519 && managed.publicKey.algorithm == .ed25519)
+                    || (reference.algorithm == .rsa && managed.publicKey.algorithm == .rsa) else { throw KeyFailure.invalidOpenSSH }
+            if managed.publicKey == publicKey { matches.append(reference) }
+        }
+        let after = try await repository.securityMetadata().keys.sorted { $0.id.uuidString < $1.id.uuidString }
+        guard before == after else { throw SecurityUIFailure.staleKeyImportReview }
+        return matches
+    }
+    private func recordImportCleanup(_ error: Error) async throws {
+        guard let failure = error as? KeyOperationFailure, let ticket = failure.cleanupTicket else { return }
+        var intent = SecurityIntent(id: ticket.id, kind: .privateKey, state: .created)
+        intent.pendingName = ticket.pendingName; intent.includesCommittedKey = ticket.includesCommittedKey
+        intent.includesPublicSidecar = ticket.includesPublicSidecar
+        let journal = try storage().1
+        var journalFailed = false
+        do { try journal.set(intent) } catch { journalFailed = true }
+        try await repository.apply([.scheduleOrphanCleanup(.init(kind: .privateKey, id: ticket.id))])
+        if journalFailed { throw SecurityUIFailure.journal }
+    }
+
+    /// Compatibility for existing callers. Interactive import uses review/confirm so a
+    /// duplicate can be explicitly reused; this API rejects it without creating anything.
+    func createKey(_ creation: KeyCreation, protection: KeyProtection, rememberPassphrase: SecretBytes?) async throws -> KeyCreationOutcome {
+        if case .importFile(let source) = creation {
+            let review = try await reviewKeyImport(from: source, protection: protection, rememberPassphrase: rememberPassphrase)
+            if !review.candidates.isEmpty {
+                try await cancelKeyImport(review)
+                throw SecurityUIFailure.duplicatePublicKey
+            }
+            switch try await confirmKeyImport(review, choice: .create) {
+            case .created(let outcome): return outcome
+            case .duplicate(let updated):
+                try await cancelKeyImport(updated)
+                throw SecurityUIFailure.duplicatePublicKey
+            case .reused: throw SecurityUIFailure.staleKeyImportReview
+            }
+        }
+        try begin(); defer { busy = false }
+        return try await createKeyCommit(creation, protection: protection, rememberPassphrase: rememberPassphrase)
+    }
+
+    private func createKeyCommit(_ creation: KeyCreation?, protection: KeyProtection, rememberPassphrase: SecretBytes?,
+                                 reviewed: KeyImportReview? = nil) async throws -> KeyCreationOutcome {
+        if let rememberPassphrase, reviewed == nil {
             guard case .passphrase(let supplied) = protection, supplied.matches(rememberPassphrase) else { throw SecurityUIFailure.notAuthorized }
         }
         let (keys, journal) = try storage()
@@ -232,9 +402,10 @@ actor SecurityCoordinator {
         try journal.set(intent)
         let managed: ManagedKey
         do {
-            switch creation {
-            case .generate: managed = try await keys.generateEd25519(protection: protection, id: keyID)
-            case .importFile(let url): managed = try await keys.importKey(from: url, protection: protection, id: keyID)
+            if let reviewed { managed = try await keys.commitImport(reviewed, id: keyID) }
+            else {
+                guard let creation, case .generate = creation else { throw SecurityUIFailure.staleKeyImportReview }
+                managed = try await keys.generateEd25519(protection: protection, id: keyID)
             }
         } catch {
             if let failure = error as? KeyOperationFailure, let ticket = failure.cleanupTicket {
@@ -250,6 +421,13 @@ actor SecurityCoordinator {
         var passphraseIntent: SecurityIntent?
         do {
             try Task.checkCancellation()
+            if let reviewed {
+                // The managed copy is not registered yet. Recheck after KeyStore's actor
+                // hop and before creating any remembered-secret authorization.
+                guard try await duplicateCandidates(for: reviewed.publicKey, keys: keys).isEmpty else {
+                    throw SecurityUIFailure.duplicatePublicKey
+                }
+            }
             if let secret = rememberPassphrase {
                 guard managed.encrypted else { throw SecurityUIFailure.notAuthorized }
                 var passphrase = SecurityIntent(id: UUID(), kind: .privateKeyPassphrase, state: .prepared)
@@ -413,6 +591,7 @@ actor SecurityCoordinator {
     func close() async throws {
         closing = true
         while busy { try await Task.sleep(for: .milliseconds(20)) }
+        try await clearKeyImport()
         try await keys?.close(); keys = nil; journal = nil
         try await credentials.close()
     }

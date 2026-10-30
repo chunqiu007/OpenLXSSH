@@ -25,6 +25,22 @@ public struct KeyOperationFailure: Error, Equatable, Sendable {
 }
 public enum KeyDeleteResult: Equatable, Sendable { case deleted, alreadyAbsent }
 
+public enum KeyImportReviewFailure: Error, Equatable, Sendable { case staleReview }
+
+/// Nonsecret, opaque and single-use. Only the issuing KeyStore can resolve this token.
+/// No source path, private bytes or passphrase crosses this review boundary.
+public struct KeyImportReview: Equatable, Sendable {
+    fileprivate let token: UUID
+    public let publicKey: PublicKey
+    public let encrypted: Bool
+}
+
+private struct PendingKeyImport: Sendable {
+    let review: KeyImportReview
+    let source: KeySourceSnapshot
+    let deadline: ContinuousClock.Instant
+}
+
 /// Durable App-owned key files, no metadata database and no scanning. The caller supplies
 /// an Application Support leaf whose parent exists. Files are referenced only by UUID.
 /// Core must authorize deletion after checking every host and passphrase reference.
@@ -36,17 +52,26 @@ public actor KeyStore {
     public nonisolated let rootURL: URL
     private var directory: PrivateDirectory?
     private let tool: SSHKeygenTool
+    private let reviewLifetime: Duration
+    private let beforeReviewCleanup: @Sendable () throws -> Void
     private var mutating = false
+    private var pendingImport: PendingKeyImport?
+    private var reviewExpiry: Task<Void, Never>?
 
     public init(directory: URL) throws {
         self.directory = try PrivateDirectory(directory: directory)
         rootURL = directory
         tool = SSHKeygenTool()
+        reviewLifetime = .seconds(120)
+        beforeReviewCleanup = {}
     }
-    init(directory: URL, tool: SSHKeygenTool) throws {
+    init(directory: URL, tool: SSHKeygenTool, reviewLifetime: Duration = .seconds(120),
+         beforeReviewCleanup: @escaping @Sendable () throws -> Void = {}) throws {
         self.directory = try PrivateDirectory(directory: directory)
         rootURL = directory
         self.tool = tool
+        self.reviewLifetime = reviewLifetime
+        self.beforeReviewCleanup = beforeReviewCleanup
     }
 
     private func open() throws -> PrivateDirectory {
@@ -59,7 +84,104 @@ public actor KeyStore {
 
     public func close() throws {
         guard !mutating else { throw KeyFailure.busy }
+        clearImportReview()
         directory = nil // only closes handles/lock; never removes durable keys or directories.
+    }
+
+    /// Validate an exact source through the system ssh-keygen without committing a managed
+    /// key. The temporary validation file is removed before a review is returned. A failed
+    /// cleanup returns the existing exact ticket; callers must retain it for recovery.
+    public func reviewImport(from source: URL, protection: KeyProtection) async throws -> KeyImportReview {
+        guard !mutating else { throw KeyFailure.busy }
+        mutating = true
+        defer { mutating = false }
+        clearImportReview()
+        let directory = try open()
+        try Task.checkCancellation()
+        let snapshot = try PrivateDirectory.sourceSnapshot(source)
+        let envelope = try OpenSSHEnvelope(snapshot.bytes)
+        if envelope.encrypted, case .unencrypted = protection { throw KeyFailure.passphraseRequired }
+        let stageID = UUID()
+        let stage = stageName(stageID)
+        var created = false
+        do {
+            try directory.write(snapshot.bytes, name: stage, created: &created)
+            try directory.validatePrivateFile(stage)
+            let observed = try await tool.publicKey(at: rootURL.appendingPathComponent(stage).path, protection: protection)
+            guard observed == envelope.publicKey, try directory.read(stage) == snapshot.bytes else { throw KeyFailure.invalidOpenSSH }
+            try snapshot.validateCurrent()
+            try Task.checkCancellation()
+            // Narrow package-test seam, production is a no-op. No private material or
+            // cleanup name is exposed to the hook.
+            try beforeReviewCleanup()
+            _ = try directory.remove(stage)
+            let review = KeyImportReview(token: UUID(), publicKey: observed, encrypted: envelope.encrypted)
+            pendingImport = PendingKeyImport(review: review, source: snapshot, deadline: .now + reviewLifetime)
+            let lifetime = reviewLifetime
+            reviewExpiry = Task { [weak self] in
+                do { try await Task.sleep(for: lifetime) } catch { return }
+                await self?.expireImportReview(review)
+            }
+            return review
+        } catch {
+            throw compensate(error, ticket: .init(id: stageID, pendingName: stage,
+                                                  includesPublicSidecar: false, includesCommittedKey: false), cleanPending: created)
+        }
+    }
+
+    public func validateImportReview(_ review: KeyImportReview) throws {
+        guard !mutating else { throw KeyFailure.busy }
+        _ = try reviewedImport(review)
+    }
+
+    public func cancelImportReview(_ review: KeyImportReview) throws {
+        guard !mutating else { throw KeyFailure.busy }
+        guard pendingImport?.review == review else { return }
+        clearImportReview()
+    }
+
+    /// Commit only the bytes already approved by ssh-keygen. No new path read can replace
+    /// them, and the current source identity/ctime/bytes must still match the review.
+    public func commitImport(_ review: KeyImportReview, id: UUID = UUID()) throws -> ManagedKey {
+        guard !mutating else { throw KeyFailure.busy }
+        let pending = try reviewedImport(review)
+        mutating = true
+        defer { mutating = false; clearImportReview() }
+        let directory = try open()
+        guard !(try directory.exists(finalName(id))) else { throw KeyFailure.duplicateKey }
+        let stage = stageName(id)
+        var created = false, committed = false
+        do {
+            try Task.checkCancellation()
+            try directory.write(pending.source.bytes, name: stage, created: &created)
+            try pending.source.validateCurrent()
+            guard try directory.read(stage) == pending.source.bytes else { throw KeyFailure.changedWhileReading }
+            try Task.checkCancellation()
+            try directory.commit(stage: stage, destination: finalName(id), committed: &committed)
+            return ManagedKey(id: id, publicKey: review.publicKey, encrypted: review.encrypted)
+        } catch {
+            throw compensate(error, ticket: .init(id: id, pendingName: stage,
+                                                  includesPublicSidecar: false, includesCommittedKey: committed), cleanPending: created)
+        }
+    }
+
+    private func reviewedImport(_ review: KeyImportReview) throws -> PendingKeyImport {
+        guard let pending = pendingImport, pending.review == review, ContinuousClock.now < pending.deadline else {
+            if pendingImport?.review == review { clearImportReview() }
+            throw KeyImportReviewFailure.staleReview
+        }
+        do {
+            _ = try open()
+            try pending.source.validateCurrent()
+            guard try OpenSSHEnvelope(pending.source.bytes).publicKey == review.publicKey else { throw KeyImportReviewFailure.staleReview }
+        } catch { clearImportReview(); throw error }
+        return pending
+    }
+    private func expireImportReview(_ review: KeyImportReview) {
+        if pendingImport?.review == review { clearImportReview() }
+    }
+    private func clearImportReview() {
+        pendingImport = nil; reviewExpiry?.cancel(); reviewExpiry = nil
     }
 
     public func key(id: UUID) throws -> ManagedKey {
@@ -179,6 +301,7 @@ public actor KeyStore {
     }
     private func sanitized(_ error: any Error) -> KeyFailure {
         if error is CancellationError { return .cancelled }
+        if error is KeyImportReviewFailure { return .changedWhileReading }
         return (error as? KeyFailure) ?? .systemCall("unexpected failure", 0)
     }
 }
