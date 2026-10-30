@@ -492,6 +492,96 @@ final class OpenLXSSHCoreTests: XCTestCase {
         try raw.close()
     }
 
+    func testDesktopPreferencesRoundTripAndOnlySettingsChange() throws {
+        let host = sampleHost(), credential = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        let key = ManagedKeyReference(algorithm: .ed25519)
+        try database.apply([.insertHost(host), .registerCredential(credential), .registerKey(key)])
+        let hosts = try database.hosts(), credentials = try database.credentials(), keys = try database.keys()
+        var settings = AppSettings(); settings.cursorShape = .bar; settings.cursorBlink = false; settings.startupPage = .lastManagement
+        settings.foregroundColor = "#AABBCC"; settings.backgroundColor = "#112233"; settings.cursorColor = "#445566"
+        try database.saveSettings(settings); try reopen()
+        XCTAssertEqual(try database.settings(), settings)
+        try database.saveSettings(AppSettings())
+        XCTAssertEqual(try database.hosts(), hosts); XCTAssertEqual(try database.credentials(), credentials); XCTAssertEqual(try database.keys(), keys)
+        XCTAssertTrue(try database.cleanupTickets(includeCompleted: true).isEmpty)
+    }
+
+    func testDesktopPreferencesCodableDefaultsAndMalformedValuesReject() throws {
+        let decoder = JSONDecoder()
+        let old = try decoder.decode(AppSettings.self, from: Data("{\"fontName\":\"Menlo-Regular\",\"backgroundColor\":\"#123456\"}".utf8))
+        XCTAssertEqual(old.cursorShape, .block); XCTAssertTrue(old.cursorBlink); XCTAssertEqual(old.startupPage, .vault)
+        XCTAssertEqual(old.fontName, "Menlo-Regular"); XCTAssertEqual(old.backgroundColor, "#123456")
+        for text in ["{\"cursorShape\":\"circle\"}", "{\"cursorBlink\":\"yes\"}", "{\"startupPage\":\"session\"}", "{\"id\":2}", "{\"fontSize\":73}", "{\"backgroundColor\":\"white\"}"] {
+            XCTAssertThrowsError(try decoder.decode(AppSettings.self, from: Data(text.utf8)), text)
+        }
+        var changed = old; changed.cursorShape = .underline; changed.cursorBlink = false; changed.startupPage = .sftp
+        XCTAssertEqual(try decoder.decode(AppSettings.self, from: JSONEncoder().encode(changed)), changed)
+    }
+
+    func testDesktopPreferencesSQLConstraintsAndBadBatchRollback() throws {
+        let original = try database.settings()
+        for assignment in ["cursorShape = 'circle'", "cursorBlink = 2", "startupPage = 'session'"] {
+            XCTAssertThrowsError(try database.queue.write { db in
+                try db.execute(sql: "UPDATE settings SET fontSize = 21")
+                try db.execute(sql: "UPDATE settings SET \(assignment)")
+            })
+            XCTAssertEqual(try database.settings(), original)
+        }
+        var invalid = original; invalid.fontSize = .infinity
+        expect(.invalidField("fontSize")) { try database.apply([.insertHost(sampleHost()), .saveSettings(invalid)]) }
+        XCTAssertTrue(try database.hosts().isEmpty)
+        try reopen(); XCTAssertEqual(try database.settings(), original)
+    }
+
+    /// Build the exact v3 shape by removing only v4's three added columns from a
+    /// synthetic database. Old columns and their data are captured before re-opening.
+    private func installDesktopV3Snapshot(extraSQL: String = "") throws -> (URL, [Row]) {
+        var settings = AppSettings(); settings.historyLines = 3210; settings.fontSize = 17
+        settings.foregroundColor = "#AABBCC"; settings.backgroundColor = "#112233"; settings.cursorColor = "#445566"
+        try database.apply([.insertHost(sampleHost()), .saveSettings(settings)])
+        try database.queue.write { db in
+            try db.execute(sql: "ALTER TABLE settings DROP COLUMN cursorShape; ALTER TABLE settings DROP COLUMN cursorBlink; ALTER TABLE settings DROP COLUMN startupPage;")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v4_desktop_preferences'")
+            try db.execute(sql: extraSQL)
+        }
+        let rows = try database.queue.read { try Row.fetchAll($0, sql: "SELECT * FROM settings") }
+        let url = database.databaseURL
+        try database.close(); database = nil
+        return (url, rows)
+    }
+
+    func testV3DesktopPreferencesMigrationPreservesOldColorsAndHosts() throws {
+        let (_, rows) = try installDesktopV3Snapshot()
+        database = try OpenLXSSHDatabase(directory: directory)
+        let settings = try database.settings()
+        XCTAssertEqual(settings.historyLines, 3210); XCTAssertEqual(settings.fontSize, 17)
+        XCTAssertEqual(settings.foregroundColor, "#AABBCC"); XCTAssertEqual(settings.backgroundColor, "#112233"); XCTAssertEqual(settings.cursorColor, "#445566")
+        XCTAssertEqual(settings.cursorShape, .block); XCTAssertTrue(settings.cursorBlink); XCTAssertEqual(settings.startupPage, .vault)
+        let projection = rows[0].columnNames.map { "\"" + $0 + "\"" }.joined(separator: ", ")
+        try database.queue.read { db in
+            XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT \(projection) FROM settings"), rows)
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"), CoreSchema.versions)
+            XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+        }
+        XCTAssertEqual(try database.hosts().count, 1); try reopen(); XCTAssertEqual(try database.settings(), settings)
+    }
+
+    func testV4DesktopPreferencesMigrationFailureRollsBackAddedColumnsAndRetries() throws {
+        let (url, rows) = try installDesktopV3Snapshot(extraSQL: "ALTER TABLE settings ADD COLUMN cursorBlink INTEGER NOT NULL DEFAULT 1;")
+        XCTAssertThrowsError(try OpenLXSSHDatabase(directory: directory))
+        let raw = try DatabaseQueue(path: url.path)
+        try raw.read { db in
+            XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT * FROM settings"), rows)
+            let columns = try Row.fetchAll(db, sql: "PRAGMA table_info(settings)").map { $0["name"] as String }
+            XCTAssertFalse(columns.contains("cursorShape")); XCTAssertFalse(columns.contains("startupPage"))
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"), Array(CoreSchema.versions.prefix(3)))
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM hosts"), 1)
+        }
+        try raw.write { try $0.execute(sql: "ALTER TABLE settings DROP COLUMN cursorBlink") }; try raw.close()
+        database = try OpenLXSSHDatabase(directory: directory)
+        XCTAssertEqual(try database.settings().backgroundColor, "#112233"); XCTAssertEqual(try database.hosts().count, 1)
+    }
+
     func testUnknownFutureMigrationRefusedWithoutErasingData() throws {
         let host = sampleHost()
         try database.addHost(host)

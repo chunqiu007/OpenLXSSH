@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 enum CoreSchema {
-    static let versions = ["v1_host_metadata", "v2_settings_and_cleanup", "v3_vault_metadata"]
+    static let versions = ["v1_host_metadata", "v2_settings_and_cleanup", "v3_vault_metadata", "v4_desktop_preferences"]
 
     static func migrate(_ queue: DatabaseQueue) throws {
         // Never silently open a database written by a newer app, and never erase on schema change.
@@ -108,6 +108,16 @@ enum CoreSchema {
                     BEGIN SELECT RAISE(ABORT, 'folder cycle'); END;
                     """)
             }
+        }
+        migrator.registerMigration(versions[3]) { db in
+            // Preferences only. Do not rewrite old colors or any host/secret/trust metadata.
+            try db.execute(sql: """
+                ALTER TABLE settings ADD COLUMN cursorShape TEXT NOT NULL DEFAULT 'block'
+                    CHECK(cursorShape IN ('block', 'underline', 'bar'));
+                ALTER TABLE settings ADD COLUMN cursorBlink INTEGER NOT NULL DEFAULT 1 CHECK(cursorBlink IN (0, 1));
+                ALTER TABLE settings ADD COLUMN startupPage TEXT NOT NULL DEFAULT 'vault'
+                    CHECK(startupPage IN ('vault', 'sftp', 'lastManagement'));
+                """)
         }
         try migrator.migrate(queue)
     }

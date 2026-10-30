@@ -202,6 +202,9 @@ public struct ManagedKeyReference: Codable, Equatable, Sendable, Identifiable, F
 }
 
 public enum TerminalTheme: String, Codable, Sendable, DatabaseValueConvertible { case system, light, dark }
+public enum TerminalCursorShape: String, Codable, Sendable, DatabaseValueConvertible { case block, underline, bar }
+/// Management navigation only. No option may restore an SSH session or answer authentication.
+public enum StartupManagementPage: String, Codable, Sendable, DatabaseValueConvertible { case vault, sftp, lastManagement }
 public struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "settings"
     public static let maximumHistoryLines = 100_000
@@ -215,9 +218,33 @@ public struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, Persis
     public var cursorColor: String = "#D8DEE9"
     public var keepaliveInterval: Int = 30
     public var keepaliveCountMax: Int = 3
+    public var cursorShape: TerminalCursorShape = .block
+    public var cursorBlink: Bool = true
+    public var startupPage: StartupManagementPage = .vault
     public init() {}
 
+    /// Old metadata omits new preferences. Missing values use safe defaults; present,
+    /// malformed values are rejected instead of silently accepting a corrupt setting.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(Int.self, forKey: .id) ?? 1
+        historyLines = try values.decodeIfPresent(Int.self, forKey: .historyLines) ?? 10_000
+        fontName = try values.decodeIfPresent(String.self, forKey: .fontName) ?? "SFMono-Regular"
+        fontSize = try values.decodeIfPresent(Double.self, forKey: .fontSize) ?? 13
+        theme = try values.decodeIfPresent(TerminalTheme.self, forKey: .theme) ?? .system
+        foregroundColor = try values.decodeIfPresent(String.self, forKey: .foregroundColor) ?? "#D8DEE9"
+        backgroundColor = try values.decodeIfPresent(String.self, forKey: .backgroundColor) ?? "#20242C"
+        cursorColor = try values.decodeIfPresent(String.self, forKey: .cursorColor) ?? "#D8DEE9"
+        keepaliveInterval = try values.decodeIfPresent(Int.self, forKey: .keepaliveInterval) ?? 30
+        keepaliveCountMax = try values.decodeIfPresent(Int.self, forKey: .keepaliveCountMax) ?? 3
+        cursorShape = try values.decodeIfPresent(TerminalCursorShape.self, forKey: .cursorShape) ?? .block
+        cursorBlink = try values.decodeIfPresent(Bool.self, forKey: .cursorBlink) ?? true
+        startupPage = try values.decodeIfPresent(StartupManagementPage.self, forKey: .startupPage) ?? .vault
+        try validate()
+    }
+
     func validate() throws {
+        guard id == 1 else { throw RepositoryError.invalidField("settingsID") }
         guard (0...Self.maximumHistoryLines).contains(historyLines) else { throw RepositoryError.invalidField("historyLines") }
         try validateText(fontName, field: "fontName", limit: 256)
         guard fontSize.isFinite, (6...72).contains(fontSize) else { throw RepositoryError.invalidField("fontSize") }
