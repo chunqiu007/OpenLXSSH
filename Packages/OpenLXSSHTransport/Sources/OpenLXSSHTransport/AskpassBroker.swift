@@ -57,7 +57,15 @@ package final class AskpassBroker {
         auth = AuthenticationState(grant: SessionGrant(session: token.sessionID, generation: token.generation, nonce: try nonce()), now: now())
         var name = [CChar](repeating: 0, count: 128), port: UInt32 = 0
         guard ap_mach_start(&name, name.count, &port) == 0 else { throw AskpassError.unavailable }
-        serviceName = String(cString: name); listener = port
+        guard let end = name.firstIndex(of: 0),
+              let service = String(bytes: name[..<end].map { UInt8(bitPattern: $0) }, encoding: .utf8) else {
+            // The bridge creates a bounded ASCII service name. If that contract is
+            // ever violated, drop this newly owned receive/send right before failing.
+            name[name.count - 1] = 0
+            _ = name.withUnsafeBufferPointer { ap_mach_stop(port, $0.baseAddress!) }
+            throw AskpassError.unavailable
+        }
+        serviceName = service; listener = port
     }
 
     package func environment(helper: BundledAskpassHelper) -> [String: String] {
@@ -162,7 +170,7 @@ package final class AskpassBroker {
         _ = ap_mach_stop(listener, serviceName); listener = 0
         parent = nil; onRequest = nil
     }
-    deinit {
+    isolated deinit {
         timer?.invalidate()
         if listener != 0 { _ = ap_mach_stop(listener, serviceName) }
     }

@@ -51,7 +51,12 @@ enum PasswordAutomationGate {
         guard sysctlbyname("kern.osversion", nil, &size, nil, 0) == 0, size > 0, size < 128 else { return nil }
         var value = [CChar](repeating: 0, count: size)
         guard sysctlbyname("kern.osversion", &value, &size, nil, 0) == 0 else { return nil }
-        return String(cString: value)
+        guard size <= value.count, let end = value.prefix(size).firstIndex(of: 0) else { return nil }
+        let bytes = value[..<end].map { UInt8(bitPattern: $0) }
+        // Kernel build identifiers are ASCII; invalid bytes must never enter the
+        // exact reviewed OS/SSH compatibility pair as replacement characters.
+        guard bytes.allSatisfy({ $0 < 128 }) else { return nil }
+        return String(bytes: bytes, encoding: .utf8)
     }
 }
 

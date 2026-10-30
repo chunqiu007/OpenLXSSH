@@ -103,7 +103,11 @@ final class PTYGeneration: LocalProcessDelegate {
         }
     }
     nonisolated func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
-        MainActor.assumeIsolated { guard process === source else { return }; finish(exitCode) }
+        let identity = ObjectIdentifier(source)
+        MainActor.assumeIsolated {
+            guard let process, ObjectIdentifier(process) == identity else { return }
+            finish(exitCode)
+        }
     }
-    deinit { timer?.invalidate() }
+    isolated deinit { timer?.invalidate() }
 }
