@@ -2,14 +2,16 @@ import Foundation
 import GRDB
 
 enum CoreSchema {
-    static let versions = ["v1_host_metadata", "v2_settings_and_cleanup"]
+    static let versions = ["v1_host_metadata", "v2_settings_and_cleanup", "v3_vault_metadata"]
 
     static func migrate(_ queue: DatabaseQueue) throws {
         // Never silently open a database written by a newer app, and never erase on schema change.
         try queue.read { db in
             if try db.tableExists("grdb_migrations") {
                 let applied = try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations")
-                guard Set(applied).isSubset(of: Set(versions)) else { throw RepositoryError.unsupportedSchema }
+                let appliedSet = Set(applied)
+                guard appliedSet.isSubset(of: Set(versions)),
+                      appliedSet == Set(versions.prefix(appliedSet.count)) else { throw RepositoryError.unsupportedSchema }
             }
         }
         var migrator = DatabaseMigrator()
@@ -71,6 +73,39 @@ enum CoreSchema {
                          NOT EXISTS(SELECT 1 FROM credentials WHERE id = NEW.credentialRef AND purpose = 'password' AND isSavingAuthorized = 1)))
                          OR (NEW.authentication IN ('privateKey', 'privateKeyWithMFA') AND NEW.savePasswordAuthorized != 0)
                     BEGIN SELECT RAISE(ABORT, 'invalid credential authorization'); END;
+                    """)
+            }
+        }
+        migrator.registerMigration(versions[2]) { db in
+            // Additive only: existing rows, UUIDs, authorizations, and cleanup tombstones stay intact.
+            // GRDB wraps the migration and its version record in a transaction.
+            try db.execute(sql: """
+                ALTER TABLE folders ADD COLUMN parentID BLOB REFERENCES folders(id) ON DELETE RESTRICT
+                    CHECK(parentID IS NULL OR (typeof(parentID) = 'blob' AND length(parentID) = 16 AND parentID != id));
+                CREATE INDEX folders_parent ON folders(parentID);
+                ALTER TABLE managedKeys ADD COLUMN label TEXT NOT NULL DEFAULT '' CHECK(length(CAST(label AS BLOB)) <= 256);
+                CREATE TABLE tags (
+                    id BLOB PRIMARY KEY NOT NULL CHECK(typeof(id) = 'blob' AND length(id) = 16),
+                    name TEXT NOT NULL CHECK(length(CAST(name AS BLOB)) BETWEEN 1 AND 256)
+                );
+                CREATE TABLE hostTags (
+                    hostID BLOB NOT NULL REFERENCES hosts(id) ON DELETE CASCADE CHECK(typeof(hostID) = 'blob' AND length(hostID) = 16),
+                    tagID BLOB NOT NULL REFERENCES tags(id) ON DELETE CASCADE CHECK(typeof(tagID) = 'blob' AND length(tagID) = 16),
+                    PRIMARY KEY(hostID, tagID)
+                );
+                CREATE INDEX hostTags_tag ON hostTags(tagID, hostID);
+                """)
+            for action in ["INSERT", "UPDATE OF parentID"] {
+                let suffix = action == "INSERT" ? "insert" : "update"
+                try db.execute(sql: """
+                    CREATE TRIGGER folders_no_cycle_\(suffix) BEFORE \(action) ON folders
+                    WHEN NEW.parentID IS NOT NULL AND EXISTS(
+                        WITH RECURSIVE ancestors(id) AS (
+                            SELECT NEW.parentID
+                            UNION
+                            SELECT f.parentID FROM folders f JOIN ancestors a ON f.id = a.id WHERE f.parentID IS NOT NULL
+                        ) SELECT 1 FROM ancestors WHERE id = NEW.id)
+                    BEGIN SELECT RAISE(ABORT, 'folder cycle'); END;
                     """)
             }
         }

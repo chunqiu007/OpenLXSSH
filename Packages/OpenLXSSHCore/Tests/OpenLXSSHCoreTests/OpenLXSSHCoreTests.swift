@@ -80,7 +80,7 @@ final class OpenLXSSHCoreTests: XCTestCase {
         XCTAssertNotNil(try database.host(id: copy.id))
     }
 
-    func testSingleLevelFoldersUnGroupRatherThanDeleteHosts() throws {
+    func testRootFoldersUnGroupRatherThanDeleteHosts() throws {
         var folder = HostFolder(name: "文件夹")
         var host = sampleHost(); host.folderID = folder.id
         try database.apply([.saveFolder(folder), .insertHost(host)])
@@ -93,7 +93,10 @@ final class OpenLXSSHCoreTests: XCTestCase {
         XCTAssertNil(try database.host(id: host.id)?.folderID)
         XCTAssertEqual(try database.hosts(HostQuery(folder: .ungrouped)).count, 1)
         let columns = try database.queue.read { try Row.fetchAll($0, sql: "PRAGMA table_info(folders)").map { $0["name"] as String } }
-        XCTAssertFalse(columns.contains("parentID"))
+        XCTAssertTrue(columns.contains("parentID"))
+        let parentColumn = try database.queue.read { try Row.fetchAll($0, sql: "PRAGMA foreign_key_list(folders)").first { ($0["from"] as String) == "parentID" } }
+        XCTAssertEqual(parentColumn?["table"] as String?, "folders")
+        XCTAssertEqual(parentColumn?["on_delete"] as String?, "RESTRICT")
     }
 
     func testLiteralUnicodeSearchFavoritesAndStableSort() throws {

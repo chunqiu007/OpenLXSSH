@@ -54,6 +54,27 @@ public struct HostConfiguration: Codable, Equatable, Sendable, Identifiable, Fet
         self.keepaliveInterval = keepaliveInterval; self.keepaliveCountMax = keepaliveCountMax
     }
 
+    /// Older exported metadata may predate the v2 authorization/order fields. Absence never
+    /// grants permission to read a saved password, even when a credential reference is present.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        address = try values.decode(String.self, forKey: .address)
+        port = try values.decodeIfPresent(Int.self, forKey: .port) ?? 22
+        username = try values.decode(String.self, forKey: .username)
+        authentication = try values.decodeIfPresent(AuthenticationKind.self, forKey: .authentication) ?? .password
+        credentialRef = try values.decodeIfPresent(UUID.self, forKey: .credentialRef)
+        keyRef = try values.decodeIfPresent(UUID.self, forKey: .keyRef)
+        savePasswordAuthorized = try values.decodeIfPresent(Bool.self, forKey: .savePasswordAuthorized) ?? false
+        folderID = try values.decodeIfPresent(UUID.self, forKey: .folderID)
+        isFavorite = try values.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        favoriteOrder = try values.decodeIfPresent(Int.self, forKey: .favoriteOrder) ?? 0
+        lastConnectedAt = try values.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
+        keepaliveInterval = try values.decodeIfPresent(Int.self, forKey: .keepaliveInterval) ?? 30
+        keepaliveCountMax = try values.decodeIfPresent(Int.self, forKey: .keepaliveCountMax) ?? 3
+    }
+
     public static func databaseDateEncodingStrategy(for column: String) -> DatabaseDateEncodingStrategy { .timeIntervalSince1970 }
     public static func databaseDateDecodingStrategy(for column: String) -> DatabaseDateDecodingStrategy { .timeIntervalSince1970 }
 
@@ -71,13 +92,69 @@ public struct HostConfiguration: Codable, Equatable, Sendable, Identifiable, Fet
     }
 }
 
-/// There is deliberately no parent-folder relationship.
+/// Local organization only. A parent does not confer credentials or connection settings.
 public struct HostFolder: Codable, Equatable, Sendable, Identifiable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "folders"
     public var id: UUID
     public var name: String
     public var sortOrder: Int
-    public init(id: UUID = UUID(), name: String, sortOrder: Int = 0) { self.id = id; self.name = name; self.sortOrder = sortOrder }
+    public var parentID: UUID?
+    public init(id: UUID = UUID(), name: String, sortOrder: Int = 0, parentID: UUID? = nil) {
+        self.id = id; self.name = name; self.sortOrder = sortOrder; self.parentID = parentID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        sortOrder = try values.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        parentID = try values.decodeIfPresent(UUID.self, forKey: .parentID)
+    }
+}
+
+public struct HostTag: Codable, Equatable, Sendable, Identifiable, FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "tags"
+    public var id: UUID
+    public var name: String
+    public init(id: UUID = UUID(), name: String) { self.id = id; self.name = name }
+}
+
+/// Root-to-leaf components retain exact identities even for identically named siblings or names
+/// containing path separators. displayName is presentation/search text, never an identifier.
+public struct HostFolderPath: Equatable, Sendable, Identifiable {
+    public let components: [HostFolder]
+    public var id: UUID { components[components.count - 1].id }
+    public var folderIDs: [UUID] { components.map(\.id) }
+    public var displayName: String { components.map(\.name).joined(separator: " / ") }
+    public var identityPath: String { folderIDs.map(\.uuidString).joined(separator: "/") }
+
+    init(components: [HostFolder]) { self.components = components }
+}
+
+public struct HostMetadata: Equatable, Sendable, Identifiable {
+    public var host: HostConfiguration
+    public var folderPath: HostFolderPath?
+    public var tags: [HostTag]
+    public var id: UUID { host.id }
+    public var tagIDs: Set<UUID> { Set(tags.map(\.id)) }
+}
+
+/// One consistent SQLite read for the Vault's filtered hosts and complete organization catalog.
+public struct VaultMetadataSnapshot: Equatable, Sendable {
+    public var hosts: [HostMetadata]
+    public var folders: [HostFolderPath]
+    public var tags: [HostTag]
+}
+
+public struct FolderDeletionImpact: Equatable, Sendable {
+    public var folder: HostFolder
+    public var directHostCount: Int
+    public var directChildFolderCount: Int
+}
+
+public struct TagDeletionImpact: Equatable, Sendable {
+    public var tag: HostTag
+    public var hostCount: Int
 }
 
 public enum CredentialPurpose: String, Codable, Sendable, DatabaseValueConvertible { case password, privateKeyPassphrase }
@@ -93,13 +170,33 @@ public struct CredentialReference: Codable, Equatable, Sendable, Identifiable, F
 }
 
 public enum ManagedKeyAlgorithm: String, Codable, Sendable, DatabaseValueConvertible { case ed25519, rsa }
+
+/// The saved-secret authorization identity excludes editable presentation metadata such as label.
+public struct ManagedKeyAuthenticationIdentity: Equatable, Hashable, Sendable {
+    public let id: UUID
+    public let algorithm: ManagedKeyAlgorithm
+    public let passphraseCredentialRef: UUID?
+}
+
 public struct ManagedKeyReference: Codable, Equatable, Sendable, Identifiable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "managedKeys"
     public var id: UUID
     public var algorithm: ManagedKeyAlgorithm
     public var passphraseCredentialRef: UUID?
-    public init(id: UUID = UUID(), algorithm: ManagedKeyAlgorithm, passphraseCredentialRef: UUID? = nil) {
-        self.id = id; self.algorithm = algorithm; self.passphraseCredentialRef = passphraseCredentialRef
+    public var label: String
+    public var authenticationIdentity: ManagedKeyAuthenticationIdentity {
+        ManagedKeyAuthenticationIdentity(id: id, algorithm: algorithm, passphraseCredentialRef: passphraseCredentialRef)
+    }
+    public init(id: UUID = UUID(), algorithm: ManagedKeyAlgorithm, passphraseCredentialRef: UUID? = nil, label: String = "") {
+        self.id = id; self.algorithm = algorithm; self.passphraseCredentialRef = passphraseCredentialRef; self.label = label
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        algorithm = try values.decode(ManagedKeyAlgorithm.self, forKey: .algorithm)
+        passphraseCredentialRef = try values.decodeIfPresent(UUID.self, forKey: .passphraseCredentialRef)
+        label = try values.decodeIfPresent(String.self, forKey: .label) ?? ""
     }
 }
 
@@ -156,24 +253,44 @@ public struct CleanupTicket: Codable, Equatable, Sendable, Identifiable, Fetchab
     public static func databaseDateDecodingStrategy(for column: String) -> DatabaseDateDecodingStrategy { .timeIntervalSince1970 }
 }
 
-public enum FolderFilter: Equatable, Sendable { case all, ungrouped, folder(UUID) }
+public enum FolderFilter: Equatable, Sendable {
+    case all, ungrouped
+    /// Direct members only, preserving the original single-level API's semantics.
+    case folder(UUID)
+    case folderAndDescendants(UUID)
+}
 public enum HostSort: Sendable { case name, recentlyConnected, favorites }
+public enum HostSortDirection: Sendable { case ascending, descending }
 public struct HostQuery: Sendable {
     public var search: String
     public var favoritesOnly: Bool
     public var folder: FolderFilter
     public var sort: HostSort
-    public init(search: String = "", favoritesOnly: Bool = false, folder: FolderFilter = .all, sort: HostSort = .name) {
+    public var sortDirection: HostSortDirection
+    /// All selected tag IDs must be assigned to a host (AND, not OR). Unknown IDs match nothing.
+    public var tagIDs: Set<UUID>
+    public init(search: String = "", favoritesOnly: Bool = false, folder: FolderFilter = .all, sort: HostSort = .name,
+                sortDirection: HostSortDirection? = nil, tagIDs: Set<UUID> = []) {
         self.search = search; self.favoritesOnly = favoritesOnly; self.folder = folder; self.sort = sort
+        self.sortDirection = sortDirection ?? (sort == .recentlyConnected ? .descending : .ascending)
+        self.tagIDs = tagIDs
     }
 }
 
 /// Every batch is one real SQLite transaction. A failing command rolls back the entire batch.
 public enum RepositoryChange: Sendable {
     case insertHost(HostConfiguration), updateHost(HostConfiguration), deleteHost(UUID)
-    case saveFolder(HostFolder), deleteFolder(UUID)
+    case saveFolder(HostFolder), moveFolder(UUID, parentID: UUID?), deleteFolder(UUID)
+    /// A set is dissolved to its nearest surviving ancestors, independent of input order.
+    case deleteFolders(Set<UUID>)
+    case moveHost(UUID, folderID: UUID?)
+    /// Tag metadata changes do not implicitly assign or unassign any host.
+    case addTag(HostTag), saveTag(HostTag), renameTag(UUID, name: String), deleteTag(UUID)
+    case assignTag(hostID: UUID, tagID: UUID), unassignTag(hostID: UUID, tagID: UUID)
+    case setHostTags(hostID: UUID, tagIDs: Set<UUID>)
     case registerCredential(CredentialReference), registerKey(ManagedKeyReference)
     case updateKeyPassphrase(keyID: UUID, credentialRef: UUID?)
+    case updateKeyLabel(keyID: UUID, label: String)
     case deleteCredential(UUID), deleteKey(UUID)
     case saveSettings(AppSettings)
     case setFavorite(UUID, Bool, order: Int = 0)
