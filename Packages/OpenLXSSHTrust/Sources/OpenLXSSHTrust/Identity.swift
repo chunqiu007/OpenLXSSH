@@ -15,6 +15,8 @@ public enum HostTrustError: Error, Equatable, Sendable {
     case expiredDecision
     case fingerprintMismatch
     case noChangedKey
+    case temporaryReplacementNotAllowed
+    case recordNotFound
 }
 
 private func hasControlCharacters(_ value: String) -> Bool {

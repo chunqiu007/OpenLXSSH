@@ -117,6 +117,32 @@ final class ACLTests: XCTestCase {
         }
     }
 
+    func testRuntimeACLsRejectOneTimeConfirmationAndExactRemovalWithoutMutation() async throws {
+        for surface in ["root", "trust.lock", "known_hosts"] {
+            for denyOnly in [false, true] {
+                let directory = try TemporaryDirectory(name: "OpenLXSSH-ACL-")
+                defer { removeFixtureACLs(directory.url) }
+                let store = try HostTrustStore(directory: directory.path)
+                let key = try HostPublicKey(openSSHPublicKey: ed25519Fixture)
+                let trusted = try await accept(store, try host(), key)
+                let decision = try pendingDecision(try await store.evaluate(host: host("new.example"), key: key))
+                let before = try snapshot(directory.url)
+                let target = surface == "root" ? directory.url : directory.file(surface)
+                try addACL(denyOnly ? "everyone deny delete" : "everyone allow read,write", at: target)
+                let aclBefore = try aclDescription(target)
+                await expectUnsafeStorage {
+                    try await store.confirmOnce(decision, displayedFingerprint: decision.fingerprint)
+                }
+                await assertAsyncError(.expiredDecision) {
+                    try await store.confirmOnce(decision, displayedFingerprint: decision.fingerprint)
+                }
+                await expectUnsafeStorage { try await store.remove(trusted) }
+                XCTAssertEqual(try snapshot(directory.url), before)
+                XCTAssertEqual(try aclDescription(target), aclBefore)
+            }
+        }
+    }
+
     func testPOSIXChmodDoesNotClearAnACLAndStoreDoesNotRepairIt() async throws {
         let fixture = try TemporaryDirectory(name: "OpenLXSSH-ACL-")
         defer { removeFixtureACLs(fixture.url) }

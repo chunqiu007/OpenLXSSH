@@ -42,6 +42,7 @@ public enum HostTrustEvaluation: Equatable, Sendable {
 public actor HostTrustStore {
     public nonisolated let knownHostsPath: AbsolutePath
     private let directory: PrivateDirectory
+    private let now: @Sendable () -> ContinuousClock.Instant
     private var pending: [UUID: Request] = [:]
     private static let file = "known_hosts"
     private static let lock = "trust.lock"
@@ -54,8 +55,14 @@ public actor HostTrustStore {
     }
 
     public init(directory path: AbsolutePath) throws {
+        try self.init(directory: path, now: { ContinuousClock.now })
+    }
+
+    // Internal clock injection keeps expiry tests independent of elapsed wall time.
+    init(directory path: AbsolutePath, now: @escaping @Sendable () -> ContinuousClock.Instant) throws {
         let directory = try PrivateDirectory(path)
         self.directory = directory
+        self.now = now
         knownHostsPath = try directory.path.appending(Self.file)
         try directory.withLock(Self.lock, allowCreation: true) { created in
             if let data = try directory.read(Self.file) {
@@ -104,9 +111,7 @@ public actor HostTrustStore {
     /// Every attempted answer consumes the token, including stale or incorrect answers.
     @discardableResult
     public func confirm(_ decision: PendingTrustDecision, displayedFingerprint: String) throws -> TrustedHostKey {
-        guard let request = pending.removeValue(forKey: decision.id), request.display == decision,
-              ContinuousClock.now < request.expires else { throw HostTrustError.expiredDecision }
-        guard displayedFingerprint == request.key.fingerprint else { throw HostTrustError.fingerprintMismatch }
+        let request = try consume(decision, displayedFingerprint: displayedFingerprint)
         return try directory.withLock(Self.lock) { _ in
             let state = try readState()
             guard request.revision == state.revision else { throw HostTrustError.storageChanged }
@@ -127,6 +132,37 @@ public actor HostTrustStore {
         }
     }
 
+    /// Returns only this decision's exact key; the caller owns its connection-scoped lifetime.
+    /// Does not persist trust or permit temporary acceptance of a changed known key.
+    public func confirmOnce(_ decision: PendingTrustDecision, displayedFingerprint: String) throws -> TrustedHostKey {
+        let request = try consume(decision, displayedFingerprint: displayedFingerprint)
+        switch decision.reason {
+        case .firstKey, .additionalAlgorithm: break
+        case .manuallyVerifiedReplacement: throw HostTrustError.temporaryReplacementNotAllowed
+        }
+        return try directory.withLock(Self.lock) { _ in
+            let state = try readState()
+            guard request.revision == state.revision,
+                  state.record(host: decision.host, algorithm: request.key.algorithm) == nil else {
+                throw HostTrustError.storageChanged
+            }
+            return TrustedHostKey(host: decision.host, key: request.key)
+        }
+    }
+
+    /// Removes only the exact record reviewed by the caller, never a newer replacement.
+    public func remove(_ expected: TrustedHostKey) throws {
+        try directory.withLock(Self.lock) { _ in
+            let state = try readState()
+            guard let current = state.record(host: expected.host, algorithm: expected.key.algorithm) else {
+                throw HostTrustError.recordNotFound
+            }
+            guard current == expected else { throw HostTrustError.storageChanged }
+            try directory.atomicWrite(Self.file, data: State(records: state.records.filter { $0 != expected }).encoded())
+            pending.removeAll()
+        }
+    }
+
     public func cancel(_ decision: PendingTrustDecision) {
         pending.removeValue(forKey: decision.id)
     }
@@ -138,15 +174,23 @@ public actor HostTrustStore {
         try directory.withLock(Self.lock) { _ in try readState().records }
     }
 
+    private func consume(_ decision: PendingTrustDecision, displayedFingerprint: String) throws -> Request {
+        guard let request = pending.removeValue(forKey: decision.id), request.display == decision,
+              now() < request.expires else { throw HostTrustError.expiredDecision }
+        guard displayedFingerprint == request.key.fingerprint else { throw HostTrustError.fingerprintMismatch }
+        return request
+    }
+
     private func makeRequest(host: HostIdentity, key: HostPublicKey, reason: TrustPromptReason,
                              revision: String) -> PendingTrustDecision {
-        pending = pending.filter { ContinuousClock.now < $0.value.expires }
+        let current = now()
+        pending = pending.filter { current < $0.value.expires }
         // Bounded transient UI state. Discarding an unanswered request can only cause rejection.
         if pending.count >= 128 { pending.removeAll() }
         let decision = PendingTrustDecision(id: UUID(), host: host, algorithm: key.algorithm,
                                            fingerprint: key.fingerprint, reason: reason)
         pending[decision.id] = Request(display: decision, key: key, revision: revision,
-                                      expires: .now.advanced(by: .seconds(300)))
+                                      expires: current.advanced(by: .seconds(300)))
         return decision
     }
 
