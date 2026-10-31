@@ -34,7 +34,8 @@ Native 不再拥有本地 ssh PID/PTY 进程；socket/libssh2 owner 为单串行
 - 数值兼容、原 pump 的 EAGAIN/稳定参数/有限调度与饱和取消已有本地门，固定 vendor、archive 和许可证未换。
 - 历史 normal、MaxSessions 和严格 DROP 各有有限实网门；它们不自动覆盖新的 mixed-load 或 App 入口。
 - **旧 SSH/App 整体资源门仍失败。** 一些运行卡 weak 对象，另一些三 weak nil 但 FD 多三项；仅一个只读项已识别为 QuartzCore metallib，另两项未知。三类信任新案也均 weak cleanup 失败。不能按数量白名单、强 nil 或延预算。
-- 新版并发 A 取消/B 原 owner 继续及各自挑战清理仍需真实 App 验证；有限真实输入/输出/resize/活性及 TUI 门仍需验证。
+- 新版并发 A 取消/B 原 owner 继续及 cross/late 拒绝已真实成立，但 A 服务端挑战 present、B removed，逐owner清理整案失败，见 `../ux/app-concurrent-mfa-real-review.md`。
+- 有限真实输入/输出/resize/活性及同连接 tmux 门已通过，逐leg native drain/socket关闭/FD计数4→4成立；见 `../ux/native-finite-mixedload-review.md`。这不是 App 图形资源、长期pending deadline或全部TUI验收。
 - 原生输入、真正 CmdV、中文 IME、Finder、三尺寸/全屏实际截图及像素门未过。图形调查恢复需准确自有窗口真实可见绘制与 ACK 后 frame 推进，而不是 `isVisible` 或 AX 树。当前不以不可见的截图替代人工体验。
 
 ## 后续正式切换的准确范围
