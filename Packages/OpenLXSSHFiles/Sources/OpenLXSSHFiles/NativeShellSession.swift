@@ -2,16 +2,49 @@ import COpenLXSSHFiles
 import Foundation
 import OpenLXSSHTrust
 
+/// Internal, per-instance I/O-result seam for offline pump regressions only. No SSH peer,
+/// authentication, packet API or native cleanup is replaced. Every callback must be nonblocking.
+struct NativeShellPumpSteps: Sendable {
+    typealias Step = @Sendable (OpaquePointer, OpaquePointer) -> Int32
+    let now: @Sendable () -> ContinuousClock.Instant
+    let poll: Step
+    let write: @Sendable (OpaquePointer, UnsafePointer<CChar>, Int, OpaquePointer) -> Int32
+    let read: @Sendable (OpaquePointer, UnsafeMutablePointer<CChar>, Int, OpaquePointer) -> Int32
+    let exit: @Sendable (OpaquePointer, UnsafeMutablePointer<rf_shell_exit>, OpaquePointer) -> Int32
+    let eof: Step
+    let resize: @Sendable (OpaquePointer, Int32, Int32, OpaquePointer) -> Int32
+    let sendEOF: Step
+    let probeOpen: Step
+    let probeClose: Step
+    let probeFree: Step
+}
+struct NativeShellPumpSnapshot: Sendable {
+    let queuedWrites: Int
+    let hasReader: Bool
+    let hasControl: Bool
+    let readBufferBytes: Int
+    let pendingOutbound: Bool
+    let probeDeadline: ContinuousClock.Instant?
+    let nativePresent: Bool
+    let nativeDisposals: Int
+    let failure: NativeShellError?
+}
+
 private final class NativeShellResources: @unchecked Sendable {
     // Native calls are queue-owned. Only the bridge's atomic cancel may cross queues.
     private let lock = NSLock()
     private var storage: OpaquePointer?
+    private var disposals = 0
     var connection: OpaquePointer? { lock.withLock { storage } }
+    var disposalCount: Int { lock.withLock { disposals } }
     init(_ connection: OpaquePointer) { storage = connection }
     func cancel() { lock.withLock { if let storage { rf_connection_cancel(storage) } } }
     func dispose() {
         let owned = lock.withLock { let owned = storage; storage = nil; return owned }
-        if let owned { rf_connection_destroy(owned) }
+        if let owned {
+            rf_connection_destroy(owned)
+            lock.withLock { disposals += 1 }
+        }
     }
     deinit { dispose() }
 }
@@ -20,10 +53,10 @@ private final class NativeShellWriteRequest {
     let token: CancellationToken
     let deadline: ContinuousClock.Instant
     let continuation: CheckedContinuation<Void, any Error>
-    init(_ data: Data, token: CancellationToken, timeout: TimeInterval,
+    init(_ data: Data, token: CancellationToken, timeout: TimeInterval, now: ContinuousClock.Instant,
          continuation: CheckedContinuation<Void, any Error>) {
         bytes = NativeShellWriteBuffer(data); self.token = token
-        deadline = .now.advanced(by: .seconds(timeout)); self.continuation = continuation
+        deadline = now.advanced(by: .seconds(timeout)); self.continuation = continuation
     }
 }
 private struct NativeShellReadRequest {
@@ -54,6 +87,8 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     public let options: NativeShellOptions
     private let queue = DispatchQueue(label: "OpenLXSSH.NativeShell.libssh2", qos: .userInitiated)
     private let resources: NativeShellResources
+    private let pumpSteps: NativeShellPumpSteps?
+    private func pumpNow() -> ContinuousClock.Instant { pumpSteps?.now() ?? .now }
     private let lifetime = CancellationToken()
     private let interactionTasks: NativeShellInteractionTasks
     /// One immutable-identity receipt shared by every failure from this session.
@@ -81,16 +116,40 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     private var pumping = false
     private var terminalError: NativeShellError?
 
-    init(connectedSocket: Int32, options: NativeShellOptions,
-         interactionTasks: NativeShellInteractionTasks = NativeShellInteractionTasks(),
-         trustAttempt: FileHostTrustAttempt = FileHostTrustAttempt()) throws {
-        guard let connection = rf_connection_create(connectedSocket) else {
+    convenience init(connectedSocket: Int32, options: NativeShellOptions,
+                     interactionTasks: NativeShellInteractionTasks = NativeShellInteractionTasks(),
+                     trustAttempt: FileHostTrustAttempt = FileHostTrustAttempt()) throws {
+        try self.init(ownedSocket: connectedSocket, options: options, interactionTasks: interactionTasks,
+                      trustAttempt: trustAttempt, pumpSteps: nil)
+    }
+    /// Only module-internal tests can select this local I/O state. It makes no authentication or
+    /// shellReady claim, never handshakes, and retains real native/socket ownership for teardown.
+    convenience init(offlinePumpSocket: Int32, options: NativeShellOptions, steps: NativeShellPumpSteps) throws {
+        try self.init(ownedSocket: offlinePumpSocket, options: options, interactionTasks: NativeShellInteractionTasks(),
+                      trustAttempt: FileHostTrustAttempt(), pumpSteps: steps)
+        ready = true
+        if let policy = options.liveness { livenessState = NativeShellLivenessState(policy: policy, now: pumpNow()) }
+    }
+    private init(ownedSocket: Int32, options: NativeShellOptions, interactionTasks: NativeShellInteractionTasks,
+                 trustAttempt: FileHostTrustAttempt, pumpSteps: NativeShellPumpSteps?) throws {
+        guard let connection = rf_connection_create(ownedSocket) else {
             throw NativeShellError(.transport, operation: "adopt-socket")
         }
-        resources = NativeShellResources(connection); self.options = options
+        resources = NativeShellResources(connection); self.options = options; self.pumpSteps = pumpSteps
         let tasks = interactionTasks
         self.interactionTasks = tasks; interactionDrain = NativeShellDrainHandle(tasks: tasks)
         self.trustAttempt = trustAttempt
+    }
+    func pumpSnapshot() async -> NativeShellPumpSnapshot {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: NativeShellPumpSnapshot(queuedWrites: self.writes.count,
+                    hasReader: self.reader != nil, hasControl: self.control != nil, readBufferBytes: self.readLength,
+                    pendingOutbound: self.pendingOutbound != nil, probeDeadline: self.livenessState?.deadline,
+                    nativePresent: self.resources.connection != nil, nativeDisposals: self.resources.disposalCount,
+                    failure: self.terminalError))
+            }
+        }
     }
     deinit {
         lifetime.cancel(); interactionTasks.revoke(); interactionTasks.seal()
@@ -179,6 +238,7 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     func establish(identity: ServerIdentity, username: Data, source: NativeShellAuthenticationSource,
                    hostKeyHandler: (@Sendable (HostKey, ChallengeReply<Bool>) -> Void)?,
                    token: CancellationToken) async throws {
+        guard pumpSteps == nil else { throw NativeShellError(.invalidConfiguration, operation: "offline-pump-establish") }
         guard !username.isEmpty, username.count <= 1024, !username.contains(0) else {
             throw NativeShellError(.invalidConfiguration, operation: "username")
         }
@@ -338,7 +398,7 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                     do {
                         try self.requireReady(token)
                         self.writes.append(NativeShellWriteRequest(data, token: token, timeout: self.options.operationTimeout,
-                                                                  continuation: continuation))
+                                                                  now: self.pumpNow(), continuation: continuation))
                         self.schedulePump()
                     } catch { continuation.resume(throwing: self.convert(error, operation: "write")) }
                 }
@@ -359,7 +419,7 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                     do {
                         try self.requireReady(token)
                         self.reader = NativeShellReadRequest(limit: maxBytes, token: token,
-                            deadline: .now.advanced(by: .seconds(wait)), continuation: continuation)
+                            deadline: self.pumpNow().advanced(by: .seconds(wait)), continuation: continuation)
                         self.readBuffer = .allocate(capacity: maxBytes); self.readLength = maxBytes
                         self.schedulePump()
                     } catch { continuation.resume(throwing: self.convert(error, operation: "receive")) }
@@ -380,7 +440,7 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                     do {
                         try self.requireReady(token)
                         self.control = NativeShellControlRequest(kind: kind, token: token,
-                            deadline: .now.advanced(by: .seconds(self.options.operationTimeout)), continuation: continuation)
+                            deadline: self.pumpNow().advanced(by: .seconds(self.options.operationTimeout)), continuation: continuation)
                         self.schedulePump()
                     } catch { continuation.resume(throwing: self.convert(error, operation: "control")) }
                 }
@@ -396,18 +456,18 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
         guard ready, let c = resources.connection else { return }
         do {
             try checkTokens(lifetime)
-            try livenessState?.checkDeadline()
+            try livenessState?.checkDeadline(now: pumpNow())
             for request in writes {
                 try checkTokens(request.token)
-                guard .now < request.deadline else { throw NativeShellError(.timeout, operation: "write", stages: stages) }
+                guard pumpNow() < request.deadline else { throw NativeShellError(.timeout, operation: "write", stages: stages) }
             }
             if let reader { try checkTokens(reader.token) }
-            if let deadline = readProtocolDeadline, .now >= deadline {
+            if let deadline = readProtocolDeadline, pumpNow() >= deadline {
                 throw NativeShellError(.timeout, operation: "read-window-adjust", stages: stages)
             }
             if let control {
                 try checkTokens(control.token)
-                guard .now < control.deadline else { throw NativeShellError(.timeout, operation: "control", stages: stages) }
+                guard pumpNow() < control.deadline else { throw NativeShellError(.timeout, operation: "control", stages: stages) }
             }
             // A pending transport packet must resume the same API with stable arguments before
             // any other outbound operation (including read's receive-window adjustment).
@@ -440,13 +500,14 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
         } catch { fail(convert(error, operation: "io")) }
     }
     private func outboundBlocked(_ c: OpaquePointer) throws -> Bool {
-        let events = rf_shell_poll(c, lifetime.native); try check(events, operation: "poll")
+        let events = pumpSteps?.poll(c, lifetime.native) ?? rf_shell_poll(c, lifetime.native); try check(events, operation: "poll")
         return events & Int32(RF_SHELL_POLL_OUTBOUND) != 0
     }
     private func pumpWrite(_ c: OpaquePointer) throws {
         guard let request = writes.first else { return }
         guard !inputEOF else { throw NativeShellError(.closed, operation: "input-eof", stages: stages) }
-        let rc = rf_shell_write_step(c, request.bytes.stepPointer, request.bytes.stepLength, lifetime.native)
+        let rc = pumpSteps?.write(c, request.bytes.stepPointer, request.bytes.stepLength, lifetime.native)
+            ?? rf_shell_write_step(c, request.bytes.stepPointer, request.bytes.stepLength, lifetime.native)
         if rc == Int32(LIBSSH2_ERROR_EAGAIN) || rc == 0 {
             // Preserve exact pointer/length even if EAGAIN was inbound-only (remote window).
             pendingOutbound = try outboundBlocked(c) ? .write : nil; return
@@ -465,15 +526,15 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
         guard let request = reader, let buffer = readBuffer else { return }
         if eofDelivered {
             var result = rf_shell_exit()
-            let rc = rf_shell_exit_step(c, &result, lifetime.native)
+            let rc = pumpSteps?.exit(c, &result, lifetime.native) ?? rf_shell_exit_step(c, &result, lifetime.native)
             if rc == Int32(LIBSSH2_ERROR_EAGAIN) {
                 if try outboundBlocked(c) {
                     pendingOutbound = .exit
-                    if readProtocolDeadline == nil { readProtocolDeadline = .now.advanced(by: .seconds(options.operationTimeout)) }
+                    if readProtocolDeadline == nil { readProtocolDeadline = pumpNow().advanced(by: .seconds(options.operationTimeout)) }
                     return
                 }
                 pendingOutbound = nil; readProtocolDeadline = nil
-                if .now >= request.deadline { finishRead(.wouldBlock) }; return
+                if pumpNow() >= request.deadline { finishRead(.wouldBlock) }; return
             }
             pendingOutbound = nil; readProtocolDeadline = nil
             try check(rc, operation: "exit-status")
@@ -487,32 +548,34 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
             fail(NativeShellError(.closed, operation: "remote-exit", stages: stages))
             return
         }
-        let rc = rf_shell_read_step(c, buffer, readLength, lifetime.native)
+        let rc = pumpSteps?.read(c, buffer, readLength, lifetime.native) ?? rf_shell_read_step(c, buffer, readLength, lifetime.native)
         if rc == Int32(LIBSSH2_ERROR_EAGAIN) {
             if try outboundBlocked(c) {
                 pendingOutbound = .read
-                if readProtocolDeadline == nil { readProtocolDeadline = .now.advanced(by: .seconds(options.operationTimeout)) }
+                if readProtocolDeadline == nil { readProtocolDeadline = pumpNow().advanced(by: .seconds(options.operationTimeout)) }
                 return
             }
             pendingOutbound = nil; readProtocolDeadline = nil
-            if .now >= request.deadline { finishRead(.wouldBlock) }
+            if pumpNow() >= request.deadline { finishRead(.wouldBlock) }
             return
         }
         pendingOutbound = nil; readProtocolDeadline = nil; try check(rc, operation: "read")
         if rc > 0 {
-            livenessState?.applicationRead()
+            livenessState?.applicationRead(now: pumpNow())
             finishRead(.bytes(Data(bytes: buffer, count: Int(rc)))); return
         }
-        let eof = rf_shell_eof(c, lifetime.native); try check(eof, operation: "eof")
+        let eof = pumpSteps?.eof(c, lifetime.native) ?? rf_shell_eof(c, lifetime.native); try check(eof, operation: "eof")
         if eof != 0 { eofDelivered = true; finishRead(.eof) }
-        else if .now >= request.deadline { finishRead(.wouldBlock) }
+        else if pumpNow() >= request.deadline { finishRead(.wouldBlock) }
     }
     private func pumpControl(_ c: OpaquePointer) throws {
         guard let request = control else { return }
         let rc: Int32
         switch request.kind {
-        case .resize(let size): rc = rf_shell_resize_step(c, size.columns, size.rows, lifetime.native)
-        case .eof: rc = rf_shell_send_eof_step(c, lifetime.native)
+        case .resize(let size):
+            rc = pumpSteps?.resize(c, size.columns, size.rows, lifetime.native)
+                ?? rf_shell_resize_step(c, size.columns, size.rows, lifetime.native)
+        case .eof: rc = pumpSteps?.sendEOF(c, lifetime.native) ?? rf_shell_send_eof_step(c, lifetime.native)
         }
         if rc == Int32(LIBSSH2_ERROR_EAGAIN) { pendingOutbound = .control; return }
         pendingOutbound = nil; try check(rc, operation: "control")
@@ -521,15 +584,15 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     }
     private func pumpProbe(_ c: OpaquePointer) throws {
         guard livenessState != nil else { return }
-        _ = livenessState?.beginIfDue()
-        try livenessState?.checkDeadline()
+        _ = livenessState?.beginIfDue(now: pumpNow())
+        try livenessState?.checkDeadline(now: pumpNow())
         let phase = livenessState!.phase
         guard phase != .idle else { return }
         let rc: Int32
         switch phase {
-        case .opening: rc = rf_shell_probe_open_step(c, lifetime.native)
-        case .closing: rc = rf_shell_probe_close_step(c, lifetime.native)
-        case .freeing: rc = rf_shell_probe_free_step(c, lifetime.native)
+        case .opening: rc = pumpSteps?.probeOpen(c, lifetime.native) ?? rf_shell_probe_open_step(c, lifetime.native)
+        case .closing: rc = pumpSteps?.probeClose(c, lifetime.native) ?? rf_shell_probe_close_step(c, lifetime.native)
+        case .freeing: rc = pumpSteps?.probeFree(c, lifetime.native) ?? rf_shell_probe_free_step(c, lifetime.native)
         case .idle: return
         }
         if rc == Int32(LIBSSH2_ERROR_EAGAIN) {
@@ -543,12 +606,12 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
         switch phase {
         case .opening:
             if rc == Int32(RF_SHELL_PROBE_CONFIRMED) {
-                livenessState?.confirmed(cleanupTimeout: options.operationTimeout)
+                livenessState?.confirmed(cleanupTimeout: options.operationTimeout, now: pumpNow())
             } else if rc == Int32(RF_SHELL_PROBE_REJECTED) {
-                livenessState?.rejected() // MaxSessions rejection is alive, not dead.
+                livenessState?.rejected(now: pumpNow()) // MaxSessions rejection is alive, not dead.
             } else { throw NativeShellError(.protocolFailure, operation: "ssh-probe-result") }
         case .closing: livenessState?.closed()
-        case .freeing: livenessState?.freed()
+        case .freeing: livenessState?.freed(now: pumpNow())
         case .idle: break
         }
     }
