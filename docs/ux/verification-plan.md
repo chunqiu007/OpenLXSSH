@@ -4,7 +4,7 @@
 
 - 本次passwordonly与key/password两类KI真实App认证、113×37终端、exit7分项成立；两KI四轮字段[1/1/1/0]、OTP3/零输入1/late0、serverstatusremoved及管理4次reap成立。仍分别weak或FD资源门failed，不报整体通过；见`app-password-transient-review.md`、`app-mfa-real-review.md`。
 - 保活合法数值映射与原pump离线6门已主独立复验并本地47757ad/ca58c70，包全209/0；不代真实mixedload/默认替换。
-- 子矩阵现78（35 VERIFIED /42 IMPLEMENTED /1 INVESTIGATED），父116仍全部INVESTIGATED；13列/ID/parent完整，证据AppFilesManifest-Live-R5/matrix78-integrity.json。窄门数量不作产品完成率。
+- 子矩阵现79（36 VERIFIED /42 IMPLEMENTED /1 INVESTIGATED），父116仍全部INVESTIGATED；13列/ID/parent完整，证据AppFilesConflict-Live-R5/matrix79-integrity.json。窄门数量不作产品完成率。
 - 真实App资源：精确baseline20→23（或密码19→22）；一readonly已匹配QuartzCore default.metallib，两RW与间歇UI持有仍unknown。停止重复probe；恢复图形调查需actual occlusion可见及ACK后真实frame，当前窗口isVisible不等此条件，官方CUA全inactive不推锁屏根因。原weak/FD门不改、不按+3豁免。
 - 新Files logicalApp真实SFTP小目录清单往返已完整passed：2plans确认各1、prepareΔ内容IO0/jobs0、12KiB双向SHA同、精确nonce清理、remote1/local2实际close、FD20→20身份相等、自然exit0；见`app-files-manifest-real-review.md`。不代GUI/Finder/冲突取消重试或旧shell资源。中键、SaveDiscardCancel、CmdV/IME、三尺寸截图与像素仍未过，未UX_READY_FOR_USER。
 
