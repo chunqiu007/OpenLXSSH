@@ -260,7 +260,7 @@ int rf_keyboard(rf_connection *c, const char *user, unsigned int ulen,
 }
 int rf_shell_packet_read_timeout(rf_connection *c, int seconds) {
     int rc = auth_guard(c); if(rc) return rc;
-    if(seconds < 1 || seconds > 3600) return RF_INVALID;
+    if(seconds < 1 || seconds > 36002) return RF_INVALID;
     libssh2_session_set_read_timeout(c->session, seconds);
     return (int)libssh2_session_get_read_timeout(c->session);
 }

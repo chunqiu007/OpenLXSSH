@@ -44,9 +44,9 @@ public struct NativeShellLivenessCandidate: Equatable, Sendable {
     public let maxUnresponsivePeriods: Int
     public var responseTimeout: TimeInterval { interval * Double(maxUnresponsivePeriods) }
     public init(interval: TimeInterval, maxUnresponsivePeriods: Int) throws {
-        guard interval.isFinite, interval >= 0.05, interval <= 300,
+        guard interval.isFinite, interval >= 0.05, interval <= 3600,
               (1...100).contains(maxUnresponsivePeriods),
-              interval * Double(maxUnresponsivePeriods) <= 300 else {
+              interval * Double(maxUnresponsivePeriods) <= 36000 else {
             throw NativeShellError(.invalidConfiguration, operation: "liveness-candidate")
         }
         self.interval = interval; self.maxUnresponsivePeriods = maxUnresponsivePeriods
