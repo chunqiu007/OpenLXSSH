@@ -42,6 +42,16 @@
 
 没有新版正常候选的实际截图/像素验收；此前U3图是各自原探针范围，不补作本版Vault/编辑器/双栏/设置完整截图。
 
+### R17：窗口恢复尝试与数据零写边界
+
+后续官方CUA重新枚举窗口，已有磁盘窗口8476也报告CG-only；按工具给出的可用语义菜单新建访达窗口后，新窗口8492仍仅52个菜单元素、无非菜单可操作控件，返回`cg-only-no-ax-window`。本次截图返回不对当前模型可见，没有发送坐标、键入预览路径、启动App、切换登录或修改系统权限。旧路径对话框8472仍只有WindowServer条目，不能确认此前Escape已关闭它。重复相同窗口读取不会改变此条件，因此停止无变化重试。
+
+同时已独立只读核查**正常启动并非只读**：App入口固定`AppRepository()`和`UserDefaults.standard`，加载主界面会确保目录权限、以read-write/WAL打开SQLite并检查/可能执行迁移；管理页恢复和frame autosave也可能回写。当前用户固定预期路径`~/Library/Application Support/OpenLXSSH/Data/OpenLXSSH.sqlite`及其WAL/SHM经仅元数据检查均已存在；未读取数据库内容、Keys/恢复记录或Keychain。这个路径是源码规则与现有文件的证据，**不是未启动进程已经实际解析该目录的运行时证明**。
+
+当前正常binary没有只读/禁迁移/任意数据根CLI，测试`.isolated`入口只存在于HostProbe，不能用于证明Engineering-R1正常启动；也没有把HOME或Keychain namespace替换当隔离保证。恢复keys/trust子页还可能初始化相应存储，所以“不开连接”不保证不接触它们。为遵守本次避免修改用户数据的要求，未启动新副本。主再次核main/helper字节与identity相同、无该精确预览进程。证据`NormalUXPreview-R1/Primary/observation-r17.json`。
+
+继续精确副本的正常界面验收，需要先有可读的原生窗口内容，并明确允许正常初始化的本地写入或提供经验证的数据隔离启动方案；现有Engineering-R1无法同时满足无参数主界面与用户数据零写。新增只读/隔离正常入口将改变代码/候选来源，必须独立实现、验证、重建并如实区分，不用测试探针冒本副本通过。
+
 ## 不可宣称的完成度
 
 Native App weak/FD资源失败、并发MFA A服务端challenge present、普通入口差异均保留。实体CmdV/IME/Finder/中键、规定1000×650/1280×800/1440×900与全屏、新版像素仍未验。详见 `acceptance-coverage.md`、`verification-plan.md`、`local-candidate-walkthrough.md`。
