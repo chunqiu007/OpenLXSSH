@@ -1,6 +1,6 @@
 # U4 登录目录能力：主管独立离线审查
 
-日期：2026-10-30。结论：新 `initialDirectory(token:)` 接口、成熟 SFTP realpath 调用与离线边界门已审；真实服务器互通和新版双栏显示仍待，DX-F04 不标通过。
+日期：2026-10-30。**本报告原证据为离线范围；后续包层真实门已单独通过，见[`sftp-login-directory-real-review.md`](sftp-login-directory-real-review.md)。** 新 `initialDirectory(token:)` 接口和默认App本地消费者门已审；真实服务器返回/list/pre取消门不外推为新版双栏显示或整个DX-F04通过。
 
 ## 实现
 

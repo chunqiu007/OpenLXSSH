@@ -85,7 +85,7 @@
 覆盖ID：DX-F01、DX-F02、DX-F03、DX-F04、DX-F05、DX-F06、DX-F07、DX-F08、DX-F09、DX-F10、DX-F11、DX-F12。
 
 - F01/F02/F03/F05/F06/F07：双栏共用catalog、本地metadata懒加载、raw路径/URL身份、导航失败保成功位置、过滤/隐藏/排序和多选模型见 `desktop-integration-review.md`、`reliability-app-review.md`；稳定分栏/列布局见 `files-layout-preferences-review.md`。实际键鼠、多选、双击文件只详情、路径编辑/Enter/Escape与截图需GUI。
-- F04：realpath生产能力实现和默认App消费者本地门见 `u4-realpath-review.md`，不猜/home或修改服务器。实际服务器realpath(.)、非根返回后的listing、取消清理及正常候选显示仍未关联实证，不能以API存在代实网。
+- F04：realpath生产能力实现和默认App消费者本地门见 `u4-realpath-review.md`。后续包层实际服务器realpath(.)返回非root `/fixture/home`、直接listing、预取消/fresh同service与关闭数值FD门已过，见 `sftp-login-directory-real-review.md`；正常候选显示与在途取消仍未由此验收，不猜/home或改服务器。
 - F08/F10/F11：不可变target、陈旧owner拒绝、聚合删除/取消与partial见 `files-review-owners-review.md`，不以metadata属性冒CAS。Finder显示/右键/系统picker、完整目标对话框与远端错误呈现待。
 - F09：包immutable manifest/source复核与App只读审核见 `files-transfer-manifest-review.md`；真实12KiB往返/确认前零内容IO见 `app-files-manifest-real-review.md`。不代Finder/跨栏拖放和所有来源竞争。
 - F12：SFTP应用级独立owner、metadata不假失效、切页/SSH不换目标见 `u1-sftp-identity-review.md`、`u1-workspace-review.md`。三真实SFTP窄案不自动证明所有UI切页/主机改变状态。
