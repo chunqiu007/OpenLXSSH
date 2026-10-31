@@ -1,6 +1,12 @@
 # UX 本地体验候选：验收与交付映射
 
-日期：2026-10-30。状态：进行中；不是完成证明。
+日期：2026-10-31。状态：进行中；不是完成证明。最新窄门与失败边界如下，后文较早审计仅作历史：
+
+- 本次passwordonly与key/password两类KI真实App认证、113×37终端、exit7分项成立；两KI四轮字段[1/1/1/0]、OTP3/零输入1/late0、serverstatusremoved及管理4次reap成立。仍分别weak或FD资源门failed，不报整体通过；见`app-password-transient-review.md`、`app-mfa-real-review.md`。
+- 保活合法数值映射与原pump离线6门已主独立复验并本地47757ad/ca58c70，包全209/0；不代真实mixedload/默认替换。
+- 子矩阵现78（35 VERIFIED /42 IMPLEMENTED /1 INVESTIGATED），父116仍全部INVESTIGATED；13列/ID/parent完整，证据AppFilesManifest-Live-R5/matrix78-integrity.json。窄门数量不作产品完成率。
+- 真实App资源：精确baseline20→23（或密码19→22）；一readonly已匹配QuartzCore default.metallib，两RW与间歇UI持有仍unknown。停止重复probe；恢复图形调查需actual occlusion可见及ACK后真实frame，当前窗口isVisible不等此条件，官方CUA全inactive不推锁屏根因。原weak/FD门不改、不按+3豁免。
+- 新Files logicalApp真实SFTP小目录清单往返已完整passed：2plans确认各1、prepareΔ内容IO0/jobs0、12KiB双向SHA同、精确nonce清理、remote1/local2实际close、FD20→20身份相等、自然exit0；见`app-files-manifest-real-review.md`。不代GUI/Finder/冲突取消重试或旧shell资源。中键、SaveDiscardCancel、CmdV/IME、三尺寸截图与像素仍未过，未UX_READY_FOR_USER。
 
 ## 目标与停止边界
 
@@ -45,7 +51,7 @@
 ### 接续会话的实物审计（2026-10-30）
 
 - 逐项解析规格与父矩阵：116个DX编号与116行R一一对应，无缺项/重复；父项仍116个INVESTIGATED。50子项仍17 VERIFIED / 29 IMPLEMENTED / 4 INVESTIGATED。此为索引完整性，不是体验完成率或功能通过。
-- 当前RELIABILITY-R1六类本地门已收口：工程师正式min26 App119/0，主管关键32/0加准确导航symbol1/0，Core双方各3/0并本地提交5e73f7c；详情见`reliability-app-review.md`和`reliability-core-review.md`。父矩阵仍116 INVESTIGATED。最近新增候选typed事实/sealed排空、有限关闭和布局窄门后，子矩阵69项（28 VERIFIED / 40 IMPLEMENTED / 1 INVESTIGATED）；主管实际CSV解析核13列、ID唯一、parent有效且全部116父项与规格一一对应，见NativeAppRetirement-R2/Verification/matrix-integrity-1.json。这是索引完整性和窄门证据，不是整体完成率，不把逻辑范围冒原生/网络。
+- 当前RELIABILITY-R1六类本地门已收口：工程师正式min26 App119/0，主管关键32/0加准确导航symbol1/0，Core双方各3/0并本地提交5e73f7c；详情见`reliability-app-review.md`和`reliability-core-review.md`。父矩阵仍116 INVESTIGATED。最近新增候选typed事实/sealed排空、有限关闭和布局窄门后，子矩阵69项（28 VERIFIED / 40 IMPLEMENTED / 1 INVESTIGATED）；其后补递归Manifest包/App入口/窄窗几何三项，现**72项（29 VERIFIED / 42 IMPLEMENTED / 1 INVESTIGATED）**。主管实际CSV解析核13列、ID唯一、parent有效且全部116父项与规格一一对应，见UnifiedFilesNative-R1/Primary/matrix72-integrity.json。这是索引完整性和窄门证据，不是整体完成率，不把逻辑范围冒原生/网络；新AppNative case2因weak释放cleanup失败未标通过。
 - 新原生R0真实启动冻结接续前HostProbe，结果见`resumption-native-discovery.md`：AX只得递归菜单、窗口级无AX内容、像素不可见；动作未核验。ready/finish字段通过不等控件通过；存储清理后未自然退出、精确TERM exit-15保留。NATIVE-PROBE-R1仅工具写域准备，构建须等业务writer释放。
 - 静态确认仍需实现的具体设置差距：`SettingsEditor`仍是单页显式保存Grid，无通用/终端/连接/传输/隐私/快捷键统一分类及偏好类别重置；配色预览仍把默认组映到系统textBackground/textColor，且帮助文案声称默认跟外观，与新终端近黑基线不一致。不得因设置能打开就将DX-P01～04改绿。
 - **新候选活性分项（不代正式后端）：** normal、独立MaxSessions与严格DROP有限真实门通过；同连接7次确认全释放或7次真实拒绝后fresh shell/exit7。R4保原预算/门，实际DROP后5.917秒自然sshroundtrip超时、保守arm年龄0.109秒≤1.5，转发不变/noFIN/backendalive/FDdrain和guardian远端精确终止均通过。两次旧失败不改写。见`native-liveness-live-finite.md`。App typed adapter最终正式107/0、主管独立39/0（含自有NSWindow布局/末项滚动），真实网络及像素仍待；重复导入主管App34/0、严格包29/0已本地ed281c3，不冒实际GUI。
