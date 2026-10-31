@@ -1,5 +1,7 @@
 # OpenLXSSH 用户指南
 
+> **适用范围：此前已公证的1.0.0 build3。** 本文不是当前 Termius 桌面重构候选的验收证明；新版固定保险箱/SFTP、层级分组与深色默认等操作路径见 [`ux/local-candidate-walkthrough.md`](ux/local-candidate-walkthrough.md)。新版体验候选尚未交付，不用 HostProbe 覆盖此旧版。
+
 OpenLXSSH 面向 Apple Silicon Mac，要求 macOS 26 或更新版本。1.0.0 build 3 已通过Apple公证，并完成票据、严格签名、Gatekeeper和本机安装启动验证；第二台Mac及部分实际人工场景仍待使用者验收。请使用随交付记录提供的最终ZIP，原内部候选仅作开发记录。
 
 ## 安装、升级与卸载
