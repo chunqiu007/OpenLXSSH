@@ -47,6 +47,8 @@ A/B 各持一份管理实例和 KI 预算。A 不读取任何 OTP；B 每轮以�
 
 本案未进入 allweak/FD终核，不称描述符恢复。App实际24.168秒自然exit0/noSignal，仍failed。finite relay PID37598自然exit0/204.762秒，accepted2/finished2/rejected0/cleanup_failed0，端口22221～22225已核free。
 
+补充只读机制调查：原C bridge本地socket shutdown/libssh2 free/close不构成服务器PAM清理确认；当前fixture仅监督sshd master，没有独立逐认证清理owner。公开上游PAM取消路径可用SIGTERM终止worker，Python finally不保证执行，但本案真实worker/信号未观察，仍不能断言根因。最小本地公开哑数据模型正常返回/异常执行finally，阻塞子进程的默认SIGTERM留下同inode文件；父在记录metadata后精确清理。工程师3/0及主管独立3/0（0.375秒）均全child reap/自建目录清理，证据`DerivedData/UXVerification/PAMCancelFinallyLocal-R1/`。此模型未访问或修复真实A残留，不代原硬门。
+
 ## 后续边界
 
 认证归属分项不代逐owner服务端挑战清理、App弱对象/FD或实体GUI。现有fixture不得靠修改TTL、重建健康服务或新认证sweep掩盖失败；服务端卫生问题需单独调查和明确影响边界。普通 Direct/本次密码 Native 入口尚未统一，有限transport混合负载已过而正常可见绘制资源门仍待，未 `UX_READY_FOR_USER`。
