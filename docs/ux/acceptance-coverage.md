@@ -121,4 +121,4 @@
 
 UX-01工作区→W及U1；UX-02三尺寸与布局→V/N/F；UX-03本次密码→E06/A02；UX-04旧四类兼容与metadata→E05/E10/H；UX-05四组合及并发→A；UX-06未知KI/OTP/内层不投秘密→A04/A05/X09；UX-07首次信任→T及SSH/SFTP各自握手；UX-08连接参数变化→E10/H12；UX-09终端主题/输入→N02/N05/N09/N10；UX-10两会话/TUI/释放→W08/W09/N11/N12；UX-11双栏传输→F/Q01；UX-12冲突/取消/错误/旧响应→F11/F12/Q/X02；UX-13数据/旧产物/秘密边界→K/X09/X10；UX-14新版真实构建/GUI/截图/交付→V08/P/X及候选清单。此为导航索引，精确UX原文仍以 `termius-redesign-handoff.md` 为准，不把本映射当逐条验收。
 
-普通**新建连接**用当前默认Direct；reuse可能选中最近有效的Native候选标签，重连保持原driver及tab.builder，不因点击列表悄换后端。所有操作位置/状态应在正常候选上按 `local-candidate-walkthrough.md` 记录真实结果，不能用HostProbe无参数作空白环境。未完成项包括普通入口一致性、PAM取消卫生、旧App资源失败，以及需要实际前台/像素/实体键鼠的门；整体尚未交付，未 `UX_READY_FOR_USER`。
+普通**新建连接**用当前默认Direct；reuse可能选中最近有效的Native候选标签，重连保持原driver及tab.builder，不因点击列表悄换后端。此当前策略的四项实际AppModel/Controller/Editor逻辑消费者见 `entry-routing-contract-review.md`，主独立4/0；它们不是后端统一或SSH互通证明。所有操作位置/状态应在正常候选上按 `local-candidate-walkthrough.md` 记录真实结果，不能用HostProbe无参数作空白环境。未完成项包括普通入口一致性、PAM取消卫生、旧App资源失败，以及需要实际前台/像素/实体键鼠的门；整体尚未交付，未 `UX_READY_FOR_USER`。

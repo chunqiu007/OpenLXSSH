@@ -11,7 +11,7 @@
 - `AppModel` 普通 `sessionBuilder` 默认为 `DirectSessionBuilder`，内部 `nativeCandidateBuilder` 独立存在。
 - `VaultHostEditor.save` 在“保存并连接”且确有本次密码时准备 Native intent；没有新输入时，dismiss 后调用普通 `requestSession`。之后从主机列表双击或开新会话也走普通 builder。
 - `SessionEnvironment.configuration` 仍按旧四个持久枚举决定 OpenSSH password-only 或是否启用 Keyboard-Interactive。因此不能从本次输入密码的候选成功，推导保存后列表打开、密钥入口及旧数据具备相同的两主方法自动挑战行为。
-- “普通Direct”只指默认**新建**连接；reuse依据有效连接快照选择最近会话，可能复用已存在的Native候选标签；手动重连保留原driver和tab.builder，不自动转到另一个后端。
+- “普通Direct”只指默认**新建**连接；reuse依据有效连接快照选择最近会话，可能复用已存在的Native候选标签；手动重连保留原driver和tab.builder，不自动转到另一个后端。四项实际模型入口契约及主管独立4/0见 `../ux/entry-routing-contract-review.md`，只固定当前差异，不代表已统一。
 
 不通过新增用户可见“测试后端”开关或把某一入口悄悄退回未知秘密自动投递来掩盖差异。旧四枚举、ID、引用和保存授权继续保持，不能批量迁移成错误授权。
 
