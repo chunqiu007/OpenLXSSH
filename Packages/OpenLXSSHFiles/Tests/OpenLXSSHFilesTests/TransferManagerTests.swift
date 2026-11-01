@@ -481,6 +481,84 @@ final class TransferManagerTests: XCTestCase, @unchecked Sendable {
         await manager.cancelAllAndWait(); await f.cleanup()
     }
 
+    func testServiceSnapshotsPublishIdleClosingAndActualRemovalWithoutClosingAnActiveLease() async throws {
+        let f = try ManagerFixture(), operationGate = ManagerBarrier(), closeGate = ManagerBarrier()
+        let service = ManagedLocalProbe(f.source, beforeClose: { try? await closeGate.block() })
+        let manager = TransferManager(idleTimeout: .milliseconds(40))
+        let registration = try await manager.registerServiceWithSnapshot(service, hostID: "fixture")
+        XCTAssertGreaterThan(registration.snapshot.serviceRevision, 0)
+        XCTAssertEqual(registration.snapshot.services, [.init(id: registration.id, hostID: "fixture", state: .available)])
+        let stream = try await manager.updates(); var iterator = stream.makeAsyncIterator()
+        let first = await iterator.next(); XCTAssertEqual(first?.serviceRevision, registration.snapshot.serviceRevision)
+        let operation = Task {
+            try await manager.withServiceOperation(serviceID: registration.id, hostID: "fixture") { _, token in
+                try await operationGate.block(token)
+            }
+        }
+        do {
+            try await waitUntil { await operationGate.arrived }
+            try await Task.sleep(for: .milliseconds(70))
+            let retained = await manager.snapshot(), earlyClose = await closeGate.arrived
+            XCTAssertEqual(retained.services.first?.state, .available); XCTAssertFalse(earlyClose)
+            await operationGate.release(); try await operation.value
+            try await waitUntil { await closeGate.arrived }
+            let closingValue = await iterator.next(), closing = try XCTUnwrap(closingValue)
+            XCTAssertEqual(closing.services, [.init(id: registration.id, hostID: "fixture", state: .closing)])
+            XCTAssertGreaterThan(closing.serviceRevision, registration.snapshot.serviceRevision)
+            do {
+                try await manager.withServiceOperation(serviceID: registration.id, hostID: "fixture") { _, _ in
+                    XCTFail("A closing service must reject new operations")
+                }
+                XCTFail("A closing service admitted an operation")
+            } catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+            await closeGate.release()
+            try await waitUntil { await manager.snapshot().services.isEmpty }
+            let removedValue = await iterator.next(), removed = try XCTUnwrap(removedValue)
+            XCTAssertTrue(removed.services.isEmpty); XCTAssertGreaterThan(removed.serviceRevision, closing.serviceRevision)
+            XCTAssertFalse(removed.isClosed)
+        } catch {
+            await operationGate.release(); await closeGate.release(); _ = await operation.result
+            await manager.cancelAllAndWait(); await f.cleanup(); throw error
+        }
+        await manager.cancelAllAndWait(); await f.cleanup()
+    }
+
+    func testExplicitReplacementRetryKeepsOriginalPathsAndFreshManifestAfterBothOldServicesClose() async throws {
+        let f = try ManagerFixture(); try f.put("file", bytes: payload(31)); try f.put("out", bytes: Data("original".utf8), destination: true)
+        let manager = TransferManager(idleTimeout: nil), oldServices = try await locations(manager, f)
+        let initial = try await manager.prepareBatch([request(oldServices)])
+        let oldID = try await manager.confirmPreparedBatch(initial.id)[0]
+        _ = try await pending(manager, oldID)
+        _ = await manager.cancel(oldID)
+        let original = try await terminal(manager, oldID)
+        await manager.closeIdleServices()
+        do { _ = try await manager.prepareRetry(oldID); XCTFail("Legacy retry must not reopen closed services") }
+        catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        let source = try LocalFileService(root: f.sourceURL), destination = try LocalFileService(root: f.destinationURL)
+        let sourceID = try await manager.registerService(source), destinationID = try await manager.registerService(destination)
+        let plan = try await manager.prepareRetry(oldID, sourceService: sourceID, destinationService: destinationID)
+        let candidate = try XCTUnwrap(plan.requests.first)
+        XCTAssertEqual(candidate.hostID, original.request.hostID); XCTAssertEqual(candidate.kind, original.request.kind)
+        XCTAssertEqual(candidate.source.path, original.request.source.path); XCTAssertEqual(candidate.destination.path, original.request.destination.path)
+        XCTAssertNotEqual(candidate.source.serviceID, original.request.source.serviceID)
+        XCTAssertNotEqual(candidate.destination.serviceID, original.request.destination.serviceID)
+        XCTAssertNotEqual(candidate.batchID, original.request.batchID)
+        XCTAssertFalse(candidate.sourceManifest === original.request.sourceManifest)
+        let before = await manager.snapshot(); XCTAssertEqual(before.jobs.count, 1)
+        let nextID = try await manager.confirmPreparedBatch(plan.id)[0]
+        let decision = try await pending(manager, nextID)
+        let fresh = try await job(manager, nextID, matching: { $0.state == .waitingConflict })
+        XCTAssertEqual(fresh.retryOf, oldID); XCTAssertNotEqual(fresh.generation, original.generation)
+        XCTAssertEqual(fresh.transferredBytes, 0)
+        let resolved = await manager.resolve(decision, answer: .conflict(.renameTo(try FileName("fresh")), applyToBatch: false))
+        XCTAssertTrue(resolved)
+        let done = try await terminal(manager, nextID); XCTAssertEqual(done.state, .succeeded)
+        XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent("fresh")), payload(31))
+        XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent("out")), Data("original".utf8))
+        let final = await manager.snapshot(); XCTAssertEqual(final.jobs.first { $0.id == oldID }, original)
+        await manager.cancelAllAndWait(); await f.cleanup()
+    }
+
     func testCancellationWhileWaitingRiskRejectsLateApprovalAndNewGenerationStaysIndependent() async throws {
         let f = try ManagerFixture(); try f.put("file", bytes: payload(55)); try f.put("out", bytes: Data("old".utf8), destination: true)
         let manager = TransferManager(idleTimeout: nil), services = try await locations(manager, f)

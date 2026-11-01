@@ -80,14 +80,28 @@ public struct TransferServiceOperationSnapshot: Sendable, Equatable {
     public let hostID: String
     public let cancellationRequested: Bool
 }
+/// Admission/lifetime facts owned by this manager, not a network-health probe.
+/// A service disappears only after its actual close has returned.
+public struct TransferServiceSnapshot: Sendable, Equatable {
+    public enum State: Sendable, Equatable { case available, closing }
+    public let id: TransferServiceID
+    public let hostID: String?
+    public let state: State
+    public init(id: TransferServiceID, hostID: String?, state: State) {
+        self.id = id; self.hostID = hostID; self.state = state
+    }
+}
 public struct TransferManagerSnapshot: Sendable, Equatable {
     public let jobs: [TransferJobSnapshot]
     public let isClosed: Bool
     public let serviceOperations: [TransferServiceOperationSnapshot]
     public let planResources: TransferPlanResources
+    public let services: [TransferServiceSnapshot]
+    public let serviceRevision: UInt64
     public init(jobs: [TransferJobSnapshot], isClosed: Bool, serviceOperations: [TransferServiceOperationSnapshot] = [],
-                planResources: TransferPlanResources = .empty) {
+                planResources: TransferPlanResources = .empty, services: [TransferServiceSnapshot] = [], serviceRevision: UInt64 = 0) {
         self.jobs = jobs; self.isClosed = isClosed; self.serviceOperations = serviceOperations; self.planResources = planResources
+        self.services = services; self.serviceRevision = serviceRevision
     }
     public var hasActiveWork: Bool { planResources.hasPendingPlans || !serviceOperations.isEmpty || jobs.contains { $0.state.isActive } }
 }
@@ -168,6 +182,7 @@ public actor TransferManager {
     private let idleTimeout: Duration?
     private let maxServiceOperations: Int
     private var services: [TransferServiceID: ServiceRecord] = [:]
+    private var serviceRevision: UInt64 = 0
     private var serviceIDs: [ObjectIdentifier: TransferServiceID] = [:]
     private var jobs: [TransferJobID: JobRecord] = [:]
     private var order: [TransferJobID] = []
@@ -212,12 +227,23 @@ public actor TransferManager {
         services[id] = ServiceRecord(service: service, hostID: hostID)
         serviceIDs[identity] = id
         scheduleIdle(id)
+        serviceRevision += 1; publish()
         return id
+    }
+    /// The registration and its version barrier are one actor turn. Consumers can
+    /// reject a pre-registration empty snapshot even if stream delivery is delayed.
+    public func registerServiceWithSnapshot(_ service: any RemoteFileService, hostID: String? = nil) throws
+        -> (id: TransferServiceID, snapshot: TransferManagerSnapshot) {
+        let id = try registerService(service, hostID: hostID)
+        return (id, snapshot())
     }
     public var hasActiveWork: Bool { !plans.isEmpty || !serviceOperations.isEmpty || jobs.values.contains { $0.state.isActive } }
     public func snapshot() -> TransferManagerSnapshot {
         TransferManagerSnapshot(jobs: order.compactMap { jobs[$0]?.snapshot }, isClosed: closed,
-            serviceOperations: serviceOperationOrder.compactMap { serviceOperations[$0]?.snapshot }, planResources: planResources)
+            serviceOperations: serviceOperationOrder.compactMap { serviceOperations[$0]?.snapshot }, planResources: planResources,
+            services: services.map { id, record in
+                TransferServiceSnapshot(id: id, hostID: record.hostID, state: record.closing == nil ? .available : .closing)
+            }.sorted { $0.id.uuidString < $1.id.uuidString }, serviceRevision: serviceRevision)
     }
     private var planResources: TransferPlanResources {
         TransferPlanResources(preparing: plans.values.filter { $0.phase == .preparing }.count,
@@ -329,6 +355,22 @@ public actor TransferManager {
         let old = previous.request
         let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind)
         return try await prepare([request], confirmations: previous.serverConfirmation.map { [old.destination.serviceID: $0] } ?? [:],
+                                 retryOf: jobID, token: token)
+    }
+    /// Explicitly reauthorized replacement services. This never opens a service
+    /// or changes the old host, paths or kind. Capability evidence belongs to the
+    /// new destination; no confirmation from the old connection is inherited.
+    public func prepareRetry(_ jobID: TransferJobID, sourceService: TransferServiceID,
+        destinationService: TransferServiceID, serverConfirmation: ServerCommitConfirmation? = nil,
+        batchID: TransferBatchID = UUID(), token: CancellationToken = CancellationToken()) async throws -> TransferBatchPlan {
+        guard let previous = jobs[jobID], previous.state == .failed || previous.state == .cancelled else {
+            throw FileServiceError(.conflict, operation: "retry-requires-failed-or-cancelled-job")
+        }
+        let old = previous.request
+        let request = TransferRequest(hostID: old.hostID, batchID: batchID,
+            source: .init(serviceID: sourceService, path: old.source.path),
+            destination: .init(serviceID: destinationService, path: old.destination.path), kind: old.kind)
+        return try await prepare([request], confirmations: serverConfirmation.map { [destinationService: $0] } ?? [:],
                                  retryOf: jobID, token: token)
     }
     private func prepare(_ requests: [TransferRequest], confirmations: [TransferServiceID: ServerCommitConfirmation],
@@ -753,16 +795,22 @@ public actor TransferManager {
     public func closeIdleServices(_ ids: [TransferServiceID]) async { await closeServices(Array(Set(ids))) }
     private func closeServices(_ ids: [TransferServiceID]) async {
         var pending: [(TransferServiceID, Task<Void, Never>)] = []
+        var changed = false
         for id in ids {
             guard var record = services[id], record.users == 0 else { continue }
             record.idleTask?.cancel(); record.idleTask = nil
             let service = record.service
             let task = record.closing ?? Task { await service.close() }
+            if record.closing == nil { changed = true }
             record.closing = task; services[id] = record; pending.append((id, task))
         }
+        if changed { serviceRevision += 1; publish() }
         for (id, task) in pending {
             await task.value
-            if let record = services.removeValue(forKey: id) { serviceIDs[ObjectIdentifier(record.service)] = nil }
+            if let record = services.removeValue(forKey: id) {
+                serviceIDs[ObjectIdentifier(record.service)] = nil
+                serviceRevision += 1; publish()
+            }
         }
     }
     /// Terminal, idempotent shutdown. Stops admission first, resolves every pending decision,
