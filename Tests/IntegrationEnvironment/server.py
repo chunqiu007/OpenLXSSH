@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import challenge_owner
 
 RUN = Path('/run/openlxssh-fixture')
 HOME = Path('/fixture/home')
@@ -217,10 +218,10 @@ def export_metadata(session=None):
     else:
         if len(session) != 24 or any(ch not in '0123456789abcdef' for ch in session):
             raise RuntimeError('invalid session identifier')
-        path = RUN / 'sessions' / (session + '.json')
-        data = json.loads(path.read_text())
-        if data['expires_at'] <= time.time():
-            raise RuntimeError('challenge expired; start a new authentication')
+        # The lifetime owner serializes export with lease EOF/close. A separate
+        # read-then-write here could recreate an export after cancellation.
+        challenge_owner.export_challenge(RUN, session)
+        return
     # Keep secrets in files on tmpfs. The host wrapper uses docker cp into an
     # ignored 0700 directory; neither exec output nor engine logs carry them.
     name = 'metadata.json' if session is None else 'challenge-' + session + '.json'
@@ -249,18 +250,31 @@ def serve(mode):
     STOP_REQUESTED = False
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
+    owner = None
     try:
         bootstrap(mode)
         if STOP_REQUESTED:
             return 0
+        if mode in ('key-kbd', 'password-kbd'):
+            owner = challenge_owner.ChallengeOwner(RUN)
         CHILD = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', str(RUN / 'sshd_config')],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
+        if owner is not None:
+            owner.start()
         while CHILD.poll() is None and not STOP_REQUESTED:
+            if owner is not None:
+                owner.check_health()
             time.sleep(0.1)
         return CHILD.returncode if CHILD.returncode is not None else 0
     finally:
-        stop_child()
+        try:
+            stop_child()
+        finally:
+            # If an unknown file/socket replacement prevented exact cleanup,
+            # fail visibly; do not let broad rmtree disguise that failure.
+            if owner is not None:
+                owner.close()
         # tmpfs disappears on container stop; eagerly remove runtime secrets.
         if RUN.exists():
             shutil.rmtree(str(RUN))
@@ -289,6 +303,8 @@ def main():
         if Path('/proc/{}/exe'.format(pid)).resolve().name != 'sshd':
             raise RuntimeError('sshd is not running')
         os.kill(pid, 0)
+        if json.loads((RUN / 'config.json').read_text())['mode'] in ('key-kbd', 'password-kbd'):
+            challenge_owner.health(RUN)
     elif args.action == 'scenario':
         if args.scenario is None:
             parser.error('scenario requires --scenario')

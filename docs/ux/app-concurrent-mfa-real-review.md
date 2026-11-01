@@ -52,3 +52,16 @@ A/B 各持一份管理实例和 KI 预算。A 不读取任何 OTP；B 每轮以�
 ## 后续边界
 
 认证归属分项不代逐owner服务端挑战清理、App弱对象/FD或实体GUI。现有fixture不得靠修改TTL、重建健康服务或新认证sweep掩盖失败；服务端卫生问题需单独调查和明确影响边界。普通 Direct/本次密码 Native 入口尚未统一，有限transport混合负载已过而正常可见绘制资源门仍待，未 `UX_READY_FOR_USER`。
+# Codex后续修复：fixture认证生命周期（2026-11-01）
+
+**源码与离线门已审，旧真实A残留仍failed；现有容器尚未更新。** 取消A后B继续的原始认证/资源收据不改写。
+
+`pam_fixture.py`原来只依靠Python `finally`删除挑战；默认信号终止可以跳过finally，但旧实网案没有具体worker信号证据，不能倒推其精确根因。原`server.py`还存在读取session后另写export的竞争，可能在取消清理后重新建立导出。
+
+本次新增仅fixture使用的`challenge_owner.py`：现有supervisor内单个selector线程，私有Unix socket、peer UID校验、32 owner/64 client/4096B边界；PAM注册获ACK后才显示挑战，所属worker socket EOF或显式close串行清理对应session与export。创建/导出/删除同owner，未知inode/内容替换保留且health失败；不使用TTL/sweep消除取消残留。过期仍拒绝认证和导出，生命周期清理与时间有效性分开。
+
+改动仅server/PAM/新模块/Dockerfile COPY和离线测试。原40个StaticTests方法AST未改，新增12项包括精确子进程SIGTERM/SIGKILL、A/B隔离、注册ACK前取消、export竞争、容量/权限/未知替换拒绝、重复关闭及实际PAM/server函数消费者。工程师52/0；主管读完整关键实现、精确diff与新增测试，并独立执行`python3 Tests/IntegrationEnvironment/test_static.py`：52/0、exit0。首次APFS目录linkcount误判失败保留；修后目录核dev/inode/UID/type/mode，普通文件仍严格单硬链及内容。
+
+证据：`DerivedData/CodexTakeover/FixtureLease-02/`，含before、`source-increment.patch`、`source-review.json`、工程师原失败/最终日志及主管`primary-offline-tests.json/log`。本机Unix IPC不等Linux SO_PEERCRED/PAM/sshd实网验证。
+
+真实复验仍需对既有获批环境执行受审刷新并记录新image/container/generation/pin，不热改健康容器。当前共用镜像的既有build guard不允许所属容器运行时重建，未绕过；后续优先使用现有受控停机/构建/恢复配方，明确所需四服务停机范围后集中确认。没有新增环境、连接生产、读取旧挑战/凭据或删除原失败材料。

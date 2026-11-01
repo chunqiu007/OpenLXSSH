@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Offline static checks; no Docker, network, keys, passwords, OTP or servers."""
 import importlib.util
+import contextlib
 import io
 import json
 import os
 from pathlib import Path
 import stat
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -1059,6 +1064,255 @@ exec(compile(code,'<exact-private-reader>','exec'),{'__name__':'__main__'})
             (root / 'manifest.json').write_text(json.dumps(manifest))
             with self.assertRaises(ValueError):
                 data.verify(root)
+
+
+class ChallengeLeaseTests(unittest.TestCase):
+    """Local Unix IPC and disposable PUBLIC dummy bytes only; never PAM/Docker/SSH."""
+    @contextlib.contextmanager
+    def owner(self, *, maximum=32, failure=False):
+        target = module('challenge_owner')
+        # Darwin sockaddr_un has a short path limit; never use the user's home.
+        with tempfile.TemporaryDirectory(prefix='olx-lease-', dir='/tmp') as raw:
+            root = Path(raw).resolve(); root.chmod(0o700)
+            for name in ('sessions', 'export'): (root / name).mkdir(mode=0o700)
+            owner = target.ChallengeOwner(root, max_owners=maximum).start()
+            try: yield target, owner, root
+            finally:
+                if failure:
+                    with self.assertRaises(target.LeaseError): owner.close()
+                else: owner.close()
+
+    def payload(self, identifier):
+        return {'session': identifier, 'expires_at': time.time() + 60, 'scenario': 'multi',
+                'responses': ['11111111', '22222222', '33333333']}  # PUBLIC dummy only.
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 2
+        while not predicate():
+            if time.monotonic() >= deadline: self.fail('local owner did not drain within two seconds')
+            time.sleep(0.005)
+
+    def absent(self, root, identifier):
+        return not (root / 'sessions' / (identifier + '.json')).exists() and not (root / 'export' / ('challenge-' + identifier + '.json')).exists()
+
+    def test_normal_close_and_exception_remove_session_and_export_idempotently(self):
+        with self.owner() as (target, owner, root):
+            for throws in (False, True):
+                identifier = ('b' if throws else 'a') * 24
+                lease = target.ChallengeLease(root, identifier, self.payload(identifier))
+                try:
+                    target.export_challenge(root, identifier)
+                    session = root / 'sessions' / (identifier + '.json')
+                    exported = root / 'export' / ('challenge-' + identifier + '.json')
+                    self.assertEqual(session.read_bytes(), exported.read_bytes())
+                    self.assertEqual(stat.S_IMODE(session.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(exported.stat().st_mode), 0o600)
+                    if throws: raise ValueError('public synthetic exception')
+                except ValueError: pass
+                finally: lease.close(); lease.close()
+                self.assertTrue(self.absent(root, identifier))
+                with self.assertRaises(target.LeaseError): target.export_challenge(root, identifier)
+                self.assertTrue(self.absent(root, identifier))
+            self.assertEqual(target.health(root)['active'], 0)
+
+    def test_sigterm_and_sigkill_of_exact_worker_trigger_kernel_eof_cleanup(self):
+        script = '''import json,pathlib,sys,time
+sys.path.insert(0,sys.argv[1]); import challenge_owner as owner
+root=pathlib.Path(sys.argv[2]); identifier=sys.argv[3]
+payload={'session':identifier,'expires_at':time.time()+60,'scenario':'multi','responses':['11111111','22222222','33333333']}
+lease=owner.ChallengeLease(root,identifier,payload); owner.export_challenge(root,identifier)
+sys.stdout.buffer.write(b'R'); sys.stdout.buffer.flush()
+sys.stdin.buffer.read(1)
+lease.close()
+'''
+        with self.owner() as (target, owner, root):
+            for index, terminate in enumerate((signal.SIGTERM, signal.SIGKILL)):
+                identifier = ('c' if index == 0 else 'd') * 24
+                child = subprocess.Popen([sys.executable, '-c', script, str(ROOT), str(root), identifier],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                try:
+                    import select
+                    self.assertTrue(select.select([child.stdout], [], [], 2)[0])
+                    self.assertEqual(child.stdout.read(1), b'R')
+                    self.assertFalse(self.absent(root, identifier))
+                    child.send_signal(terminate); self.assertEqual(child.wait(timeout=2), -terminate)
+                    self.wait_for(lambda: self.absent(root, identifier))
+                    self.assertEqual(target.health(root)['active'], 0)
+                finally:
+                    if child.poll() is None: child.kill(); child.wait(timeout=2)
+                    child.stdin.close(); child.stdout.close()
+
+    def test_cancel_a_preserves_b_and_original_b_export(self):
+        with self.owner() as (target, owner, root):
+            a, b = 'a' * 24, 'b' * 24
+            first = target.ChallengeLease(root, a, self.payload(a))
+            second = target.ChallengeLease(root, b, self.payload(b))
+            try:
+                target.export_challenge(root, a); target.export_challenge(root, b)
+                before = (root / 'export' / ('challenge-' + b + '.json')).stat()
+                first.close(); self.assertTrue(self.absent(root, a))
+                self.assertFalse(self.absent(root, b)); self.assertEqual(target.health(root)['active'], 1)
+                target.export_challenge(root, b)
+                after = (root / 'export' / ('challenge-' + b + '.json')).stat()
+                self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
+            finally: first.close(); second.close()
+            self.assertTrue(self.absent(root, b))
+
+    def test_cancel_before_registration_and_after_create_before_ack_leave_no_file(self):
+        with self.owner() as (target, owner, root):
+            with target._connect(root): pass  # No registration ever sent.
+            identifier = 'e' * 24
+            created, resume = threading.Event(), threading.Event()
+            original = owner._reply
+            def delay_ack(connection, value):
+                if not created.is_set() and value == {'ok': True}:
+                    created.set()
+                    if not resume.wait(2): raise target.LeaseError()
+                return original(connection, value)
+            connection = target._connect(root)
+            try:
+                with mock.patch.object(owner, '_reply', side_effect=delay_ack):
+                    connection.sendall(target._encoded({'action': 'register', 'session': identifier, 'challenge': self.payload(identifier)}))
+                    self.assertTrue(created.wait(2))
+                    self.assertTrue((root / 'sessions' / (identifier + '.json')).is_file())
+                    connection.close(); resume.set()
+                    self.wait_for(lambda: self.absent(root, identifier))
+            finally: resume.set(); connection.close()
+            self.assertEqual(target.health(root)['active'], 0)
+
+    def test_export_racing_worker_eof_is_removed_and_cannot_be_recreated(self):
+        with self.owner() as (target, owner, root):
+            identifier = 'f' * 24
+            lease = target.ChallengeLease(root, identifier, self.payload(identifier))
+            entered, resume = threading.Event(), threading.Event(); results = []
+            original = target._OwnedFile
+            def delay_export(directory, name, payload):
+                if name.startswith('challenge-'):
+                    entered.set()
+                    if not resume.wait(2): raise target.LeaseError()
+                return original(directory, name, payload)
+            def export():
+                try: target.export_challenge(root, identifier); results.append('exported-before-observed-close')
+                except target.LeaseError: results.append('refused')
+            with mock.patch.object(target, '_OwnedFile', side_effect=delay_export):
+                worker = threading.Thread(target=export); worker.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    connection, lease.connection = lease.connection, None
+                    connection.close()  # Exact client's kernel EOF, no explicit close frame.
+                    resume.set(); worker.join(timeout=2); self.assertFalse(worker.is_alive())
+                    self.wait_for(lambda: self.absent(root, identifier))
+                finally: resume.set(); worker.join(timeout=2); lease.close()
+            self.assertEqual(len(results), 1)
+            with self.assertRaises(target.LeaseError): target.export_challenge(root, identifier)
+            self.assertTrue(self.absent(root, identifier))
+
+    def test_unknown_export_replacement_is_preserved_and_owner_reports_failure(self):
+        with self.owner(failure=True) as (target, owner, root):
+            identifier = 'a' * 24
+            lease = target.ChallengeLease(root, identifier, self.payload(identifier)); target.export_challenge(root, identifier)
+            path = root / 'export' / ('challenge-' + identifier + '.json'); moved = path.with_name('original-public-dummy')
+            path.rename(moved); path.write_bytes(b'PUBLIC unknown replacement'); path.chmod(0o600)
+            replacement = path.stat().st_ino
+            with self.assertRaises(target.LeaseError): lease.close()
+            self.assertEqual(path.stat().st_ino, replacement); self.assertEqual(path.read_bytes(), b'PUBLIC unknown replacement')
+            self.assertTrue(moved.exists()); self.assertFalse((root / 'sessions' / (identifier + '.json')).exists())
+            self.assertEqual(owner.failures, 1)
+            with self.assertRaises(target.LeaseError): target.health(root)
+
+    def test_capacity_duplicate_existing_files_and_invalid_payloads_fail_closed(self):
+        with self.owner(maximum=1) as (target, owner, root):
+            identifier = 'a' * 24; lease = target.ChallengeLease(root, identifier, self.payload(identifier))
+            try:
+                for other in (identifier, 'b' * 24):
+                    with self.assertRaises(target.LeaseError): target.ChallengeLease(root, other, self.payload(other))
+                self.assertEqual(target.health(root)['active'], 1)
+            finally: lease.close()
+            for payload in ({}, dict(self.payload(identifier), extra='public'),
+                            dict(self.payload(identifier), expires_at=float('nan')),
+                            dict(self.payload(identifier), responses=['public'] * 3)):
+                with self.assertRaises((target.LeaseError, ValueError)):
+                    target.ChallengeLease(root, identifier, payload)
+            existing = root / 'sessions' / (identifier + '.json'); existing.write_bytes(b'PUBLIC preexisting'); existing.chmod(0o600)
+            with self.assertRaises(target.LeaseError): target.ChallengeLease(root, identifier, self.payload(identifier))
+            self.assertEqual(existing.read_bytes(), b'PUBLIC preexisting')
+            self.assertEqual(target.health(root)['active'], 0)
+
+    def test_no_expiry_sweep_and_source_routes_pam_and_exports_through_owner(self):
+        policy = (ROOT / 'pam_fixture.py').read_text(); server = (ROOT / 'server.py').read_text()
+        self.assertNotIn('_sweep_expired', policy); self.assertNotIn('unlink(', policy)
+        self.assertIn('challenge.close()', policy); self.assertIn('_owner.ChallengeLease', policy)
+        self.assertIn('challenge_owner.export_challenge(RUN, session)', server)
+        self.assertIn('challenge_owner.ChallengeOwner(RUN)', server)
+        self.assertIn('owner.start()', server)
+        self.assertIn('challenge_owner.py', (ROOT / 'Dockerfile').read_text())
+        with self.owner() as (target, owner, root):
+            identifier = 'a' * 24; payload = self.payload(identifier)
+            lease = target.ChallengeLease(root, identifier, payload)
+            try:
+                with mock.patch.object(target.time, 'time', return_value=payload['expires_at'] + 1):
+                    with self.assertRaises(target.LeaseError): target.export_challenge(root, identifier)
+                self.assertTrue((root / 'sessions' / (identifier + '.json')).exists())
+                self.assertEqual(target.health(root)['active'], 1)
+            finally: lease.close()
+            self.assertTrue(self.absent(root, identifier))
+
+    def test_actual_pam_policy_with_public_fake_conversation_closes_lease_on_return_and_error(self):
+        policy = module('pam_fixture')
+        class PAM:
+            PAM_PROMPT_ECHO_OFF = 1
+            PAM_SUCCESS = 0
+            PAM_AUTH_ERR = 7
+            Message = staticmethod(lambda style, text: (style, text))
+            def __init__(self, raises):
+                self.raises = raises
+                self.answers = iter(('11111111', '22222222', '33333333'))
+            def conversation(self, messages):
+                if self.raises: raise ValueError('public synthetic conversation failure')
+                return [type('PublicReply', (), {'resp': next(self.answers)})() for _ in messages]
+        with self.owner() as (target, owner, root):
+            for raises, identifier in ((False, 'a' * 24), (True, 'b' * 24)):
+                with mock.patch.object(policy, 'RUN', root), mock.patch.object(policy.secrets, 'token_hex', return_value=identifier), \
+                        mock.patch.object(policy.secrets, 'randbelow', side_effect=[11111111, 22222222, 33333333]):
+                    if raises:
+                        with self.assertRaises(ValueError): policy._interactive(PAM(True), {'scenario': 'multi'})
+                    else: self.assertEqual(policy._interactive(PAM(False), {'scenario': 'multi'}), 0)
+                self.assertTrue(self.absent(root, identifier))
+                self.assertEqual(target.health(root)['active'], 0)
+
+    def test_actual_server_export_is_owned_and_refuses_after_close(self):
+        server = module('server')
+        with self.owner() as (target, owner, root):
+            identifier = 'a' * 24; lease = target.ChallengeLease(root, identifier, self.payload(identifier))
+            try:
+                with mock.patch.object(server, 'RUN', root): server.export_metadata(identifier)
+                self.assertTrue((root / 'export' / ('challenge-' + identifier + '.json')).exists())
+            finally: lease.close()
+            with mock.patch.object(server, 'RUN', root):
+                with self.assertRaises(server.challenge_owner.LeaseError): server.export_metadata(identifier)
+            self.assertTrue(self.absent(root, identifier))
+
+    def test_owner_shutdown_drains_live_leases_and_is_idempotent(self):
+        with self.owner() as (target, owner, root):
+            identifier = 'a' * 24
+            lease = target.ChallengeLease(root, identifier, self.payload(identifier)); target.export_challenge(root, identifier)
+            owner.close(); owner.close()
+            self.assertTrue(self.absent(root, identifier)); self.assertFalse((root / target.SOCKET).exists())
+            self.assertIsNone(owner.thread)
+            with self.assertRaises((target.LeaseError, OSError)): lease.close()
+            lease.close()
+
+    def test_socket_permissions_and_peer_identity_are_checked_before_registration(self):
+        with self.owner() as (target, owner, root):
+            path = root / target.SOCKET; identifier = 'a' * 24
+            try:
+                path.chmod(0o644)
+                with self.assertRaises(target.LeaseError): target.ChallengeLease(root, identifier, self.payload(identifier))
+            finally: path.chmod(0o600)
+            with mock.patch.object(target, '_peer_uid', return_value=os.geteuid() + 1):
+                with self.assertRaises(target.LeaseError): target.ChallengeLease(root, identifier, self.payload(identifier))
+            self.assertTrue(self.absent(root, identifier))
+            self.assertEqual(target.health(root)['active'], 0)
 
 
 if __name__ == '__main__':

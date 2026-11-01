@@ -7,6 +7,7 @@ this exercises PAM's two-message API, NOT a single SSH packet with two prompts.
 import hashlib
 import hmac
 import json
+import importlib.util
 import os
 from pathlib import Path
 import secrets
@@ -14,6 +15,12 @@ import time
 
 RUN = Path('/run/openlxssh-fixture')
 TTL = 75
+
+# pam_python does not promise to add the policy's directory to sys.path.
+# Load only the sibling from the read-only, root-owned container image.
+_spec = importlib.util.spec_from_file_location('openlxssh_challenge_owner', Path(__file__).with_name('challenge_owner.py'))
+_owner = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_owner)
 
 
 def _conversation(pamh, texts, style=None):
@@ -43,39 +50,12 @@ def _password(pamh):
 
 
 def _save_challenge(identifier, payload):
-    path = RUN / 'sessions' / (identifier + '.json')
-    temporary = RUN / 'sessions' / ('.pending-' + identifier)
-    fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as stream:
-        json.dump(payload, stream)
-    os.replace(str(temporary), str(path))
-    return path
-
-
-def _delete_challenge(path):
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    # Export snapshots are short-lived too, even when the auth is cancelled.
-    exported = RUN / 'export' / ('challenge-' + path.name)
-    try:
-        exported.unlink()
-    except FileNotFoundError:
-        pass
-
-
-def _sweep_expired():
-    for path in (RUN / 'sessions').glob('*.json'):
-        try:
-            if json.loads(path.read_text())['expires_at'] <= time.time():
-                _delete_challenge(path)
-        except FileNotFoundError:
-            pass  # another concurrent authentication consumed its own value
+    # ACK establishes supervisor ownership before any challenge is displayed.
+    # Worker termination closes this socket even when Python finally is skipped.
+    return _owner.ChallengeLease(RUN, identifier, payload)
 
 
 def _interactive(pamh, config):
-    _sweep_expired()
     identifier = secrets.token_hex(12)  # non-secret, safe to display in UI
     started = time.time()
     expiry = started + TTL
@@ -99,7 +79,7 @@ def _interactive(pamh, config):
                 return pamh.PAM_AUTH_ERR
             return pamh.PAM_SUCCESS if hmac.compare_digest(final[0], answers[2]) else pamh.PAM_AUTH_ERR
         finally:
-            _delete_challenge(challenge)
+            challenge.close()
     if scenario == 'zero':
         _notify(pamh, 'Fixture information-only authentication; no response requested.')
         return pamh.PAM_SUCCESS

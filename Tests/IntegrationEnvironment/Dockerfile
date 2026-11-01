@@ -22,7 +22,7 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
     && mkdir -p /opt/openlxssh-fixture \
     && dpkg-query -W > /opt/openlxssh-fixture/packages.txt \
     && rm -rf /var/lib/apt/lists/*
-COPY server.py pam_fixture.py generate_data.py key_askpass.py sshd_config.in /opt/openlxssh-fixture/
+COPY server.py pam_fixture.py challenge_owner.py generate_data.py key_askpass.py sshd_config.in /opt/openlxssh-fixture/
 COPY pam-sshd /etc/pam.d/sshd
 RUN chmod 0755 /opt/openlxssh-fixture /opt/openlxssh-fixture/*.py \
     && chmod 0644 /etc/pam.d/sshd /opt/openlxssh-fixture/sshd_config.in
