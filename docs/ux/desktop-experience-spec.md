@@ -1,6 +1,6 @@
 # OpenLXSSH 桌面体验完整规格
 
-日期：2026-10-30。配合 `termius-redesign-handoff.md` 使用，实施者为 ZCode 主管及 software-engineer。本文是目标规格，**不是已实现清单**。
+原始日期：2026-10-30；2026-11-01适配Codex Desktop。配合 `termius-redesign-handoff.md` 使用，实施者为当前主会话及按职责委派的子智能体；恢复先读`codex-desktop-handoff.md`。本文是目标规格，**不是已实现清单**。
 
 ## A. 目标、依据与范围
 

@@ -1,5 +1,7 @@
 # 新桌面体验：候选操作路径与待验清单
 
+执行端更新（2026-11-01）：由Codex Desktop接续，先读`codex-desktop-handoff.md`。本页记录旧验证时点和完整体验路径；其中图像/AX不可用不代表Codex本次能力。候选与数据边界须重核，不能直接把旧失败追认为通过。
+
 状态：**验收路径已整理；正常Debug工程实物已独立构建/签名，但正常启动和GUI未验，尚未交付体验候选，未达到 UX_READY_FOR_USER。** 2026-11-01。新实物身份与禁止混用的边界见 `normal-engineering-preview-review.md`。
 
 本页面向当前 Termius 桌面体验重构，不替代 `docs/user-guide.md` 中已经公证的旧 build3 使用说明。当前 `AppTrust-M3-Live-R1/OpenLXSSH.app` 是 HostProbe：**只有经已审 wrapper、精确 fixture flags 与契约启动的验证模式才使用隔离输入并自动退出**，它并非默认隔离或默认自退。无参数启动可能访问既有 App 数据位置，禁止双击它作日常体验或空白测试环境，也不要安装覆盖旧版。新版正常候选将有独立身份单；不存在身份单与正常启动证据时，不宣称已交付。
