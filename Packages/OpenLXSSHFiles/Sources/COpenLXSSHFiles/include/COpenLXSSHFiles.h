@@ -23,6 +23,7 @@ void rf_wipe(void *, size_t);
 #define RF_UNTRUSTED (-10004)
 #define RF_INVALID (-10005)
 #define RF_ALLOCATION (-10006)
+#define RF_SOCKET_OPTION (-10007)
 
 /* Adopts a DUPLICATE of an already connected socket. Does not connect or resolve DNS.
  * Must have exclusive use of the socket's underlying open-file description.
@@ -91,18 +92,18 @@ typedef struct {
 int rf_shell_exit_step(rf_connection *, rf_shell_exit *, rf_cancel *);
 int rf_shell_close_step(rf_connection *, rf_cancel *);
 int rf_shell_free_step(rf_connection *, rf_cancel *);
-/* Optional liveness candidate: one same-session auxiliary session channel, no PTY/startup.
- * OPEN_CONFIRMATION and precisely gated fixed-1.11.1 OPEN_FAILURE both prove an SSH reply.
- * An EAGAIN call MUST continue the original API; no second helper open may be started.
- * Close/free also retain their own stable state. Cancellation/timeout destroys the session. */
-#define RF_SHELL_PROBE_CONFIRMED 1
-#define RF_SHELL_PROBE_REJECTED 2
-int rf_shell_probe_open_step(rf_connection *, rf_cancel *);
-int rf_shell_probe_close_step(rf_connection *, rf_cancel *);
-int rf_shell_probe_free_step(rf_connection *, rf_cancel *);
-/* Pure fixed-source classifier, not evidence of a packet by itself. Only the open step may
- * call it immediately after its own libssh2_channel_open_ex NULL result. */
-int rf_shell_probe_rejection_is_reply(int code, const char *message, size_t length);
+/* Kernel TCP keepalive, not an SSH request/response deadline. The caller owns this socket
+ * exclusively. Zero disables; positive values configure idle/retry interval and failed probes.
+ * No bytes, channel, credentials or SSH messages are sent by this function. Every applied
+ * option is read back before success. system_error is a local errno, never server text. */
+typedef struct {
+    int enabled;
+    int idle_seconds;
+    int retry_seconds;
+    int failed_probes;
+} rf_tcp_keepalive;
+int rf_tcp_keepalive_configure(int socket_fd, int interval_seconds, int failed_probes,
+                              rf_tcp_keepalive *actual, int *system_error);
 int rf_start_sftp(rf_connection *, rf_cancel *, double);
 uint64_t rf_sftp_error(rf_connection *);
 int rf_lstat(rf_connection *, const char *, unsigned int, LIBSSH2_SFTP_ATTRIBUTES *, rf_cancel *, double);

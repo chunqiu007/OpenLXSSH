@@ -1,0 +1,27 @@
+# SFTP用户持有与上传安全提交（2026-11-04）
+
+状态：本轮实现待受影响测试与真实SFTP验证；本文不是验收通过声明。用户本轮授权取代固定60秒闲置释放用户连接、普通上传前手工能力检查两项旧策略。
+
+## 生命周期
+
+TransferManager仍为App级service/job owner，观察订阅不持有连接。新增不可伪造的manager/service/owner租约，在成功注册与快照同一actor turn取得；用户租约独立于job与operation计数。任一用户仍持有时，自动idle和background closeIdle不释放。FilesController在同端点切页/隐藏时保留租约；换端点/显式断开释放准确旧租约，重复或跨manager回答不影响新服务。退役但尚有任务的service待最后任务/操作真实返回后立即关闭，普通无人持有背景根继续原有限闲置回收。App窗口/退出的cancelAllAndWait停止admission、取消并等待任务清理，然后覆盖用户租约关闭全部服务。
+
+成功ready的用户连接每30秒通过现有per-host gate及native串行队列做一次只读lstat根请求。排队不另设整个会话寿命；切页不停止检查，不刷完整列表、不建立连接、不读凭据。只在同lifetime/generation/service/lease仍有效、任务和token未取消时将transport/timeout/closed作为失败；permission/notFound/unsupported是服务器协议响应，不能据此断会话。普通浏览错误及backend实际发布的终态也复用准确服务归属：传输的本地源错误不推断远端断线。Task取消只撤本次token；排队未进入native的取消不dispose其他active操作，真正进入native后被取消而dispose的事实转为已断开而非网络失败。主动断开取消排队检查并等待其清理；不影响SSH。
+
+## 普通上传
+
+UI不再把缺少人工probe记录当作不可上传。正常transfer已经按原流程确认远端路径残余风险后，SafeTransferEngine在其持有的host gate中、冲突跳过/覆盖/改名决定后、创建文件临时副本前，针对**每个实际目标parent**运行现有小型no-replace检查。它不在connect、download或只读目录计划阶段运行。
+
+检查只创建目标parent下本次UUID独占目录及其中两个随机内容对象：已存在目标rename必须拒绝且两个原内容不变，然后向不存在目标rename必须成功、内容保持、旧源消失。清理本次记录的对象并结束后才生成server实例UUID+parent绑定证据。证据不跨目录、连接或身份变化复用；初版不缓存。共享原host gate，不嵌套取得同gate。显式诊断入口仍有原plan/风险确认合同，不冒充新的普通流程。
+
+不满足条件的服务器会准确失败，不执行先lstat不存在再可能覆盖的rename，也不将所有服务器标为支持。不另造非原子直接写最终名fallback。明确覆盖仍需用户选择、内容/metadata已知竞态检查及原POSIX原子替换API；不支持时不回退危险删除。取消/权限/断开按原实际结果报告。自动能力检查若清理未完成，在item保留本次独占目录路径（其内仅本任务对象）；不扫描、后台删除或忽略该失败。独占mkdir或.part open若回复timeout/transport/cancel而结果不确定，仅报告本轮随机候选路径、保原kind/code，不假称已存在或已取得所有权、不盲删；明确conflict/permission拒绝则不把已有对象当自有临时资源。UI说明路径可能未创建或未清理。
+
+## 验证范围
+
+包层：用户租约超过短测试idle并跨observer取消保持、重复/错manager释放无效、activejob退休后排空关闭、旧无人持有idle门保持；自动能力检查真实本地FD替身验证首次上传、树/中文/逐parent、竞争目标保全、恶意覆盖rename与unsupported/权限不足、取消/清理失败。
+
+App层：持有连接跨hide和旧idle阈值后可浏览、显式断开清理、健康检查非fatal与fatal分类、普通upload无工程弹窗并保原link/冲突/重试保护。实际SFTP须另外有限验证超过原60秒、切终端返回、上传/下载内容、冲突选择、取消/断开及SSH隔离，不能用local替身代替。
+
+## 目录清理失败的终态（UX100）
+
+目录读取因资源上限等非网络原因失败时，仍将原错误交还该操作；若随后closedir清理失败并实际销毁backend，另外记录`closedir-cleanup-failed`及原close返回码（主动取消则为cancelled）。事实发布和真正FD释放由同一串行队列中的锁保护transition完成，现有manager snapshot按准确service归属撤销ready并释放用户租约；不能因原操作错误非fatal而漏报真实关闭，也不能将资源上限伪称网络失败。该修复不改变正常目录读取或取消队列语义。

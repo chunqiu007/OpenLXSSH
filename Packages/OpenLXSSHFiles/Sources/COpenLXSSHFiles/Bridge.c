@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -24,9 +26,6 @@ struct rf_connection {
     LIBSSH2_SESSION *session;
     LIBSSH2_SFTP *sftp;
     LIBSSH2_CHANNEL *shell;
-    LIBSSH2_CHANNEL *probe;
-    int probe_open_pending;
-    int probe_close_complete;
     int shell_pty;
     int shell_started;
     int shell_close_sent;
@@ -447,60 +446,45 @@ int rf_shell_free_step(rf_connection *c, rf_cancel *cancel) {
     if(rc == 0) { c->shell = NULL; c->shell_started = 0; c->shell_pty = 0; }
     return rc;
 }
-int rf_shell_probe_rejection_is_reply(int code, const char *message, size_t length) {
-    /* Fixed public source gate: libssh2 1.11.1 channel.c SHA256
-     * 79c49c36e65178847087eb3a1c140772c291899b838c705b579214929a14742e.
-     * In _libssh2_channel_open these five static messages occur ONLY in the actual
-     * SSH_MSG_CHANNEL_OPEN_FAILURE branch. Propagated/local failures overwrite the
-     * message with "Unexpected error" or "Unable to send channel-open request".
-     * verify_native_source.py verifies the pinned archive, exact source and linked archive.
-     * No remote description, private struct, trace callback or raw-recv guess is used. */
-    static const char *const reasons[] = {
-        "Channel open failure (administratively prohibited)",
-        "Channel open failure (connect failed)",
-        "Channel open failure (unknown channel type)",
-        "Channel open failure (resource shortage)",
-        "Channel open failure"
-    };
-    if(code != LIBSSH2_ERROR_CHANNEL_FAILURE || !message ||
-       strcmp(libssh2_version(0), "1.11.1") != 0) return 0;
-    for(size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
-        size_t expected = strlen(reasons[i]);
-        if(length == expected && memcmp(message, reasons[i], expected) == 0) return 1;
+static int read_socket_option(int fd, int level, int name, int *value) {
+    socklen_t length = sizeof(*value);
+    if(getsockopt(fd, level, name, value, &length) != 0) return 0;
+    if(length != sizeof(*value)) { errno = EIO; return 0; }
+    return 1;
+}
+int rf_tcp_keepalive_configure(int fd, int interval, int count,
+                              rf_tcp_keepalive *actual, int *system_error) {
+    if(system_error) *system_error = 0;
+    if(actual) memset(actual, 0, sizeof(*actual));
+    if(fd < 0 || !actual || !system_error || interval < 0 || interval > 3600 ||
+       count < 1 || count > 10) return RF_INVALID;
+    int domain = 0;
+    if(!read_socket_option(fd, SOL_SOCKET, SO_TYPE, &domain)) goto option_failed;
+    if(domain != SOCK_STREAM) { *system_error = EPROTOTYPE; return RF_SOCKET_OPTION; }
+    struct sockaddr_storage address; socklen_t address_length = sizeof(address);
+    if(getsockname(fd, (struct sockaddr *)&address, &address_length) != 0) goto option_failed;
+    if(interval > 0 && address.ss_family != AF_INET && address.ss_family != AF_INET6) {
+        *system_error = EAFNOSUPPORT; return RF_SOCKET_OPTION;
+    }
+    int enabled = interval > 0;
+    if(setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled)) != 0) goto option_failed;
+    if(enabled && (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &interval, sizeof(interval)) != 0 ||
+                   setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval)) != 0 ||
+                   setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count)) != 0)) goto option_failed;
+    if(!read_socket_option(fd, SOL_SOCKET, SO_KEEPALIVE, &actual->enabled)) goto option_failed;
+    if((actual->enabled != 0) != enabled) { *system_error = EIO; return RF_SOCKET_OPTION; }
+    actual->enabled = enabled; /* SO_KEEPALIVE is a boolean; BSD may expose its nonzero option bit. */
+    if(enabled) {
+        if(!read_socket_option(fd, IPPROTO_TCP, TCP_KEEPALIVE, &actual->idle_seconds) ||
+           !read_socket_option(fd, IPPROTO_TCP, TCP_KEEPINTVL, &actual->retry_seconds) ||
+           !read_socket_option(fd, IPPROTO_TCP, TCP_KEEPCNT, &actual->failed_probes)) goto option_failed;
+        if(actual->idle_seconds != interval || actual->retry_seconds != interval || actual->failed_probes != count) {
+            *system_error = EIO; return RF_SOCKET_OPTION;
+        }
     }
     return 0;
-}
-int rf_shell_probe_open_step(rf_connection *c, rf_cancel *cancel) {
-    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
-    if(!c->shell_started || c->sftp || c->probe) return RF_INVALID;
-    c->probe_open_pending = 1;
-    /* Stable parameters for every continuation of this one open. No startup request. */
-    LIBSSH2_CHANNEL *probe = libssh2_channel_open_ex(c->session, "session", 7, 1024, 1024, NULL, 0);
-    if(probe) {
-        c->probe = probe; c->probe_open_pending = 0; c->probe_close_complete = 0;
-        return RF_SHELL_PROBE_CONFIRMED;
-    }
-    char *message = NULL; int length = 0;
-    rc = libssh2_session_last_error(c->session, &message, &length, 0);
-    if(rc == LIBSSH2_ERROR_EAGAIN) return rc;
-    c->probe_open_pending = 0;
-    if(length >= 0 && rf_shell_probe_rejection_is_reply(rc, message, (size_t)length))
-        return RF_SHELL_PROBE_REJECTED;
-    return rc ? rc : LIBSSH2_ERROR_PROTO;
-}
-int rf_shell_probe_close_step(rf_connection *c, rf_cancel *cancel) {
-    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
-    if(!c->probe || c->probe_open_pending) return RF_INVALID;
-    rc = libssh2_channel_close(c->probe);
-    if(rc == 0) c->probe_close_complete = 1;
-    return rc;
-}
-int rf_shell_probe_free_step(rf_connection *c, rf_cancel *cancel) {
-    int rc = shell_channel_guard(c, cancel); if(rc) return rc;
-    if(!c->probe || c->probe_open_pending || !c->probe_close_complete) return RF_INVALID;
-    rc = libssh2_channel_free(c->probe);
-    if(rc == 0) { c->probe = NULL; c->probe_close_complete = 0; }
-    return rc;
+option_failed:
+    *system_error = errno; return RF_SOCKET_OPTION;
 }
 int rf_start_sftp(rf_connection *c, rf_cancel *cancel, double timeout) {
     if(!rf_authenticated(c)) return RF_UNTRUSTED;
@@ -610,7 +594,6 @@ void rf_connection_close(rf_connection *c) {
     if(c->sftp) { libssh2_sftp_shutdown(c->sftp); c->sftp = NULL; }
     int free_rc = libssh2_session_free(c->session); // Also frees an independently opened shell channel.
     c->shell = NULL; c->shell_started = 0; c->shell_pty = 0;
-    c->probe = NULL; c->probe_open_pending = 0; c->probe_close_complete = 0;
     if(free_rc == 0) {
         while(c->allocations) {
             void *abstract = c;

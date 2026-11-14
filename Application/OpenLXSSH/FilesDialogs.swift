@@ -3,83 +3,168 @@ import OpenLXSSHFiles
 import OpenLXSSHSecurity
 import OpenLXSSHTrust
 
+struct FilesTargetSummary: View {
+    let target: FilesOperationTarget
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(verbatim: target.endpoint).font(.headline).textSelection(.enabled)
+            Text(verbatim: "父目录：" + FileDisplay.path(target.parent)).font(.caption.monospaced()).textSelection(.enabled)
+            Text(target.entries.isEmpty ? "范围：当前目录内的一个新名称" : "选中项目：\(target.entries.count) 个").font(.caption)
+            ForEach(target.entries, id: \.name) { entry in
+                if let path = target.path(for: entry) {
+                    Text(verbatim: FileDisplay.path(path)).font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }
+            DisclosureGroup("技术详情") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(verbatim: "父目录原始字节(base64)：" + target.parent.bytes.base64EncodedString())
+                    ForEach(target.entries, id: \.name) { entry in
+                        if let path = target.path(for: entry) {
+                            Text(verbatim: FileDisplay.path(path) + "\n原始路径字节(base64)：" + path.bytes.base64EncodedString())
+                        }
+                    }
+                    Text("目标绑定打开对话框时的端点与目录快照。属性复核不是比较交换：远端可能不提供稳定对象 ID，相同属性的同名替换未必可辨别；最终检查后仍有竞争窗口。")
+                }.font(.caption2.monospaced()).textSelection(.enabled)
+            }.font(.caption)
+        }
+    }
+}
+
+/// Keep the decision-relevant risk visible; protocol terms and original bytes are optional detail.
+struct FilesRiskDescription: View {
+    let risk: TransferRisk
+    private var path: RemotePath {
+        switch risk {
+        case .remotePathChecksAreNotAtomic(let path), .overwriteIsAtomicButNotCompareAndSwap(let path),
+             .remoteFsyncUnavailable(let path), .deletionChecksAreNotCompareAndSwap(let path): path
+        }
+    }
+    private var summary: String {
+        switch risk {
+        case .remotePathChecksAreNotAtomic: "服务器可能在检查后改变目录，无法保证操作期间路径保持不变。"
+        case .overwriteIsAtomicButNotCompareAndSwap: "目标可能在最后检查后被替换；继续可能覆盖刚被其他操作更新的同名文件。"
+        case .remoteFsyncUnavailable: "服务器无法确认数据已写入持久存储；突然掉电时可能丢失已传数据。"
+        case .deletionChecksAreNotCompareAndSwap: "删除前的检查无法阻止其他操作同时更改文件；删除可能部分完成，无法撤销。"
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(verbatim: summary)
+            Text(verbatim: "涉及路径：" + FileDisplay.path(path)).font(.caption.monospaced()).textSelection(.enabled)
+            DisclosureGroup("技术详情") {
+                Text(verbatim: FileDisplay.risk(risk)).font(.caption)
+                Text(verbatim: "原始路径字节(base64)：" + path.bytes.base64EncodedString()).font(.caption2.monospaced()).textSelection(.enabled)
+            }.font(.caption)
+        }
+    }
+}
+
 struct FilesNameEditor: View {
     @ObservedObject var model: FilesController
     let entry: DirectoryEntry?
+    @State private var target: FilesOperationTarget?
     @State private var name = ""
     @State private var mode = "fail"
-    @State private var acceptedRisk = false
+    @State private var submitted = false
     var dismiss: () -> Void
+    init(model: FilesController, entry: DirectoryEntry?, target: FilesOperationTarget? = nil, dismiss: @escaping () -> Void) {
+        self.model = model; self.entry = entry; self.dismiss = dismiss
+        _target = State(initialValue: target ?? model.captureTarget(entry.map { [$0] } ?? []))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(entry == nil ? "创建目录" : "安全重命名").font(.title2)
-            if let entry { Text(verbatim: "源：" + FileDisplay.name(entry.name)) }
-            Text(verbatim: "父目录：" + FileDisplay.path(model.path))
+            Text(entry == nil ? "创建目录" : "重命名").font(.title2)
+            if let target { FilesTargetSummary(target: target) }
+            else { Text("本次目标已不可用，请取消后重新发起。").foregroundStyle(.red) }
             NativeField(placeholder: "新的单个名称（不含斜杠）", id: "files.operation.name", text: $name).frame(height: 26)
+            if let target, let value = try? FileName(name), let path = try? target.parent.appending(value) {
+                Text(verbatim: "目标：" + FileDisplay.path(path)).font(.caption.monospaced())
+                DisclosureGroup("技术详情（目标路径）") {
+                    Text(verbatim: "目标原始字节(base64)：" + path.bytes.base64EncodedString()).font(.caption2.monospaced()).textSelection(.enabled)
+                }.font(.caption)
+            }
             if entry != nil {
-                NativePopup(id: "files.rename.conflict", items: [PopupItem(value: "fail", title: "同名则失败"), PopupItem(value: "skip", title: "同名则跳过"), PopupItem(value: "overwrite", title: "同名则覆盖（另核非 CAS 风险）"), PopupItem(value: "alternate", title: "明确使用此替代名（不覆盖）")], selection: $mode).frame(height: 26)
-            } else {
-                Text("远端逐段 lstat 不等同原子 no-follow；检查后服务器仍可能改变树。创建只限所显示父目录与单个名称，不自动提权。")
-                NativeButton(title: acceptedRisk ? "已核对远端路径剩余风险" : "明确接受本次远端路径剩余风险", id: "files.mkdir.risk") { acceptedRisk.toggle() }.fixedSize()
+                NativePopup(id: "files.rename.conflict", items: [PopupItem(value: "fail", title: "同名则失败"), PopupItem(value: "skip", title: "同名则跳过"), PopupItem(value: "overwrite", title: "同名则覆盖"), PopupItem(value: "alternate", title: "明确使用此替代名（不覆盖）")], selection: $mode).frame(height: 26)
             }
             IssueView(issue: model.issue) { model.issue = nil }
             HStack {
-                NativeButton(title: "取消", id: "files.operation.cancel") { dismiss() }.fixedSize()
-                NativeButton(title: entry == nil ? "创建" : "重命名", id: "files.operation.confirm", enabled: entry != nil || acceptedRisk) {
+                NativeButton(title: "取消", id: "files.operation.cancel") { if let target { model.discardTarget(target) }; dismiss() }.fixedSize()
+                NativeButton(title: entry == nil ? "创建" : "重命名", id: "files.operation.confirm", enabled: target != nil && !submitted) {
                     do {
                         let name = try FileName(name)
-                        if let entry { model.rename(entry, name: name, conflict: mode == "skip" ? .skip : mode == "overwrite" ? .overwrite : mode == "alternate" ? .renameTo(name) : .fail) }
-                        else { guard acceptedRisk else { return }; model.mkdir(name, acknowledgedRemoteRisk: acceptedRisk) }
+                        guard let target, !submitted else { return }
+                        submitted = true
+                        if entry != nil { model.rename(name: name, conflict: mode == "skip" ? .skip : mode == "overwrite" ? .overwrite : mode == "alternate" ? .renameTo(name) : .fail, target: target) }
+                        else { model.mkdir(name, target: target, acknowledgedRemoteRisk: true) }
                         dismiss()
                     } catch { model.issue = .files(error) }
                 }.fixedSize()
             }
         }.padding(24).frame(width: 580)
+        .onDisappear { if let target { model.discardTarget(target) } }
     }
 }
 struct FilesDeleteOptions: View {
     @ObservedObject var model: FilesController
     let entry: DirectoryEntry
+    @State private var target: FilesOperationTarget?
     @State private var linkOnly = false
+    @State private var submitted = false
     var dismiss: () -> Void
+    init(model: FilesController, entry: DirectoryEntry, dismiss: @escaping () -> Void) {
+        self.model = model; self.entry = entry; self.dismiss = dismiss
+        _target = State(initialValue: model.captureTarget([entry]))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("准备只读删除计划").font(.title2)
-            Text(verbatim: FileDisplay.name(entry.name) + " · " + entry.attributes.kind.rawValue)
+            if let target { FilesTargetSummary(target: target) }
             Text("此步只收集精确范围，不删除。下一步将显示根、全部项目、数量、问题与剩余风险，再由你一次确认。")
             if entry.attributes.kind == .symbolicLink {
                 NativeButton(title: linkOnly ? "仅删除链接自身（不跟随）已选择" : "明确选择仅删除链接自身", id: "files.delete.linkOnly") { linkOnly.toggle() }.fixedSize()
             }
             HStack {
-                NativeButton(title: "取消", id: "files.operation.cancel") { dismiss() }.fixedSize()
-                NativeButton(title: "生成计划", id: "files.delete.prepare") { model.prepareDelete(entry, removeLinkOnly: linkOnly); dismiss() }.fixedSize()
+                NativeButton(title: "取消", id: "files.operation.cancel") { if let target { model.discardTarget(target) }; dismiss() }.fixedSize()
+                NativeButton(title: "生成计划", id: "files.delete.prepare", enabled: target != nil && !submitted) {
+                    guard let target, !submitted else { return }; submitted = true
+                    model.prepareDelete(target, removeLinkOnly: linkOnly); dismiss()
+                }.fixedSize()
             }
         }.padding(24).frame(width: 580)
+        .onDisappear { if let target { model.discardTarget(target) } }
     }
 }
 struct FilesDeletePlanView: View {
     @ObservedObject var model: FilesController
     let review: FilesDeleteReview
-    @State private var confirmed = false
     var dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("确认精确删除计划").font(.title2)
+            FilesTargetSummary(target: review.target)
             Text(verbatim: "根：" + FileDisplay.path(review.plan.root))
             Text("项目数：\(review.plan.items.count)；问题：\(review.plan.issues.count)")
             ScrollView {
                 VStack(alignment: .leading) {
-                    ForEach(Array(review.plan.items.enumerated()), id: \.offset) { _, item in Text(verbatim: FileDisplay.path(item.path) + " · " + action(item.action)).font(.caption) }
-                    ForEach(Array(review.plan.issues.enumerated()), id: \.offset) { _, item in Text(verbatim: FileDisplay.path(item.path) + " · " + item.error.kind.rawValue).foregroundStyle(.red) }
-                    ForEach(Array(review.plan.risks.enumerated()), id: \.offset) { _, risk in Text(verbatim: FileDisplay.risk(risk)).font(.caption) }
+                    ForEach(Array(review.plan.items.enumerated()), id: \.offset) { _, item in
+                        Text(verbatim: FileDisplay.path(item.path) + " · " + action(item.action)).font(.caption)
+                    }
+                    ForEach(Array(review.plan.issues.enumerated()), id: \.offset) { _, item in Text(verbatim: FileDisplay.path(item.path) + " · " + AppIssue.files(item.error).message).foregroundStyle(.red) }
+                    DisclosureGroup("技术详情（计划路径）") {
+                        ForEach(Array(review.plan.items.enumerated()), id: \.offset) { _, item in
+                            Text(verbatim: FileDisplay.path(item.path) + "\n原始路径字节(base64)：" + item.path.bytes.base64EncodedString()).font(.caption2.monospaced()).textSelection(.enabled)
+                        }
+                        ForEach(Array(review.plan.issues.enumerated()), id: \.offset) { _, item in
+                            Text(verbatim: item.error.kind.rawValue + " · " + item.error.operation).font(.caption2.monospaced())
+                        }
+                    }.font(.caption)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(height: 230)
-            Text("执行前完整复核；已知变化会停止。最终检查不是比较交换，不保证服务器之后不改树。不会扩展计划、删除主机根或跟随链接。")
-            NativeButton(title: confirmed ? "已核对全部范围与风险" : "确认所示根、数量、项目及全部风险", id: "files.delete.acknowledge") { confirmed.toggle() }.fixedSize()
+            Text("执行前会重新核对，发现已知变化将停止。删除可能部分完成且无法撤销；不会扩展所选范围、删除主机根或跟随链接。")
             HStack {
-                NativeButton(title: "取消计划", id: "files.delete.cancel") { model.discardDeleteReview(); dismiss() }.fixedSize()
-                NativeButton(title: "执行此次精确删除", id: "files.delete.execute", enabled: confirmed && review.plan.canExecute) {
-                    guard confirmed else { return }; model.executeDelete(review, confirmed: true); dismiss()
+                NativeButton(title: "取消计划", id: "files.delete.cancel") { model.discardDeleteReview(review); dismiss() }.fixedSize()
+                NativeButton(title: "执行此次精确删除", id: "files.delete.execute", enabled: review.plan.canExecute) {
+                    model.executeDelete(review, confirmed: true); dismiss()
                 }.fixedSize()
             }
         }.padding(24).frame(width: 690)
@@ -96,7 +181,7 @@ struct FilesProbeView: View {
             Text("显式非覆盖能力检查").font(.title2)
             Text(verbatim: "只创建自有目录：" + FileDisplay.path(review.plan.temporaryDirectory)).textSelection(.enabled)
             Text("将创建两个随机测试文件，验证已存在目标必须拒绝且两份内容不变，再验证不存在目标可成功；只清理本次拥有的 UUID 目录与测试文件。失败残留会明确显示，不自动扫描清理。")
-            ForEach(Array(review.plan.requiredRisks.enumerated()), id: \.offset) { _, risk in Text(verbatim: FileDisplay.risk(risk)) }
+            ForEach(Array(review.plan.requiredRisks.enumerated()), id: \.offset) { _, risk in FilesRiskDescription(risk: risk) }
             NativeButton(title: approved ? "已批准精确目录与测试／风险" : "批准所示计划与全部风险", id: "files.probe.approve") { approved.toggle() }.fixedSize()
             HStack {
                 NativeButton(title: "取消", id: "files.probe.cancel") { model.discardProbeReview(); dismiss() }.fixedSize()
@@ -113,7 +198,7 @@ struct FilesRiskView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("本次操作的剩余风险").font(.title2)
-            Text(verbatim: FileDisplay.risk(risk))
+            FilesRiskDescription(risk: risk)
             HStack {
                 NativeButton(title: "拒绝", id: "files.risk.reject") { model.answerRisk(false, id: requestID); dismiss() }.fixedSize()
                 NativeButton(title: "明确接受此次风险", id: "files.risk.accept") { model.answerRisk(true, id: requestID); dismiss() }.fixedSize()
@@ -124,26 +209,35 @@ struct FilesRiskView: View {
 struct FilesTrustView: View {
     @ObservedObject var model: FilesController
     let prompt: FilesTrustPrompt
-    @State private var verified = false
+    @State private var management = false
     var dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("SFTP 同握手主机身份").font(.title2)
+            Text("核实 SFTP 主机身份").font(.title2)
             switch prompt.event {
             case .pending(let decision):
                 Text(verbatim: decision.host.address.value + ":" + String(decision.host.port.value))
                 Text(verbatim: decision.algorithm + " · " + decision.fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                Text("来源：当前 libssh2 握手的真实公钥；尚未证明身份。请通过管理员／控制台等独立渠道核实完整指纹，接受仅绑定本次端点与精确公钥。")
-                NativeButton(title: verified ? "已独立核实" : "我已独立核实完整指纹", id: "files.trust.verified") { verified.toggle() }.fixedSize()
-                NativeButton(title: "接受此精确指纹", id: "files.trust.accept", enabled: verified) { guard verified else { return }; if model.answerTrust(prompt, verified: true) { dismiss() } }.fixedSize()
+                Text("这是本次连接收到的主机公钥，尚未证明身份。请通过管理员或控制台等独立渠道核实完整指纹，再决定是否继续。信任仅适用于所示主机和公钥。")
+                HStack {
+                    NativeButton(title: "关闭", id: "files.trust.cancel") { model.cancelTrust(prompt); dismiss() }.fixedSize()
+                    NativeButton(title: "仅此次继续", id: "files.trust.once") { if model.answerTrust(prompt, once: true) { dismiss() } }.fixedSize()
+                    NativeButton(title: "添加并继续", id: "files.trust.accept") { if model.answerTrust(prompt, once: false) { dismiss() } }.fixedSize()
+                }
             case .changed(let change):
                 Text(verbatim: change.host.address.value + ":" + String(change.host.port.value) + " · " + change.algorithm)
                 Text(verbatim: "已知：" + change.expectedFingerprint)
                 Text(verbatim: "本次：" + change.presentedFingerprint)
                 Text("已阻止连接，不提供接受变化按钮。请独立核实后在可信主机管理使用精确人工替换流程。")
+                HStack {
+                    NativeButton(title: "关闭", id: "files.trust.cancel") { model.cancelTrust(prompt); dismiss() }.fixedSize()
+                    if model.trustEnvironment != nil { Button("打开已知主机管理…") { management = true } }
+                }
             }
-            NativeButton(title: "取消连接", id: "files.trust.cancel") { model.cancelCurrent(); dismiss() }.fixedSize()
         }.padding(24).frame(width: 650)
+        .sheet(isPresented: $management) {
+            if let environment = model.trustEnvironment { TrustManagementView(environment: environment) { management = false } }
+        }
     }
 }
 struct FilesKeyboardView: View {
@@ -175,8 +269,8 @@ struct FilesKeyboardView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(maxHeight: 300)
             HStack {
-                NativeButton(title: "取消本次连接", id: "files.keyboard.cancel") { clear(); model.cancelCurrent(); dismiss() }.fixedSize()
-                NativeButton(title: prompt.prompts.isEmpty ? "已阅，继续" : "提交本轮全部回答", id: "files.keyboard.submit") {
+                NativeButton(title: "取消本次连接", id: "files.keyboard.cancel") { clear(); model.cancelKeyboard(prompt); dismiss() }.fixedSize()
+                NativeButton(title: prompt.prompts.isEmpty ? "已阅，继续" : "提交本轮全部回答", id: "files.keyboard.submit", isDefault: true) {
                     let secrets = answers.map { OpenLXSSHSecurity.SecretBytes(utf8: $0) }; clear()
                     if model.answerKeyboard(prompt, answers: secrets) { dismiss() }
                 }.fixedSize()

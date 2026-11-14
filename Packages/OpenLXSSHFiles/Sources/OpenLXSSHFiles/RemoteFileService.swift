@@ -123,12 +123,14 @@ public struct FileServiceCapabilities: Sendable {
 /// Evidence must be scoped to the actual backend/server implementation. It does not authorize overwrite.
 public struct ServerCommitConfirmation: Sendable {
     public let serverBinding: UUID
+    /// Evidence covers only the tested destination directory on this connected backend.
+    public let parent: RemotePath
     public let evidence: String
-    public init(serverBinding: UUID, evidence: String) throws {
+    public init(serverBinding: UUID, parent: RemotePath = .root, evidence: String) throws {
         guard !evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, evidence.utf8.count <= 1024 else {
             throw FileServiceError(.needsCapabilityConfirmation, operation: "empty-server-evidence")
         }
-        self.serverBinding = serverBinding; self.evidence = evidence
+        self.serverBinding = serverBinding; self.parent = parent; self.evidence = evidence
     }
 }
 public struct CommitRequest: Sendable {
@@ -148,6 +150,10 @@ public struct CommitRequest: Sendable {
 public protocol RemoteFileService: AnyObject, Sendable {
     var capabilities: FileServiceCapabilities { get }
     var serverBinding: UUID? { get }
+    /// A backend-owned terminal disposition, never inferred from a job's other endpoint.
+    /// Implementations synchronize this read. Cancelled means this backend really terminated,
+    /// not merely that a queued caller was cancelled; it is not a network-failure classification.
+    var terminalFailure: FileServiceError? { get }
     /// Resolves the session's login directory to an absolute, canonical raw-byte path.
     /// This is independent of a terminal's working directory. Unsupported backends must
     /// throw, never substitute `/` or infer a home directory from the username.

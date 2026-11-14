@@ -108,9 +108,17 @@ public actor SafeFileOperations {
                 guard try await service.lstat(source, token: token) == original else {
                     throw FileServiceError(.raceDetected, operation: "rename-source-changed", path: source)
                 }
+                var evidence = policy.serverCommit
+                if expected == nil, service.capabilities.noReplace == .needsServerConfirmation, policy.acceptsTechnicalLimits {
+                    let checked = try await ServerCommitProbe.verifyForTransfer(service: service, parent: target.parent, token: token)
+                    guard checked.error == nil, checked.retainedPaths.isEmpty, let confirmation = checked.confirmation else {
+                        throw checked.error ?? FileServiceError(.unsupported, operation: "rename-safe-commit-unavailable", path: target)
+                    }
+                    evidence = confirmation
+                }
                 try await service.commit(source, to: target, request: CommitRequest(mode: expected == nil ? .noReplace : .replaceExisting,
                     expectedTarget: expected, expectedContentSHA256: digest, acceptNonCASOverwriteRisk: expected != nil,
-                    serverConfirmation: policy.serverCommit), token: token)
+                    serverConfirmation: evidence), token: token)
                 return FileOperationResult(source: source, destination: target, state: .succeeded, acknowledgedRisks: risks)
             } catch {
                 return FileOperationResult(source: source, destination: target,

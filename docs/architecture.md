@@ -2,6 +2,12 @@
 
 状态：技术方向已确认，具体版本和实现仍需实测。本文不代表组件已验证可用。
 
+## 2026-11-04 便捷执行策略
+
+普通App的TransferManager使用direct策略：技术限制由TransferPolicy直接接受，不创建waitingRisk UI状态；通用包strict策略仍可用于显式审查型调用及原有安全边界测试。App在点击/拖放时冻结目标和冲突偏好，自动准备、确认同一不可变清单；后续浏览不重新解释输入。任务冲突策略在入队时固定，后改偏好不改变已有任务的覆盖授权。默认自动改名仍用exclusive/noReplace提交，竞争只进行有界重新选名，不使用检查不存在后覆盖式rename。覆盖保留原有目标摘要/变化检测；它只作用于明确覆盖，不影响常规自动改名上传的流式路径。
+
+能力缓存属于engine，键为服务serverBinding和原始父目录，最多256条、5分钟，只缓存检查和清理成功的证据；新连接身份不可命中。UI根持有38pt状态条和按需196pt详情，页面隐藏不拥有任务。独立NSHostingView通过可观察外观对象同步scheme，不通过重建页面适配外观。
+
 ## 0. 当前桌面UX重构约束（2026-10-30）
 
 本轮以完整UX规格及handoff为产品界面基线。工作区页面路由与资源owner分离：AppModel持有固定Vault/SFTP/实际session(id)选择，SessionController继续每标签独立driver/终端，FilesController/TransferManager仍为App级独立owner；隐藏页面只影响可见性/焦点，不取消连接或丢弃搜索/路径/队列。固定页不进入可关闭会话数组。

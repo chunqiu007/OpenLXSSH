@@ -99,6 +99,10 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
     private var activeToken: CancellationToken?
     private var handles: [FileHandleID: OpaquePointer] = [:]
     private var ready = false
+    private var recordedTerminalFailure: FileServiceError?
+    public var terminalFailure: FileServiceError? {
+        lock.lock(); defer { lock.unlock() }; return recordedTerminalFailure
+    }
     private let timeout: TimeInterval
 
     init(connectedSocket: Int32, operationTimeout: TimeInterval = 10) throws {
@@ -113,38 +117,61 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
         lifetime.cancel()
         lock.lock(); defer { lock.unlock() }
         activeToken?.cancel()
-        if let connection { rf_connection_cancel(connection) }
+        if let connection {
+            if recordedTerminalFailure == nil { recordedTerminalFailure = FileServiceError(.cancelled, operation: "service-cancelled") }
+            rf_connection_cancel(connection)
+        }
     }
-    private func dispose() {
+    /// Call only from this backend's serial native queue. The fact and actual resource
+    /// destruction are one locked transition; preserve an already recorded first cause.
+    /// Package-internal so tests can prove cleanup termination without a fake network.
+    func terminate(disposition: FileServiceError) {
         lock.lock(); defer { lock.unlock() }
+        if recordedTerminalFailure == nil { recordedTerminalFailure = disposition }
         if let connection { rf_connection_destroy(connection); self.connection = nil }
         handles.removeAll(); ready = false
     }
     public func close() async {
         cancel()
         await withCheckedContinuation { continuation in
-            queue.async { self.dispose(); continuation.resume() }
+            queue.async {
+                self.terminate(disposition: FileServiceError(.cancelled, operation: "service-closed"))
+                continuation.resume()
+            }
         }
     }
-    private func perform<T: Sendable>(_ token: CancellationToken,
+    /// Package-internal to test serial admission and exact cancellation ownership with real FDs.
+    /// Not a public native-operation or interoperability-testing API.
+    func perform<T: Sendable>(_ token: CancellationToken,
                                       _ body: @escaping @Sendable (OpaquePointer) throws -> T) async throws -> T {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
+                    var enteredOperation = false
                     do {
                         try self.lifetime.check(); try token.check()
                         guard let c = self.connection else { throw FileServiceError(.closed, operation: "session") }
                         self.lock.lock(); self.activeToken = token; self.lock.unlock()
+                        enteredOperation = true
                         defer { self.lock.lock(); self.activeToken = nil; self.lock.unlock() }
                         continuation.resume(returning: try body(c))
                     } catch {
                         if let error = error as? FileServiceError,
-                           [.cancelled, .timeout, .transport].contains(error.kind) { self.dispose() }
+                           enteredOperation, [.cancelled, .timeout, .transport, .closed].contains(error.kind) {
+                            let disposition = error.kind == .cancelled || token.isCancelled || self.lifetime.isCancelled
+                                ? FileServiceError(.cancelled, operation: error.operation, path: error.path, code: error.code)
+                                : error
+                            self.terminate(disposition: disposition)
+                        }
                         continuation.resume(throwing: error)
                     }
                 }
             }
-        } onCancel: { token.cancel(); self.cancel() }
+        } onCancel: {
+            // Revoke only this admitted operation. A queued caller cannot cancel a different
+            // active token or the whole connection; native waits poll this exact token.
+            token.cancel()
+        }
     }
     private func check(_ rc: Int32, _ c: OpaquePointer, operation: String, path: RemotePath? = nil) throws {
         guard rc < 0 else { return }
@@ -163,6 +190,7 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
             case UInt64(LIBSSH2_FX_PERMISSION_DENIED): kind = .permissionDenied
             case UInt64(LIBSSH2_FX_FILE_ALREADY_EXISTS): kind = .conflict
             case UInt64(LIBSSH2_FX_OP_UNSUPPORTED): kind = .unsupported
+            case UInt64(LIBSSH2_FX_NO_CONNECTION), UInt64(LIBSSH2_FX_CONNECTION_LOST): kind = .transport
             default: kind = .protocolFailure
             }
         default: kind = .transport
@@ -244,7 +272,15 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
                 guard rf_authenticated(c) != 0 else { throw FileServiceError(.authentication, operation: "authenticate") }
                 try self.check(rf_start_sftp(c, token.native, self.timeout), c, operation: "sftp-init")
                 self.ready = true
-            } catch { token.cancel(); self.dispose(); throw error }
+            } catch {
+                let original = error as? FileServiceError
+                let interrupted = token.isCancelled || self.lifetime.isCancelled || original?.kind == .cancelled
+                let kind: FileServiceError.Kind = interrupted ? .cancelled
+                    : (original.map { [.closed, .timeout, .transport].contains($0.kind) ? $0.kind : .closed } ?? .closed)
+                self.terminate(disposition: FileServiceError(kind, operation: original?.operation ?? "sftp-setup-terminated",
+                    path: original?.path, code: original?.code))
+                token.cancel(); throw error
+            }
         }
     }
     private func requireReady() throws {
@@ -344,7 +380,10 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
                 if needsClose && !interrupted {
                     let cleanup = CancellationToken()
                     let closeRC = rf_close_handle(c, handle, cleanup.native, self.timeout)
-                    if closeRC < 0 { self.dispose() }
+                    if closeRC < 0 {
+                        let kind: FileServiceError.Kind = token.isCancelled || self.lifetime.isCancelled ? .cancelled : .closed
+                        self.terminate(disposition: FileServiceError(kind, operation: "closedir-cleanup-failed", path: path, code: Int64(closeRC)))
+                    }
                 }
                 throw error
             }
@@ -424,7 +463,8 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
     }
     public func commit(_ source: RemotePath, to destination: RemotePath, request: CommitRequest, token: CancellationToken) async throws {
         if request.mode == .noReplace {
-            guard request.serverConfirmation?.serverBinding == serverBinding else {
+            guard request.serverConfirmation?.serverBinding == serverBinding,
+                  request.serverConfirmation?.parent == destination.parent, source.parent == destination.parent else {
                 throw FileServiceError(.needsCapabilityConfirmation, operation: "server-no-replace-unproven", path: destination)
             }
             try await TransferChecks.inspect(self, path: source, includeLeaf: true, token: token)

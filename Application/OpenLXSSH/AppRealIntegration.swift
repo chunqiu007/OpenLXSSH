@@ -71,6 +71,7 @@ actor AppRealObservedFiles: RemoteFileService {
     nonisolated var serverBinding: UUID? { native.serverBinding }
     private var closed = false
     init(_ native: LibSSH2FileService, facts: AppRealFilesFacts) { self.native = native; self.facts = facts }
+    func initialDirectory(token: CancellationToken) async throws -> RemotePath { try await native.initialDirectory(token: token) }
     func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] { let entries = try await native.list(path, token: token); await facts.listed(entries); return entries }
     func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes { try await native.lstat(path, token: token) }
     func fstat(_ handle: FileHandleID, token: CancellationToken) async throws -> FileAttributes? { try await native.fstat(handle, token: token) }

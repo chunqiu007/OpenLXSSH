@@ -12,11 +12,14 @@ public struct NoReplaceProbeResult: Sendable {
     public let directory: RemotePath
     public let confirmation: ServerCommitConfirmation?
     public let error: FileServiceError?
+    /// Owned cleanup failures or create-acknowledgement-uncertain candidates. These paths
+    /// are diagnostic scope, never authorization to delete an object on a later connection.
     public let retainedPaths: [RemotePath]
     public var passed: Bool { confirmation != nil && error == nil }
 }
-/// Explicit capability test, NEVER called during connect or normal transfer initialization.
-/// It operates only in an exclusive UUID directory it creates under the user-selected parent.
+/// Capability check confined to an exclusive UUID directory under the selected destination.
+/// Never called during connect or read-only planning. Normal transfers invoke it inside their
+/// already-held host gate; the diagnostic entry point retains its explicit approval contract.
 /// A protocol result is evidence for this connected service, not a proof for all servers/future races.
 public enum ServerCommitProbe {
     public static func prepare(service: any RemoteFileService, parent: RemotePath) throws -> NoReplaceProbePlan {
@@ -40,16 +43,32 @@ public enum ServerCommitProbe {
             await execute(plan, service: service, token: token)
         }
     }
+    /// Called only from SafeTransferEngine while it already owns the host scheduler gate.
+    /// Selection of the actual upload authorizes these owned temporary objects; no engineer
+    /// dialog, extra connection, authentication, or unrelated directory scan is required.
+    static func verifyForTransfer(service: any RemoteFileService, parent: RemotePath,
+                                  token: CancellationToken) async throws -> NoReplaceProbeResult {
+        try token.check()
+        let plan = try prepare(service: service, parent: parent)
+        return await execute(plan, service: service, token: token)
+    }
     private static func execute(_ plan: NoReplaceProbePlan, service: any RemoteFileService,
                                 token: CancellationToken) async -> NoReplaceProbeResult {
         var owned: [RemotePath] = []
+        var uncertainDirectory: RemotePath?
         var failure: FileServiceError?
         var verified = false
         let directory = plan.temporaryDirectory
         do {
             try token.check()
             try await TransferChecks.inspect(service, path: directory, includeLeaf: false, token: token)
-            try await service.mkdir(directory, token: token); owned.append(directory)
+            do { try await service.mkdir(directory, token: token); owned.append(directory) }
+            catch let error as FileServiceError where [.timeout, .transport, .cancelled, .closed, .io].contains(error.kind) {
+                // An exclusive MKDIR may have reached the server before its reply was lost.
+                // We cannot claim ownership or safely remove it; report only this candidate.
+                uncertainDirectory = directory
+                throw FileServiceError(error.kind, operation: "probe-directory-create-outcome-uncertain", path: directory, code: error.code)
+            }
             let a = try directory.appending(FileName("source")); let b = try directory.appending(FileName("destination"))
             let first = Data(UUID().uuidString.utf8); let second = Data(UUID().uuidString.utf8)
             try await write(first, service: service, path: a, owned: &owned, token: token)
@@ -79,7 +98,7 @@ public enum ServerCommitProbe {
         } catch {
             failure = error as? FileServiceError ?? FileServiceError(.io, operation: "server-commit-probe", path: directory)
         }
-        var retained: [RemotePath] = []
+        var retained: [RemotePath] = uncertainDirectory.map { [$0] } ?? []
         for path in owned.reversed() {
             do {
                 let cleanup = CancellationToken()
@@ -91,8 +110,8 @@ public enum ServerCommitProbe {
         if !retained.isEmpty && failure == nil { failure = FileServiceError(.io, operation: "probe-cleanup-incomplete", path: directory) }
         let confirmation: ServerCommitConfirmation?
         if verified && failure == nil {
-            confirmation = try? ServerCommitConfirmation(serverBinding: plan.serverBinding,
-                evidence: "explicit no-replace probe \(plan.id.uuidString): existing destination rejected and both random original contents preserved")
+            confirmation = try? ServerCommitConfirmation(serverBinding: plan.serverBinding, parent: plan.parent,
+                evidence: "no-replace probe \(plan.id.uuidString): existing destination rejected and both random original contents preserved")
         } else { confirmation = nil }
         return NoReplaceProbeResult(directory: directory, confirmation: confirmation, error: failure, retainedPaths: retained)
     }

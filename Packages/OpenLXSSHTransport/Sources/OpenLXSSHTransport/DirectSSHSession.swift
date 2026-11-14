@@ -45,6 +45,10 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
     private var savedPassword: SavedPasswordAuthorization?
     private var passwordBudget = SavedPasswordBudget(eligible: false)
     private var automaticAnswerTask: Task<Void, Never>?
+    #if TRANSPORT_HOST_PROBE
+    var onProbeTrustWorkspacePrepared: ((SessionToken, String) -> Void)?
+    var beforeProbeTrustWorkspaceDelivery: (@Sendable (String) async throws -> Void)?
+    #endif
 
     public init(sessionID: UUID = UUID(), trustStore: HostTrustStore, sessionDirectory: AbsolutePath,
                 helper: BundledAskpassHelper, scanner: any HostKeyScanning) {
@@ -74,7 +78,7 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
         let next = SessionToken(sessionID: sessionID, generation: (token?.generation ?? 0) + 1)
         token = next; self.configuration = configuration; self.savedPassword = savedPassword
         passwordBudget = SavedPasswordBudget(eligible: false); lastExitCode = nil; inputError = nil
-        cancellationRequested = false; failureAfterCleanup = nil
+        cancellationRequested = false; failureAfterCleanup = nil; workspace = nil
         preflightCandidates = []; trustChallenges = []
         setState(.preparing)
         // This task is kept through cancellation until in-flight scanner and
@@ -144,7 +148,8 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
             trustChallenges = pending; setState(.awaitingTrust); onTrustRequired?(pending)
         }
     }
-    public func acceptTrust(_ challenge: SessionTrustChallenge, displayedFingerprint: String) async throws {
+    public func acceptTrust(_ challenge: SessionTrustChallenge, displayedFingerprint: String,
+                            persistence: SessionTrustPersistence = .persistent) async throws {
         guard state == .awaitingTrust, isCurrent(challenge.token), trustChallenges.contains(challenge), preparation == nil, !trustOperationActive else { throw TransportError.stale }
         trustOperationActive = true
         defer {
@@ -156,23 +161,56 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
         setState(.preparing)
         guard isCurrent(challenge.token) else { throw TransportError.stale }
         do {
-            _ = try await trustStore.confirm(challenge.decision, displayedFingerprint: displayedFingerprint)
-            guard isCurrent(challenge.token) else { throw TransportError.stale }
-            try await evaluateTrust(challenge.token)
+            switch persistence {
+            case .persistent:
+                _ = try await trustStore.confirm(challenge.decision, displayedFingerprint: displayedFingerprint)
+                guard isCurrent(challenge.token) else { throw TransportError.stale }
+                try await evaluateTrust(challenge.token)
+            case .once:
+                let accepted = try await trustStore.confirmOnce(challenge.decision, displayedFingerprint: displayedFingerprint)
+                guard isCurrent(challenge.token) else { throw TransportError.stale }
+                let pending = trustChallenges; trustChallenges = []
+                for other in pending { await trustStore.cancel(other.decision) }
+                guard isCurrent(challenge.token) else { throw TransportError.stale }
+                try await launch(challenge.token, keys: [accepted.key], temporaryTrust: accepted)
+            }
         } catch {
             if isCurrent(challenge.token) { savedPassword = nil; setState(.failed((error as? SessionFailure) ?? .trustRejected)) }
             throw error
         }
     }
-    private func launch(_ current: SessionToken, keys: [HostPublicKey]) async throws {
-        guard let configuration, let helper, isCurrent(current) else { throw TransportError.invalidConfiguration }
+    private func launch(_ current: SessionToken, keys: [HostPublicKey], temporaryTrust: TrustedHostKey? = nil) async throws {
+        guard let configuration, isCurrent(current) else { throw TransportError.invalidConfiguration }
+        if let temporaryTrust, temporaryTrust.host != configuration.connection.host || keys != [temporaryTrust.key] {
+            throw TransportError.invalidConfiguration
+        }
+        #if TRANSPORT_HOST_PROBE
+        if helper == nil {
+            guard let temporaryTrust else { throw TransportError.invalidConfiguration }
+            let root = sessionDirectory
+            let workspace = try await Task.detached {
+                try SessionWorkspace(root: root, configuration: configuration, temporaryTrust: temporaryTrust)
+            }.value
+            try await beforeProbeTrustWorkspaceDelivery?(workspace.directory)
+            guard isCurrent(current) else { throw TransportError.stale }
+            try workspace.validateForLaunch(authentication: configuration.authentication)
+            self.workspace = workspace
+            onProbeTrustWorkspacePrepared?(current, workspace.directory)
+            guard isCurrent(current) else { self.workspace = nil; throw TransportError.stale }
+            return
+        }
+        #endif
+        guard let helper else { throw TransportError.invalidConfiguration }
         let compatible = await PasswordAutomationGate.evaluate()
         guard isCurrent(current) else { throw TransportError.stale }
         passwordBudget = SavedPasswordBudget(eligible: compatible && savedPassword != nil && configuration.authentication.method == .passwordOnly)
         let trustStore = trustStore, root = sessionDirectory
         let workspace = try await Task.detached {
-            let controlled = try DirectSSHConfiguration(configuration: configuration, trustStore: trustStore, trustedKeys: keys, helper: helper)
             try TransportFileSecurity.validateAuthentication(configuration.authentication)
+            if let temporaryTrust {
+                return try SessionWorkspace(root: root, configuration: configuration, temporaryTrust: temporaryTrust, helper: helper)
+            }
+            let controlled = try DirectSSHConfiguration(configuration: configuration, trustStore: trustStore, trustedKeys: keys, helper: helper)
             return try SessionWorkspace(root: root, text: controlled.text)
         }.value
         guard isCurrent(current) else { throw TransportError.stale }
@@ -290,7 +328,7 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
         else if preparation == nil, !trustOperationActive { completeCancellation() }
     }
     private func completeCancellation() {
-        workspace = nil
+        workspace = nil; preflightCandidates = []
         if tabClosed { setState(.closed) }
         else if let failureAfterCleanup { setState(.failed(failureAfterCleanup)) }
         else { setState(.disconnected(nil)) }
@@ -316,10 +354,9 @@ public final class DirectSSHSession: NSObject, @MainActor TerminalViewDelegate {
     public func clipboardCopy(source: TerminalView, content: Data) {}
     public func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
 
-    deinit {
+    isolated deinit {
         preparation?.cancel(); automaticAnswerTask?.cancel()
-        let view = terminal
-        Task { @MainActor in view.terminalDelegate = nil; view.releaseResources() }
+        terminal.terminalDelegate = nil; terminal.releaseResources()
         // runner and broker deinit revoke rights and invoke the sole upstream
         // PID-safe reaper even if the tab owner forgot closeTab().
     }

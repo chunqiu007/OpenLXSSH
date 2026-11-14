@@ -22,6 +22,78 @@ import OpenLXSSHTransport
         return tab
     }
 
+    func testRetirementCancelledDuplicateBatchObserverYieldsWithoutCancellingCleanup() async throws {
+        try await cancelledDuplicateObserver(batch: true)
+    }
+    func testRetirementCancelledDuplicateTabObserverYieldsWithoutCancellingCleanup() async throws {
+        try await cancelledDuplicateObserver(batch: false)
+    }
+    private func cancelledDuplicateObserver(batch: Bool) async throws {
+        let (host, _, _, builder, controller) = fixture()
+        let tab = try await connected(controller, host: host)
+        controller.disconnect(tab.id)
+        await builder.configurationPause.arm(); controller.reconnect(tab.id)
+        await builder.configurationPause.waitForArrival()
+        addTeardownBlock { await builder.configurationPause.release(); await controller.closeAll() }
+        let deadline = ContinuousClock.now + .seconds(2)
+        let close: @MainActor () async -> SessionCloseBatchResult = {
+            if batch { return await controller.closeAllResult(deadline: deadline) }
+            return SessionCloseBatchResult(entries: [.init(tabID: tab.id, result: await controller.closeTabResult(tab.id, deadline: deadline))])
+        }
+        let original = Task { await close() }
+        // The creator has installed the real app-owned cleanup before either join starts.
+        try await waitForCondition { tab.state == .closing }
+        let duplicate = Task { await close() }
+        try await waitForCondition { controller.closeJoinObserverCount >= 1 }
+        let other = Task { await close() }
+        try await waitForCondition { controller.closeJoinObserverCount >= 2 }
+        let cancellationStart = ContinuousClock.now
+        duplicate.cancel()
+        // This MainActor heartbeat/release must execute while the original deadline is
+        // still pending. A swallowed sleep CancellationError previously busy-spun here.
+        let heartbeat = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(10))
+            await builder.configurationPause.release()
+            return ContinuousClock.now
+        }
+        let observedAt = try await heartbeat.value
+        XCTAssertLessThan(cancellationStart.duration(to: observedAt), .milliseconds(500))
+        let cancelled = await duplicate.value
+        guard case .incomplete(let context) = cancelled.entries.first?.result else { return XCTFail("Only the duplicate observation should stop") }
+        XCTAssertEqual(context.reason, .observationCancelled)
+        let a = await original.value, b = await other.value
+        XCTAssertTrue(a.complete); XCTAssertEqual(a, b)
+        XCTAssertTrue(controller.tabs.isEmpty); XCTAssertEqual(builder.driver?.closeCount, 1)
+    }
+    private func waitForCondition(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !condition() {
+            guard .now < deadline else { throw CocoaError(.executableRuntimeMismatch) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+    func testRetirementCancelledResultWaiterCannotCancelOwnedCleanupOrSecondWaiter() async throws {
+        let (host, _, _, builder, controller) = fixture()
+        let tab = try await connected(controller, host: host)
+        controller.disconnect(tab.id)
+        await builder.configurationPause.arm(); controller.reconnect(tab.id)
+        await builder.configurationPause.waitForArrival()
+        let started = R2Event()
+        let deadline = ContinuousClock.now + .seconds(2)
+        let first = Task { started.signal(); return await controller.closeAllResult(deadline: deadline) }
+        await started.wait()
+        let second = Task { await controller.closeAllResult(deadline: deadline) }
+        first.cancel()
+        XCTAssertTrue(controller.closingAll); XCTAssertNil(controller.open(host, mode: .newSession))
+        let shortStart = ContinuousClock.now
+        let short = await controller.closeAllResult(deadline: .now + .milliseconds(30))
+        XCTAssertFalse(short.complete); XCTAssertLessThan(shortStart.duration(to: .now), .seconds(1))
+        XCTAssertTrue(controller.closingAll, "A short observer must not cancel the shared cleanup owner")
+        await builder.configurationPause.release()
+        let a = await first.value, b = await second.value
+        XCTAssertTrue(a.complete); XCTAssertEqual(a, b); XCTAssertTrue(controller.tabs.isEmpty)
+        XCTAssertEqual(builder.driver?.closeCount, 1)
+    }
     func testOverlappingCloseAllSharesOneBatchAndRejectsAdmissionDuringDuplicateCleanup() async throws {
         let (host, _, _, builder, controller) = fixture()
         let tab = try await connected(controller, host: host)

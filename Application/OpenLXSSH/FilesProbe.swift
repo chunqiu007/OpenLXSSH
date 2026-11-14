@@ -35,6 +35,7 @@ private actor LocalFilesProbeService: RemoteFileService {
     let base: LocalFileService
     let control: LocalFilesProbeControl
     init(root: URL, control: LocalFilesProbeControl) throws { base = try LocalFileService(root: root); self.control = control }
+    func initialDirectory(token: CancellationToken) async throws -> RemotePath { try await base.initialDirectory(token: token) }
     func list(_ p: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] { try await base.list(p, token: token) }
     func lstat(_ p: RemotePath, token: CancellationToken) async throws -> FileAttributes { try await base.lstat(p, token: token) }
     func fstat(_ h: FileHandleID, token: CancellationToken) async throws -> FileAttributes? { try await base.fstat(h, token: token) }

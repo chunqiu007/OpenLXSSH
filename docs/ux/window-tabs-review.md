@@ -46,6 +46,16 @@
 
 主管独立源审后只批准将准确自有窗口测试的三处`NSWindow.sendEvent`换为公开`NSApplication.sendEvent`，验证真实App分发是否建立`NSApp.currentEvent`。保原closeA=2/B=0、parent坐标、修饰键/editor/fixed/hidden边界，另加实际currentEvent===传入事件、准确window/windowNumber/button2、真实resolved child及三事件顺序断言。没有改生产hitTest、伪写currentEvent、全局post或monitor。
 
-`WindowMiddleEventLoop-R2-Source/source-ready.patch`及`source-ready.json`记录唯一文件唯一方法增量，授权方法外逐字不变，原其余37方法和51个App/Test/project保护源不变；最终testSHA `f4bf931be4c98985a27b5af9b3821cddd59a66f893624b88cd4b225665ef61ad`。source-only执行者已STOP，包Manifest当前唯一builder，等待包freeze后精准1门/Window14统一验证。现仍保旧红状态，不能把预期修正当实际中键或实体鼠标验收。
+`WindowMiddleEventLoop-R2-Source/source-ready.patch`及`source-ready.json`记录唯一文件唯一方法增量，授权方法外逐字不变，原其余37方法和51个App/Test/project保护源不变；最终testSHA `f4bf931be4c98985a27b5af9b3821cddd59a66f893624b88cd4b225665ef61ad`。
+
+统一正式Debug构建成功后精准Middle1仍exit65/7断言失败，证据`UnifiedFilesNative-R1/middle1-attempt1.{json,log,xcresult}`。三个准确事件确实到达准确owned窗口，button2/point/window均正确，但三次`NSApp.currentEvent===event`都不成立，实际childhit与closeA2断言随之失败（A仍1，B0，普通fallthrough成立）。这说明直接`NSApplication.sendEvent`也未在该unhosted fixture建立必需上下文；不将其当真实事件循环/实体鼠标产品故障或成功。保留全部新断言和失败，不再重复相同dispatch路径、globalpost或放松生产owner。完整Window14后续结果另记，其他独立Files/契约组继续。
+
+## R3队列只读结论与独立探针准备
+
+SDK公开`nextEvent`仅按事件类型过滤，没有精确window/button/对象谓词；共享XCTest队列即使peek再dequeue也不是原子领取，可能消费其他同类事件，不以丢弃或重投恢复原顺序。因此不继续在共享NSApp取事件。
+
+只读任务建议独立进程真实`NSApplication.run`、本进程`postEvent`和自有hiddenwindow；精确生产middle helper原样抽取snapshot/hash绑定，不复制重写，实现仅在ignored目录。Task`WINDOW-MIDDLE-LOCAL-QUEUE-R3-PREP`已source-only准备，禁止编译/运行直到主协调，activation prohibited/noorder/key/用户窗口/globalpost/monitor。结果仍需有限实测，不代实体鼠标/CUA或像素；原7断言红未删除。
+
+R3 ignored探针已由主管准确source核对后严格编译：首次Codable已初始化let触warnings-as-errors，原owner仅report改Encodable、原日志归档attempt1；第二compile0且实际min26，生产声明SHA不变。首次有限run wrapperexit1但child自然0，0个事件，reason=activation-policy：`setActivationPolicy(.prohibited)`返回false，35项全未观察，尚未执行production中键。不能把正常mainreturn或编译成功称门通过；不改为regular/激活用户App绕前置。下一仅只读核实际policy读回是否已prohibited及最小固定诊断，运行仍未授权重试。
 
 后续中键需实际应用事件分发或官方GUI验收；overflow/重开/批量sheet像素门仍待。分栏比例与Files列宽列序已完成10项本地门及主管独立复验，见`files-layout-preferences-review.md`，仍不称完整V06/X09。defaultDirect不改。

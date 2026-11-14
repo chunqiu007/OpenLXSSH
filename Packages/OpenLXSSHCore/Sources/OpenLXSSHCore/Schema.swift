@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 enum CoreSchema {
-    static let versions = ["v1_host_metadata", "v2_settings_and_cleanup", "v3_vault_metadata", "v4_desktop_preferences"]
+    static let versions = ["v1_host_metadata", "v2_settings_and_cleanup", "v3_vault_metadata", "v4_desktop_preferences", "v5_direct_file_transfer", "v6_ask_before_file_replacement"]
 
     static func migrate(_ queue: DatabaseQueue) throws {
         // Never silently open a database written by a newer app, and never erase on schema change.
@@ -118,6 +118,14 @@ enum CoreSchema {
                 ALTER TABLE settings ADD COLUMN startupPage TEXT NOT NULL DEFAULT 'vault'
                     CHECK(startupPage IN ('vault', 'sftp', 'lastManagement'));
                 """)
+        }
+        migrator.registerMigration(versions[4]) { db in
+            try db.execute(sql: "ALTER TABLE settings ADD COLUMN fileConflictPolicy TEXT NOT NULL DEFAULT 'autoRename' CHECK(fileConflictPolicy IN ('autoRename', 'overwrite', 'skip', 'ask'))")
+        }
+        migrator.registerMigration(versions[5]) { db in
+            // v5 shipped autoRename as the ordinary default. Change only that prior
+            // preference once; explicit overwrite/skip/ask and all other data stay intact.
+            try db.execute(sql: "UPDATE settings SET fileConflictPolicy = 'ask' WHERE fileConflictPolicy = 'autoRename'")
         }
         try migrator.migrate(queue)
     }

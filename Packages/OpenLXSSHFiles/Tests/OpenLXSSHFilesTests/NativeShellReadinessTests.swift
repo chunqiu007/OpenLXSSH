@@ -48,7 +48,7 @@ final class NativeShellReadinessTests: XCTestCase, @unchecked Sendable {
         let size = try NativeShellSize(columns: 80, rows: 24)
         let legacy = try NativeShellOptions(size: size, operationTimeout: 15)
         XCTAssertEqual(legacy.operationTimeout, 15); XCTAssertEqual(legacy.interactionTimeout, 15)
-        XCTAssertEqual(legacy.authenticationTimeout, 15); XCTAssertNil(legacy.liveness)
+        XCTAssertEqual(legacy.authenticationTimeout, 15); XCTAssertNil(legacy.keepalive)
         let production = try NativeShellOptions(size: size, operationTimeout: 10, interactionTimeout: 120, authenticationTimeout: 300)
         XCTAssertEqual(production.interactionTimeout, 120); XCTAssertEqual(production.authenticationTimeout, 300)
         for invalid in [0, -1, .infinity, .nan, 121] {
@@ -208,83 +208,46 @@ final class NativeShellReadinessTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(success.answer(name: nil, nameLength: 0, instruction: nil, instructionLength: 0,
             count: 0, prompts: nil, responses: nil), 0)
     }
-    func testLivenessPolicyCompatibilityBounds() throws {
-        let accepted: [(TimeInterval, Int, TimeInterval)] = [
-            (0.05, 100, 5), (3, 100, 300), (300, 1, 300),
-            (3600, 10, 36000), (360, 100, 36000)
-        ]
-        for (interval, count, responseTimeout) in accepted {
-            let policy = try NativeShellLivenessCandidate(interval: interval, maxUnresponsivePeriods: count)
-            XCTAssertEqual(policy.interval, interval); XCTAssertEqual(policy.maxUnresponsivePeriods, count)
-            XCTAssertEqual(policy.responseTimeout, responseTimeout, accuracy: 0.000001)
+    func testTCPKeepalivePolicyBoundsWithoutExpandingOtherBudgets() throws {
+        for (interval, count) in [(1, 1), (30, 3), (3600, 10)] {
+            let policy = try NativeTCPKeepalivePolicy(interval: interval, failedProbes: count)
+            XCTAssertEqual(policy.interval, interval); XCTAssertEqual(policy.failedProbes, count)
         }
-        let invalidIntervals: [TimeInterval] = [0, -1, Double(0.05).nextDown, Double(3600).nextUp, .nan, .infinity, -.infinity]
-        for interval in invalidIntervals {
-            XCTAssertThrowsError(try NativeShellLivenessCandidate(interval: interval, maxUnresponsivePeriods: 1)) {
-                XCTAssertEqual(($0 as? NativeShellError)?.kind, .invalidConfiguration)
-                XCTAssertEqual(($0 as? NativeShellError)?.operation, "liveness-candidate")
-            }
+        for interval in [Int.min, -1, 0, 3601, Int.max] {
+            XCTAssertThrowsError(try NativeTCPKeepalivePolicy(interval: interval, failedProbes: 1))
         }
-        for count in [Int.min, 0, 101, Int.max] {
-            XCTAssertThrowsError(try NativeShellLivenessCandidate(interval: 0.05, maxUnresponsivePeriods: count))
+        for count in [Int.min, 0, 11, Int.max] {
+            XCTAssertThrowsError(try NativeTCPKeepalivePolicy(interval: 30, failedProbes: count))
         }
-        XCTAssertThrowsError(try NativeShellLivenessCandidate(interval: 3600, maxUnresponsivePeriods: 11))
-        XCTAssertThrowsError(try NativeShellLivenessCandidate(interval: 360.01, maxUnresponsivePeriods: 100))
-    }
-    func testLivenessMaximumResponseWindowKeepsPendingDeadline() throws {
-        let now = ContinuousClock.now
-        let policy = try NativeShellLivenessCandidate(interval: 3600, maxUnresponsivePeriods: 10)
-        var state = NativeShellLivenessState(policy: policy, now: now)
-        XCTAssertEqual(state.nextProbe, now.advanced(by: .seconds(3600)))
-        XCTAssertFalse(state.beginIfDue(now: now.advanced(by: .seconds(3599.999))))
-        XCTAssertTrue(state.beginIfDue(now: now.advanced(by: .seconds(3600))))
-        let deadline = now.advanced(by: .seconds(39600))
-        XCTAssertEqual(state.deadline, deadline)
-        for offset in [3601.0, 7200, 35999, 39599.999] {
-            let instant = now.advanced(by: .seconds(offset))
-            state.applicationRead(now: instant)
-            XCTAssertFalse(state.beginIfDue(now: instant))
-            XCTAssertNoThrow(try state.checkDeadline(now: instant))
-            XCTAssertEqual(state.deadline, deadline)
+        for interval in [0.05, 1.5, 3600.01, .nan, .infinity, -.infinity] {
+            XCTAssertThrowsError(try NativeTCPKeepalivePolicy(interval: interval, maxUnresponsivePeriods: 3))
         }
-        XCTAssertEqual(state.facts.probesStarted, 1); XCTAssertTrue(state.facts.pending)
-        XCTAssertEqual(state.facts.confirmations, 0); XCTAssertEqual(state.facts.helperChannels, 0)
-        XCTAssertThrowsError(try state.checkDeadline(now: deadline)) {
-            XCTAssertEqual(($0 as? NativeShellError)?.kind, .timeout)
-            XCTAssertEqual(($0 as? NativeShellError)?.operation, "ssh-round-trip")
-        }
-        state.disposed(); XCTAssertFalse(state.facts.pending); XCTAssertNil(state.deadline)
-        var idle = NativeShellLivenessState(policy: policy, now: now)
-        idle.applicationRead(now: now.advanced(by: .seconds(3599)))
-        XCTAssertEqual(idle.nextProbe, now.advanced(by: .seconds(7199)))
-        XCTAssertFalse(idle.beginIfDue(now: now.advanced(by: .seconds(3600))))
-    }
-    func testLivenessMaximumPolicyDoesNotExpandOperationOrAuthenticationBudgets() throws {
+        let legacyInteger = try NativeTCPKeepalivePolicy(interval: TimeInterval(30), maxUnresponsivePeriods: 3)
+        XCTAssertEqual(legacyInteger, try NativeTCPKeepalivePolicy(interval: 30, failedProbes: 3))
         let size = try NativeShellSize(columns: 80, rows: 24)
-        let policy = try NativeShellLivenessCandidate(interval: 3600, maxUnresponsivePeriods: 10)
+        let policy = try NativeTCPKeepalivePolicy(interval: 3600, failedProbes: 10)
         let options = try NativeShellOptions(size: size, operationTimeout: 10, interactionTimeout: 120,
-            authenticationTimeout: 300, liveness: policy)
+            authenticationTimeout: 300, keepalive: policy)
         XCTAssertEqual(options.operationTimeout, 10); XCTAssertEqual(options.interactionTimeout, 120)
-        XCTAssertEqual(options.authenticationTimeout, 300); XCTAssertEqual(options.liveness, policy)
-        XCTAssertNoThrow(try NativeShellOptions(size: size, operationTimeout: 300, authenticationTimeout: 300, liveness: policy))
+        XCTAssertEqual(options.authenticationTimeout, 300); XCTAssertEqual(options.keepalive, policy)
+        XCTAssertNoThrow(try NativeShellOptions(size: size, operationTimeout: 300, authenticationTimeout: 300, keepalive: policy))
         for timeout in [Double(300).nextUp, 301, 36000, .nan, .infinity] {
-            XCTAssertThrowsError(try NativeShellOptions(size: size, operationTimeout: timeout, liveness: policy))
-            XCTAssertThrowsError(try NativeShellOptions(size: size, authenticationTimeout: timeout, liveness: policy))
+            XCTAssertThrowsError(try NativeShellOptions(size: size, operationTimeout: timeout, keepalive: policy))
+            XCTAssertThrowsError(try NativeShellOptions(size: size, authenticationTimeout: timeout, keepalive: policy))
         }
-        XCTAssertThrowsError(try NativeShellOptions(size: size, interactionTimeout: 121, liveness: policy))
+        XCTAssertThrowsError(try NativeShellOptions(size: size, interactionTimeout: 121, keepalive: policy))
         let now = ContinuousClock.now, budget = NativeShellAuthenticationBudget(options: options, now: now)
         XCTAssertEqual(budget.deadline, now.advanced(by: .seconds(300)))
         XCTAssertThrowsError(try budget.remaining(now: now.advanced(by: .seconds(300))))
     }
-    func testLivenessMaximumPacketTimeoutPublicReadback() throws {
-        let policy = try NativeShellLivenessCandidate(interval: 3600, maxUnresponsivePeriods: 10)
-        let options = try NativeShellOptions(size: NativeShellSize(columns: 80, rows: 24), liveness: policy)
-        let seconds = Int32(ceil(max(policy.responseTimeout, options.operationTimeout))) + 2
-        XCTAssertEqual(seconds, 36002)
+    func testPacketReadTimeoutStillUsesFiniteOperationBudget() throws {
+        let options = try NativeShellOptions(size: NativeShellSize(columns: 80, rows: 24),
+            keepalive: NativeTCPKeepalivePolicy(interval: 3600, failedProbes: 10))
+        let seconds = Int32(ceil(options.operationTimeout)) + 2
+        XCTAssertEqual(seconds, 12, "A large kernel keepalive policy cannot expand protocol-operation budgets")
         XCTAssertEqual(rf_library_smoke(), 0)
         let session = try XCTUnwrap(libssh2_session_init_ex(nil, nil, nil, nil))
         defer { XCTAssertEqual(libssh2_session_free(session), 0) }
-        // No socket, handshake, authentication or network: public API storage/readback only.
         libssh2_session_set_read_timeout(session, Int(seconds))
         XCTAssertEqual(libssh2_session_get_read_timeout(session), Int(seconds))
         let fds = try pair(); defer { fds.forEach { Darwin.close($0) } }
@@ -293,56 +256,13 @@ final class NativeShellReadinessTests: XCTestCase, @unchecked Sendable {
         var byte: UInt8 = 0
         XCTAssertEqual(recv(fds[1], &byte, 1, MSG_DONTWAIT), -1); XCTAssertEqual(errno, EAGAIN)
     }
-    func testLivenessSinglePendingDeadlineCannotBeResetByOrdinaryActivity() throws {
-        let now = ContinuousClock.now, policy = try NativeShellLivenessCandidate(interval: 2, maxUnresponsivePeriods: 3)
-        var state = NativeShellLivenessState(policy: policy, now: now)
-        XCTAssertFalse(state.beginIfDue(now: now.advanced(by: .seconds(1))))
-        XCTAssertTrue(state.beginIfDue(now: now.advanced(by: .seconds(2))))
-        XCTAssertEqual(state.deadline, now.advanced(by: .seconds(8)))
-        for offset in 3...7 {
-            state.applicationRead(now: now.advanced(by: .seconds(offset)))
-            XCTAssertFalse(state.beginIfDue(now: now.advanced(by: .seconds(offset))))
-        }
-        XCTAssertEqual(state.facts.probesStarted, 1); XCTAssertEqual(state.facts.helperChannels, 0)
-        XCTAssertThrowsError(try state.checkDeadline(now: now.advanced(by: .seconds(8)))) {
-            XCTAssertEqual(($0 as? NativeShellError)?.operation, "ssh-round-trip")
-        }
-        state.disposed(); XCTAssertFalse(state.facts.pending); XCTAssertEqual(state.facts.helperChannels, 0)
-    }
-    func testLivenessRemoteRejectionIsAliveAndSuccessRequiresCloseFree() throws {
-        let now = ContinuousClock.now, policy = try NativeShellLivenessCandidate(interval: 1, maxUnresponsivePeriods: 2)
-        var state = NativeShellLivenessState(policy: policy, now: now)
-        XCTAssertTrue(state.beginIfDue(now: now.advanced(by: .seconds(1))))
-        state.rejected(now: now.advanced(by: .seconds(1.1)))
-        XCTAssertEqual(state.facts.remoteRejections, 1); XCTAssertEqual(state.phase, .idle)
-        XCTAssertFalse(state.beginIfDue(now: now.advanced(by: .seconds(2))))
-        XCTAssertTrue(state.beginIfDue(now: now.advanced(by: .seconds(2.1))))
-        state.confirmed(cleanupTimeout: 1, now: now.advanced(by: .seconds(2.2)))
-        XCTAssertEqual(state.facts.helperChannels, 1); XCTAssertTrue(state.facts.pending)
-        XCTAssertFalse(state.beginIfDue(now: now.advanced(by: .seconds(3))))
-        state.closed(); state.freed(now: now.advanced(by: .seconds(2.4)))
-        XCTAssertEqual(state.facts.confirmations, 1); XCTAssertEqual(state.facts.helpersFreed, 1)
-        XCTAssertEqual(state.facts.helperChannels, 0); XCTAssertFalse(state.facts.pending)
-    }
-    func testFixedNativeErrorOriginRejectsLocalChannelFailureAndUnknownMessages() {
-        for message in ["Channel open failure", "Channel open failure (resource shortage)",
-                        "Channel open failure (administratively prohibited)", "Channel open failure (connect failed)",
-                        "Channel open failure (unknown channel type)"] {
-            message.withCString { XCTAssertEqual(rf_shell_probe_rejection_is_reply(-21, $0, message.utf8.count), 1) }
-        }
-        for message in ["Unexpected error", "Unable to send channel-open request", "Channel open failure extra", "", "remote text"] {
-            message.withCString { XCTAssertEqual(rf_shell_probe_rejection_is_reply(-21, $0, message.utf8.count), 0) }
-        }
-        "Channel open failure".withCString { XCTAssertEqual(rf_shell_probe_rejection_is_reply(-7, $0, 20), 0) }
-    }
-    func testNewBridgeCallsBeforeTrustSendNothing() throws {
+    func testConfigurationAndReadTimeoutBeforeTrustSendNothing() throws {
         let fds = try pair(); defer { fds.forEach { Darwin.close($0) } }
         let native = try XCTUnwrap(rf_connection_create(fds[0])); defer { rf_connection_destroy(native) }
-        let token = CancellationToken()
         XCTAssertEqual(rf_shell_packet_read_timeout(native, 302), Int32(RF_UNTRUSTED))
-        XCTAssertEqual(rf_shell_probe_open_step(native, token.native), Int32(RF_UNTRUSTED))
-        XCTAssertEqual(rf_shell_probe_close_step(native, token.native), Int32(RF_UNTRUSTED))
-        XCTAssertEqual(rf_shell_probe_free_step(native, token.native), Int32(RF_UNTRUSTED))
+        var actual = rf_tcp_keepalive(), systemError: Int32 = 0
+        XCTAssertEqual(rf_tcp_keepalive_configure(fds[0], 30, 3, &actual, &systemError), Int32(RF_SOCKET_OPTION))
+        XCTAssertEqual(systemError, EAFNOSUPPORT)
         var bytes = [UInt8](repeating: 0, count: 32)
         XCTAssertEqual(recv(fds[1], &bytes, bytes.count, MSG_DONTWAIT), -1); XCTAssertEqual(errno, EAGAIN)
     }

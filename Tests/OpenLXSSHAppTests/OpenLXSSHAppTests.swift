@@ -3,7 +3,9 @@ import Darwin
 import Foundation
 import XCTest
 import OpenLXSSHCore
+import OpenLXSSHTransport
 import OpenLXSSHFiles
+import SwiftUI
 
 @MainActor final class OpenLXSSHAppTests: XCTestCase {
     private func temporaryDirectory() throws -> URL {
@@ -18,6 +20,14 @@ import OpenLXSSHFiles
     }
     private func sample(_ name: String = "测试主机") -> HostConfiguration {
         HostConfiguration(name: name, address: "unit.invalid", username: "fixture")
+    }
+    private func preferenceReviewResult(_ request: WindowCloseReviewRequest) async -> Bool {
+        let completed = expectation(description: "preference close review resolved")
+        let waiter = Task { let value = await request.wait(); completed.fulfill(); return value }
+        await fulfillment(of: [completed], timeout: 2)
+        // Also release the exact continuation after a failed bounded expectation.
+        request.cancel()
+        return await waiter.value
     }
 
     func testFixedWorkspaceRoutingCommandsAndConnectionCatalog() async throws {
@@ -58,27 +68,36 @@ import OpenLXSSHFiles
         let (repository, _) = try repository()
         let model = AppModel(repository: repository)
         XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        let firstRequest = try XCTUnwrap(model.workspaceCommand)
+        XCTAssertNil(model.hostSearchFocusRequest, "The current visible subpage owns focus consumption")
+        XCTAssertTrue(model.focusHostSearch(for: firstRequest))
         let focus = model.hostSearchFocusRequest
         XCTAssertNotNil(focus)
         XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        XCTAssertFalse(model.focusHostSearch(for: firstRequest), "An old command cannot refocus a later page")
+        XCTAssertTrue(model.focusHostSearch(for: try XCTUnwrap(model.workspaceCommand)))
         XCTAssertNotEqual(model.hostSearchFocusRequest, focus)
+        let latestFocus = model.hostSearchFocusRequest
         let command = model.workspaceCommand
         let manager = model.files.manager, controller = model.files
         model.showWorkspace(.sftp)
-        XCTAssertFalse(model.canSearchWorkspace)
-        XCTAssertFalse(model.sendWorkspaceCommand(.search))
-        XCTAssertEqual(model.workspaceCommand, command)
+        XCTAssertTrue(model.canSearchWorkspace)
+        XCTAssertTrue(model.sendWorkspaceCommand(.search))
+        XCTAssertNotEqual(model.workspaceCommand, command)
+        XCTAssertFalse(model.focusHostSearch(for: try XCTUnwrap(model.workspaceCommand)), "SFTP search cannot steal the Vault host field")
+        XCTAssertEqual(model.hostSearchFocusRequest, latestFocus)
         for visible in [false, true] {
             model.files.tasksVisible = visible
             model.showWorkspace(.vault)
             model.showTransferTasks()
-            XCTAssertEqual(model.workspacePage, .sftp)
+            XCTAssertEqual(model.workspacePage, .vault, "Global transfer details do not change the current page")
             XCTAssertTrue(model.files.tasksVisible)
             XCTAssertTrue(model.files === controller)
             XCTAssertTrue(model.files.manager === manager)
         }
         model.returnToVaultFromFiles()
         XCTAssertEqual(model.workspacePage, .vault)
+        XCTAssertFalse(model.focusHostSearch(for: try XCTUnwrap(model.workspaceCommand)), "Returning to Vault must not consume an old SFTP search")
         XCTAssertFalse(model.files.visible)
         XCTAssertTrue(model.files.tasksVisible)
         XCTAssertTrue(model.files.manager === manager)
@@ -209,10 +228,13 @@ import OpenLXSSHFiles
                         WorkspaceInteractionContext(hasOtherKeyWindow: true)] {
             XCTAssertFalse(context.allowsWorkspaceActions)
             XCTAssertFalse(context.allowsWorkspaceSearch)
+            XCTAssertFalse(context.allowsWorkspaceFind(hasMarkedText: false))
         }
         let editing = WorkspaceInteractionContext(isEditingText: true)
         XCTAssertTrue(editing.allowsWorkspaceActions)
         XCTAssertFalse(editing.allowsWorkspaceSearch)
+        XCTAssertTrue(editing.allowsWorkspaceFind(hasMarkedText: false))
+        XCTAssertFalse(editing.allowsWorkspaceFind(hasMarkedText: true), "Find cannot take focus while the input method owns marked text")
     }
 
     func testNativeWorkspaceContainerResignsFieldEditorAndExcludesHiddenHitTesting() throws {
@@ -363,6 +385,20 @@ import OpenLXSSHFiles
         try await reopened.close()
     }
 
+    func testTerminalPresetLegacyDefaultsAndNonMonospacedPreferenceValidation() async throws {
+        let (repository, _) = try repository(), model = AppModel(repository: repository)
+        XCTAssertEqual(ColorPreset.matching(AppSettings()), .nord)
+        XCTAssertEqual(ColorPreset.nord.colors.0, "#D6D6CC")
+        XCTAssertEqual(ColorPreset.nord.colors.1, "#101010")
+        var custom = AppSettings(); custom.foregroundColor = "#D8DEE8"
+        XCTAssertEqual(ColorPreset.matching(custom), .custom)
+        var settings = AppSettings(); settings.fontName = "Helvetica"
+        XCTAssertFalse(awaiting: await model.saveSettings(settings))
+        XCTAssertEqual(model.issue?.code, "validation.invalid")
+        XCTAssertEqual(model.settings.fontName, AppSettings().fontName)
+        await model.files.closeForWindow(); try await repository.close()
+    }
+
     func testInvalidInputsShowErrorsAndLeaveStoreUnchanged() async throws {
         let (repository, _) = try repository()
         let model = AppModel(repository: repository)
@@ -441,6 +477,252 @@ import OpenLXSSHFiles
         XCTAssertThrowsError(try settings.validated())
     }
 
+    func testPreferenceCategoryResetChangesOnlyItsFields() throws {
+        var settings = AppSettings(); settings.theme = .dark; settings.startupPage = .sftp
+        settings.fontName = "Menlo-Regular"; settings.fontSize = 19; settings.historyLines = 4321
+        settings.backgroundColor = "#123456"; settings.cursorShape = .bar; settings.cursorBlink = false
+        settings.keepaliveInterval = 17; settings.keepaliveCountMax = 7
+        let baseline = SettingsDraft(settings)
+        var general = baseline; general.reset(.general)
+        XCTAssertEqual(general.value.theme, .system); XCTAssertEqual(general.value.startupPage, .vault)
+        general.value.theme = settings.theme; general.value.startupPage = settings.startupPage
+        XCTAssertEqual(general, baseline)
+        var terminal = baseline; terminal.reset(.terminal)
+        XCTAssertEqual(terminal.value.cursorShape, .block); XCTAssertTrue(terminal.value.cursorBlink)
+        XCTAssertEqual(terminal.value.fontName, AppSettings().fontName)
+        XCTAssertEqual(terminal.value.foregroundColor, ColorPreset.nord.colors.0)
+        XCTAssertEqual(terminal.value.backgroundColor, ColorPreset.nord.colors.1)
+        XCTAssertEqual(terminal.value.cursorColor, ColorPreset.nord.colors.2)
+        XCTAssertEqual(terminal.size, "13.0"); XCTAssertEqual(terminal.history, "10000")
+        XCTAssertEqual(terminal.value.theme, settings.theme); XCTAssertEqual(terminal.value.startupPage, settings.startupPage)
+        XCTAssertEqual(terminal.interval, baseline.interval); XCTAssertEqual(terminal.count, baseline.count)
+        var connection = baseline; connection.reset(.connection)
+        XCTAssertEqual(connection.interval, "30"); XCTAssertEqual(connection.count, "3")
+        connection.interval = baseline.interval; connection.count = baseline.count; XCTAssertEqual(connection, baseline)
+        for category in [PreferencesCategory.files, .privacy, .about] {
+            var staticCategory = baseline; staticCategory.reset(category); XCTAssertEqual(staticCategory, baseline)
+        }
+    }
+
+    func testMonospacedPickerAndSharedPreviewApplyUseExactRendererDefaults() throws {
+        let choices = TerminalPreferences.availableFonts()
+        XCTAssertEqual(choices.first?.name, "SFMono-Regular")
+        XCTAssertEqual(Set(choices.map(\.name)).count, choices.count)
+        XCTAssertTrue(choices.allSatisfy { TerminalPreferences.font(name: $0.name, size: 13).map(NativeTerminalView.isMonospaced) == true })
+        XCTAssertNil(TerminalPreferences.font(name: "Helvetica", size: 13))
+        XCTAssertNil(TerminalPreferences.font(name: "OpenLXSSH-Missing-\(UUID())", size: 13))
+        let terminal = NativeTerminalView(); defer { terminal.releaseResources() }
+        let legacyDraft = SettingsDraft(AppSettings())
+        XCTAssertEqual(legacyDraft.value.backgroundColor, ColorPreset.nord.colors.1)
+        var distinct = AppSettings(); distinct.backgroundColor = "#123456"
+        XCTAssertEqual(SettingsDraft(distinct).value, distinct)
+        var settings = AppSettings(); settings.theme = .light
+        try TerminalPreferences.apply(settings, to: terminal)
+        XCTAssertEqual(terminal.nativeBackgroundColor.usingColorSpace(.deviceRGB), NativeTerminalView.desktopBackground.usingColorSpace(.deviceRGB))
+        XCTAssertEqual(terminal.nativeForegroundColor.usingColorSpace(.deviceRGB), NativeTerminalView.desktopForeground.usingColorSpace(.deviceRGB))
+        XCTAssertEqual(terminal.font.fontName, NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).fontName)
+        settings.backgroundColor = "#112233"; settings.cursorColor = "#445566"; settings.theme = .dark
+        try TerminalPreferences.apply(settings, to: terminal)
+        XCTAssertEqual(terminal.nativeBackgroundColor.usingColorSpace(.deviceRGB), NSColor(sessionHex: "#112233").usingColorSpace(.deviceRGB))
+        XCTAssertEqual(terminal.caretColor.usingColorSpace(.deviceRGB), NSColor(sessionHex: "#445566").usingColorSpace(.deviceRGB))
+    }
+
+    func testSettingsSaveFreezesCloseAndDuplicateThenRetainsFailureDraft() async throws {
+        let editor = SettingsEditorModel(AppSettings()); editor.draft.size = "18"
+        let arrived = expectation(description: "settings save owns frozen draft")
+        let gate = PreferenceSaveGate()
+        addTeardownBlock { await gate.release() }
+        let save = Task { await editor.save { _ in arrived.fulfill(); await gate.suspend(); return false } }
+        await fulfillment(of: [arrived], timeout: 2)
+        XCTAssertTrue(editor.isWriting); XCTAssertFalse(editor.canEdit); XCTAssertFalse(editor.attemptClose())
+        let refused = WindowCloseReviewRequest(); editor.beginCloseReview(refused, dismiss: { XCTFail("Writing editor dismissed") })
+        XCTAssertEqual(refused.result, false)
+        let duplicate = await editor.save { _ in XCTFail("Duplicate save admitted"); return true }
+        XCTAssertFalse(duplicate)
+        await gate.release(); XCTAssertFalse(awaiting: await save.value)
+        XCTAssertFalse(editor.isWriting); XCTAssertTrue(editor.canEdit); XCTAssertTrue(editor.isDirty)
+        XCTAssertEqual(editor.draft.size, "18")
+        editor.draft.size = "nan"
+        XCTAssertFalse(awaiting: await editor.save { _ in XCTFail("Invalid preference reached repository"); return true })
+        XCTAssertEqual(editor.issue?.code, "validation.invalid"); XCTAssertEqual(editor.draft.size, "nan")
+    }
+
+    func testSettingsDirtyCancelAndStalePromptNeverDiscardNewOwner() throws {
+        let editor = SettingsEditorModel(AppSettings()); editor.draft.size = "18"
+        XCTAssertFalse(editor.attemptClose()); let prompt = try XCTUnwrap(editor.prompt)
+        editor.cancelClose(prompt.id); XCTAssertNil(editor.prompt); XCTAssertTrue(editor.isDirty)
+        XCTAssertFalse(editor.attemptClose()); let next = try XCTUnwrap(editor.prompt)
+        XCTAssertNotEqual(next.id, prompt.id); XCTAssertFalse(editor.discard(prompt.id)); XCTAssertEqual(editor.draft.size, "18")
+        editor.deactivate(); XCTAssertFalse(editor.discard(next.id)); XCTAssertEqual(editor.draft.size, "18")
+        let replacement = SettingsEditorModel(AppSettings()); replacement.draft.size = "21"
+        XCTAssertTrue(replacement.isActive); XCTAssertEqual(replacement.draft.size, "21")
+        let blockedByReset = WindowCloseReviewRequest()
+        replacement.resetReview = PreferencesResetReview(category: .general)
+        replacement.beginCloseReview(blockedByReset, dismiss: { XCTFail("Reset review replaced") })
+        XCTAssertEqual(blockedByReset.result, false); XCTAssertFalse(replacement.attemptClose())
+        replacement.deactivate()
+    }
+
+    func testSettingsOverlayCancelKeepsUnderlyingDirtyOwner() async throws {
+        let registry = WindowCloseReviewRegistry(), editor = SettingsEditorModel(AppSettings()), base = UUID()
+        defer { registry.invalidate(); editor.deactivate() }
+        editor.draft.size = "18"; var underlyingReviews = 0
+        registry.register(owner: base, begin: { _ in underlyingReviews += 1 }, cancel: {})
+        registry.registerPreferences(owner: editor.id, begin: { editor.beginCloseReview($0, dismiss: { XCTFail("Dirty overlay dismissed") }) }, cancel: { editor.cancelClose() })
+        let root = registry.request(); let prompt = try XCTUnwrap(editor.prompt)
+        registry.register(owner: base, begin: { _ in underlyingReviews += 1 }, cancel: {})
+        registry.registerPreferences(owner: editor.id, begin: { editor.beginCloseReview($0, dismiss: {}) }, cancel: { editor.cancelClose() })
+        XCTAssertTrue(registry.request() === root); XCTAssertNil(root.result); XCTAssertEqual(editor.prompt?.id, prompt.id)
+        editor.cancelClose(prompt.id)
+        XCTAssertFalse(awaiting: await preferenceReviewResult(root)); XCTAssertEqual(underlyingReviews, 0)
+        registry.finishAttempt(); editor.deactivate(); registry.clearPreferences(owner: editor.id)
+        let second = registry.request(); XCTAssertEqual(underlyingReviews, 1)
+        registry.clear(owner: base); XCTAssertEqual(second.result, false); registry.invalidate()
+    }
+
+    func testSettingsOverlaySaveAndDiscardContinueToUnderlyingRefusalOnlyAfterRemoval() async throws {
+        for save in [false, true] {
+            let registry = WindowCloseReviewRegistry(), editor = SettingsEditorModel(AppSettings())
+            defer { registry.invalidate(); editor.deactivate() }
+            editor.draft.size = "18"
+            let baseArrived = expectation(description: "underlying dirty guard reached")
+            var underlyingReviews = 0
+            registry.register(owner: UUID(), begin: { request in
+                underlyingReviews += 1; baseArrived.fulfill(); request.resolve(false)
+            }, cancel: {})
+            registry.registerPreferences(owner: editor.id, begin: { editor.beginCloseReview($0, dismiss: {}) }, cancel: { editor.cancelClose() })
+            let root = registry.request(), prompt = try XCTUnwrap(editor.prompt)
+            if save {
+                XCTAssertFalse(awaiting: await editor.save(reviewID: UUID()) { _ in XCTFail("Stale save prompt admitted"); return true })
+                XCTAssertTrue(awaiting: await editor.save(reviewID: prompt.id) { $0.fontSize == 18 })
+            }
+            else { XCTAssertTrue(editor.discard(prompt.id)) }
+            XCTAssertNil(root.result); XCTAssertEqual(underlyingReviews, 0) // still physically mounted
+            editor.deactivate(); registry.clearPreferences(owner: editor.id)
+            await fulfillment(of: [baseArrived], timeout: 2)
+            XCTAssertFalse(awaiting: await preferenceReviewResult(root)); XCTAssertEqual(underlyingReviews, 1)
+            XCTAssertFalse(registry.isCurrent(root)); registry.invalidate()
+        }
+    }
+
+    func testSettingsOverlayApprovedChainInvalidatesWhenEitherOwnerChanges() async throws {
+        let registry = WindowCloseReviewRegistry(), editor = SettingsEditorModel(AppSettings())
+        defer { registry.invalidate(); editor.deactivate() }
+        let base = UUID(), reached = expectation(description: "base approval reached")
+        var baseRevision = 0
+        registry.register(owner: base, begin: { request in
+            request.validateApproval { baseRevision == 0 }; reached.fulfill(); request.resolve(true)
+        }, cancel: {})
+        registry.registerPreferences(owner: editor.id, begin: { editor.beginCloseReview($0, dismiss: {}) }, cancel: { editor.cancelClose() })
+        let root = registry.request(); XCTAssertTrue(editor.closeApproval); XCTAssertNil(root.result)
+        editor.deactivate(); registry.clearPreferences(owner: editor.id)
+        await fulfillment(of: [reached], timeout: 2)
+        XCTAssertTrue(awaiting: await preferenceReviewResult(root)); XCTAssertTrue(registry.isCurrent(root))
+        editor.draft.size = "24"; XCTAssertFalse(registry.isCurrent(root))
+        baseRevision = 1; XCTAssertFalse(registry.isCurrent(root))
+        let replacement = SettingsEditorModel(AppSettings()); replacement.draft.size = "25"
+        registry.registerPreferences(owner: replacement.id, begin: { replacement.beginCloseReview($0, dismiss: {}) }, cancel: { replacement.cancelClose() })
+        XCTAssertFalse(registry.isCurrent(root)); registry.clearPreferences(owner: editor.id)
+        let newer = registry.request(); let prompt = try XCTUnwrap(replacement.prompt)
+        XCTAssertFalse(editor.discard(prompt.id)); XCTAssertNil(newer.result); XCTAssertEqual(replacement.draft.size, "25")
+        editor.cancelClose(); XCTAssertNil(newer.result)
+        replacement.cancelClose(prompt.id); XCTAssertFalse(awaiting: await preferenceReviewResult(newer)); registry.invalidate()
+    }
+
+    func testSettingsOverlayRealVaultDirtyGuardSurvivesApprovalAndRejectsClose() async throws {
+        let registry = WindowCloseReviewRegistry(), owner = PresentationOwner<String>()
+        owner.present("host editor"); let hostOwner = try XCTUnwrap(owner.item?.id)
+        let host = HostConfiguration(name: "original host", address: "never-connected.invalid", username: "fixture")
+        let hostEditor = VaultHostEditorModel(draft: VaultHostDraft(host: host, settings: AppSettings()), ownsPresentation: { owner.owns(hostOwner) })
+        hostEditor.draft.configuration.name = "unsaved host name"
+        let hostDraft = hostEditor.draft
+        let hostReview = VaultHostCloseReview(editor: hostEditor, dismiss: { owner.dismiss(hostOwner) },
+            complete: { owner.completeWindowCloseReview($0, dismissing: hostOwner) })
+        owner.registerWindowCloseReview(hostOwner, begin: { hostReview.begin($0) }, cancel: { hostReview.cancelPending() })
+        let hostArrived = expectation(description: "real dirty Vault guard reached")
+        registry.register(owner: UUID(), begin: { request in owner.beginWindowCloseReview(request); hostArrived.fulfill() }, cancel: { owner.cancelWindowCloseReview() })
+        let settings = SettingsEditorModel(AppSettings()); settings.draft.size = "18"
+        registry.registerPreferences(owner: settings.id, begin: { settings.beginCloseReview($0, dismiss: {}) }, cancel: { settings.cancelClose() })
+        defer { registry.invalidate(); settings.deactivate(); hostEditor.deactivate(); owner.invalidate() }
+        let root = registry.request(); let settingsPrompt = try XCTUnwrap(settings.prompt)
+        XCTAssertNil(hostReview.prompt); XCTAssertTrue(settings.discard(settingsPrompt.id))
+        settings.deactivate(); registry.clearPreferences(owner: settings.id)
+        await fulfillment(of: [hostArrived], timeout: 2)
+        let hostPrompt = try XCTUnwrap(hostReview.prompt); XCTAssertEqual(hostPrompt.kind, .dirty)
+        XCTAssertTrue(hostReview.cancel(hostPrompt.id))
+        XCTAssertFalse(awaiting: await preferenceReviewResult(root)); XCTAssertFalse(registry.isCurrent(root))
+        XCTAssertEqual(hostEditor.draft, hostDraft); XCTAssertEqual(owner.item?.id, hostOwner)
+    }
+
+    func testSettingsOverlayRealVaultCancellationNeverReachedWhenSettingsCancel() async throws {
+        let registry = WindowCloseReviewRegistry(), owner = PresentationOwner<String>()
+        owner.present("host editor"); let id = try XCTUnwrap(owner.item?.id)
+        let hostEditor = VaultHostEditorModel(draft: VaultHostDraft(host: sample(), settings: AppSettings()), ownsPresentation: { owner.owns(id) })
+        hostEditor.draft.configuration.name = "dirty Vault"
+        let review = VaultHostCloseReview(editor: hostEditor, dismiss: { owner.dismiss(id) }, complete: { owner.completeWindowCloseReview($0, dismissing: id) })
+        owner.registerWindowCloseReview(id, begin: { review.begin($0) }, cancel: { review.cancelPending() })
+        registry.register(owner: UUID(), begin: { owner.beginWindowCloseReview($0) }, cancel: { owner.cancelWindowCloseReview() })
+        let settings = SettingsEditorModel(AppSettings()); settings.draft.size = "22"
+        registry.registerPreferences(owner: settings.id, begin: { settings.beginCloseReview($0, dismiss: {}) }, cancel: { settings.cancelClose() })
+        defer { registry.invalidate(); settings.deactivate(); hostEditor.deactivate(); owner.invalidate() }
+        let request = registry.request(), prompt = try XCTUnwrap(settings.prompt)
+        settings.cancelClose(prompt.id)
+        XCTAssertFalse(awaiting: await preferenceReviewResult(request)); XCTAssertNil(review.prompt)
+        XCTAssertEqual(owner.item?.id, id); XCTAssertTrue(hostEditor.dirty); XCTAssertTrue(settings.isDirty)
+    }
+
+    func testStartupManagementPreferencePersistsOnlyFixedPageAndNeverConnects() async throws {
+        let suite = "OpenLXSSH.PreferencesTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let (repository, directory) = try repository(), router = RecordingRouter()
+        var settings = AppSettings(); settings.startupPage = .lastManagement
+        try await repository.apply([.saveSettings(settings)])
+        defaults.set("session-secret-answer", forKey: ManagementPagePreferences.key)
+        XCTAssertEqual(ManagementPagePreferences.startup(.lastManagement, defaults: defaults), .vault)
+        ManagementPagePreferences.record(.sftp, defaults: defaults)
+        ManagementPagePreferences.record(.session(UUID()), defaults: defaults)
+        let model = AppModel(repository: repository, sessionRouter: router, location: .isolated(directory), preferencesDefaults: defaults)
+        XCTAssertTrue(awaiting: await model.reload()); XCTAssertEqual(model.workspacePage, .sftp)
+        XCTAssertTrue(model.sessions.tabs.isEmpty); XCTAssertTrue(router.requests.isEmpty); XCTAssertNil(model.connectionNotice)
+        XCTAssertEqual(defaults.string(forKey: ManagementPagePreferences.key), "sftp")
+        model.windowClosed(); XCTAssertEqual(defaults.string(forKey: ManagementPagePreferences.key), "sftp")
+        await model.files.closeForWindow(); try await repository.close()
+    }
+
+    func testDiagnosticPreviewCopiesOnlyApprovedCategoriesToIndependentPasteboard() throws {
+        var settings = AppSettings(); settings.fontName = "/private/path/NOT-PUBLIC"; settings.backgroundColor = "#123456"
+        let snapshot = PublicDiagnosticSnapshot(version: "1.2.3", build: "42", operatingSystem: "macOS synthetic · arm64", hostCount: 4, keyCount: 2, sessionCount: 1, settings: settings)
+        let versionOnly = snapshot.preview(categories: [.version])
+        XCTAssertTrue(versionOnly.contains("1.2.3")); XCTAssertTrue(versionOnly.contains("42"))
+        XCTAssertFalse(versionOnly.contains("macOS")); XCTAssertFalse(versionOnly.contains("数量")); XCTAssertFalse(versionOnly.contains("终端："))
+        let all = snapshot.preview(categories: Set(DiagnosticCategory.allCases))
+        XCTAssertTrue(all.contains("macOS synthetic")); XCTAssertTrue(all.contains("主机 4")); XCTAssertTrue(all.contains("字号 13.0"))
+        XCTAssertFalse(all.contains("NOT-PUBLIC")); XCTAssertFalse(all.contains("#123456")); XCTAssertFalse(all.contains("/private"))
+        let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+        XCTAssertTrue(PublicDiagnosticSnapshot.copy(versionOnly, to: board))
+        XCTAssertEqual(board.string(forType: .string), versionOnly)
+        XCTAssertEqual(snapshot.preview(categories: []), "未选择任何诊断项目。")
+        XCTAssertTrue(DesktopHelp.localDataDescription.contains("Keychain")); XCTAssertTrue(DesktopHelp.shortcuts.contains("⌘W"))
+        let missing = DesktopLicense(id: "missing", title: "synthetic missing", resource: "OpenLXSSH-Missing-\(UUID()).txt")
+        XCTAssertTrue(DesktopHelp.licenseText(missing, bundle: Bundle(for: Self.self)).contains("不会从网络补取"))
+        let noResources = Bundle(for: Self.self)
+        if noResources.url(forResource: "GRDB-LICENSE", withExtension: "txt") == nil {
+            let grdb = try XCTUnwrap(DesktopHelp.licenses.first { $0.id == "grdb" })
+            XCTAssertTrue(DesktopHelp.licenseText(grdb, bundle: noResources).contains("不会从网络补取"))
+        }
+    }
+
+    func testSettingsCommittedAfterReadFailureApplyWithoutHostMutation() async throws {
+        let repository = PreferencesReadFailureRepository(), directory = try temporaryDirectory()
+        let model = AppModel(repository: repository, location: .isolated(directory))
+        var settings = AppSettings(); settings.cursorShape = .underline; settings.startupPage = .sftp; settings.fontSize = 19
+        XCTAssertTrue(awaiting: await model.saveSettings(settings))
+        XCTAssertEqual(model.settings, settings); XCTAssertEqual(model.issue?.code, "storage.busy")
+        let persisted = await repository.settings, changes = await repository.writeCount
+        XCTAssertEqual(persisted, settings); XCTAssertEqual(changes, 1)
+        await model.files.closeForWindow()
+    }
+
     func testStorageErrorsAreSanitizedAndCanRetry() async throws {
         let repository = FailingRepository()
         let model = AppModel(repository: repository)
@@ -465,6 +747,176 @@ import OpenLXSSHFiles
         _ = await older.value
         XCTAssertEqual(model.hosts.map(\.name), ["new"])
         XCTAssertFalse(model.isLoading)
+    }
+
+    func testExplicitReloadCoalescesMetadataReadsAndWaitsForLatestAppliedSFTPAndCRUDState() async throws {
+        let (base, directory) = try repository(), original = sample("connected before refresh")
+        try await base.apply([.insertHost(original)])
+        let controlled = ControlledReloadRepository(base: base)
+        let remote = directory.appendingPathComponent("remote")
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: false)
+        let connector = AppModelFilesConnector(root: remote)
+        let model = AppModel(repository: controlled, location: .isolated(directory), filesConnector: connector)
+        addTeardownBlock {
+            await MainActor.run { model.windowClosed() }
+            await controlled.releaseAll(); await model.files.closeForWindow(); try await controlled.close()
+        }
+        XCTAssertTrue(awaiting: await model.reload())
+        model.selectedHostID = original.id; model.showWorkspace(.sftp)
+        await model.files.waitUntilCurrentWorkCompletes()
+        model.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await model.files.waitUntilCurrentWorkCompletes(); XCTAssertEqual(model.files.state, .ready)
+        let firstRead = expectation(description: "explicit read holds its old database snapshot")
+        let latestRead = expectation(description: "coalesced worker starts a fresh read after notifications")
+        let metadataOne = expectation(description: "first revocation metadata read is independent of held GUI read")
+        let metadataTwo = expectation(description: "observer processes another revocation before GUI read drains")
+        await controlled.holdNextReads(2)
+        await controlled.whenSnapshotStarts(1) { firstRead.fulfill() }
+        await controlled.whenSnapshotStarts(2) { latestRead.fulfill() }
+        await controlled.whenMetadataReads(1) { metadataOne.fulfill() }
+        await controlled.whenMetadataReads(2) { metadataTwo.fulfill() }
+        var finished = false
+        let explicit = Task { let result = await model.reload(); finished = true; return result }
+        await fulfillment(of: [firstRead], timeout: 2)
+        var changed = original; changed.port = 2222
+        try await controlled.apply([.updateHost(changed)])
+        await fulfillment(of: [metadataOne], timeout: 2)
+        var latest = changed; latest.username = "latest-user"
+        try await controlled.apply([.updateHost(latest)])
+        // Entering the second security read proves the observer scheduled the
+        // first metadata refresh without awaiting the still-blocked GUI worker.
+        await fulfillment(of: [metadataTwo], timeout: 2)
+        try await controlled.releaseSnapshot(1)
+        await fulfillment(of: [latestRead], timeout: 2)
+        XCTAssertFalse(finished); XCTAssertEqual(model.connectionHosts, [original])
+        try await controlled.releaseSnapshot(2)
+        XCTAssertTrue(awaiting: await explicit.value)
+        XCTAssertEqual(model.connectionHosts, [latest]); XCTAssertFalse(model.isLoading)
+        XCTAssertEqual(model.files.issue?.code, "files.hostChanged")
+        XCTAssertEqual(model.files.selectedHost, original)
+        let connected = await connector.hosts; XCTAssertEqual(connected, [original])
+        let beforeWrite = await controlled.writeCount
+        var saved = latest; saved.name = "committed and refreshed once"
+        XCTAssertTrue(awaiting: await model.saveHost(saved, isNew: false))
+        XCTAssertEqual(model.connectionHosts, [saved])
+        let afterWrite = await controlled.writeCount; XCTAssertEqual(afterWrite, beforeWrite + 1)
+    }
+
+    func testCoalescedReloadRejectsChangedQueryAndWindowCloseWithoutApplyingLateRead() async throws {
+        let (base, directory) = try repository(), old = sample("old query"), new = sample("new query")
+        try await base.apply([.insertHost(old), .insertHost(new)])
+        let controlled = ControlledReloadRepository(base: base)
+        let model = AppModel(repository: controlled, location: .isolated(directory))
+        addTeardownBlock {
+            await MainActor.run { model.windowClosed() }
+            await controlled.releaseAll(); await model.files.closeForWindow(); try await controlled.close()
+        }
+        XCTAssertTrue(awaiting: await model.reload())
+        await controlled.holdNextReads(1)
+        let oldRead = expectation(description: "old query is suspended")
+        await controlled.whenSnapshotStarts(1) { oldRead.fulfill() }
+        model.search = "old"
+        let older = Task { await model.reload() }
+        await fulfillment(of: [oldRead], timeout: 2)
+        model.search = "new"
+        XCTAssertTrue(awaiting: await model.reload())
+        XCTAssertFalse(awaiting: await older.value)
+        XCTAssertEqual(model.hosts.map(\.id), [new.id]); XCTAssertFalse(model.isLoading)
+        await controlled.holdNextReads(1)
+        let index = await controlled.nextSnapshotIndex
+        let closingRead = expectation(description: "read is held before window close")
+        await controlled.whenSnapshotStarts(index) { closingRead.fulfill() }
+        let closing = Task { await model.reload() }
+        await fulfillment(of: [closingRead], timeout: 2)
+        model.windowClosed()
+        XCTAssertFalse(awaiting: await closing.value)
+        XCTAssertEqual(model.hosts.map(\.id), [new.id]); XCTAssertFalse(model.isLoading)
+        let pending = await controlled.pendingReadCount; XCTAssertEqual(pending, 0)
+    }
+
+    func testCommittedSecretSaveWithCoalescedReadFailureKeepsSnapshotAndNeverRepeatsWrite() async throws {
+        let (base, directory) = try repository(), original = sample("last successful snapshot")
+        try await base.apply([.insertHost(original)])
+        let controlled = ControlledReloadRepository(base: base), credentials = FakeCredentials()
+        let security = SecurityCoordinator(repository: controlled, location: .isolated(directory), credentials: credentials)
+        let model = AppModel(repository: controlled, security: security, location: .isolated(directory))
+        addTeardownBlock {
+            await MainActor.run { model.windowClosed() }
+            await controlled.releaseAll(); await model.files.closeForWindow(); try await security.close(); try await controlled.close()
+        }
+        XCTAssertTrue(awaiting: await model.reload())
+        await controlled.failSnapshotReads()
+        let saved = sample("new committed host")
+        XCTAssertTrue(awaiting: await model.saveHostSecurely(saved, isNew: true,
+            password: .remember(.init(utf8: "public disposable in-memory test value"))))
+        XCTAssertEqual(model.hosts, [original]); XCTAssertEqual(model.issue?.code, "storage.busy")
+        XCTAssertFalse(awaiting: await model.reload())
+        XCTAssertEqual(model.hosts, [original]); XCTAssertFalse(model.isLoading)
+        let writes = await controlled.writeCount, saves = await credentials.saveCount
+        XCTAssertEqual(writes, 1); XCTAssertEqual(saves, 1)
+        let persisted = try await base.snapshot(query: HostQuery())
+        let committed = try XCTUnwrap(persisted.hosts.first { $0.id == saved.id })
+        XCTAssertTrue(committed.savePasswordAuthorized); XCTAssertNotNil(committed.credentialRef)
+    }
+
+    func testOldWindowSecurityReadCannotRevokeNewPreparedOwnerButCurrentWindowStillRevokesWithoutGUIRead() async throws {
+        let (base, directory) = try repository(), original = sample("old window catalog")
+        try await base.apply([.insertHost(original)])
+        let controlled = ControlledReloadRepository(base: base), next = sample("new window prepared host")
+        let builder = PreparedMetadataBuilder(host: next)
+        let model = AppModel(repository: controlled, location: .isolated(directory), nativeCandidateBuilder: builder)
+        addTeardownBlock {
+            await MainActor.run { model.windowClosed() }
+            await controlled.releaseAll(); await model.sessions.closeAll()
+            await model.files.closeForWindow(); try await controlled.close()
+        }
+        XCTAssertTrue(awaiting: await model.reload())
+        let oldRead = expectation(description: "old-window security metadata captured before new host exists")
+        await controlled.holdNextMetadataRead()
+        await controlled.whenMetadataReads(1) { oldRead.fulfill() }
+        var renamed = original; renamed.name = "old window committed update"
+        try await controlled.apply([.updateHost(renamed)])
+        await fulfillment(of: [oldRead], timeout: 2)
+        model.windowClosed()
+        XCTAssertTrue(awaiting: await model.reload())
+        try await controlled.apply([.insertHost(next)])
+        XCTAssertTrue(awaiting: await model.reload())
+        let intent = VaultTransientConnectionIntent(host: next, secret: .init(utf8: "public disposable prepared test value"))
+        let prepared = try await model.prepareTransientConnection(next, intent: intent)
+        defer { prepared.cancel() }
+        let driver = try XCTUnwrap(builder.driver)
+        XCTAssertFalse(intent.consumed); XCTAssertEqual(driver.state, .idle)
+        let currentRead = expectation(description: "observer advances past discarded old security response")
+        await controlled.whenMetadataReads(2) { currentRead.fulfill() }
+        try await controlled.releaseMetadataRead()
+        await fulfillment(of: [currentRead], timeout: 2)
+        XCTAssertFalse(intent.consumed); XCTAssertEqual(driver.state, .idle)
+        XCTAssertTrue(model.sessions.tabs.isEmpty)
+
+        // Bring every subsequent GUI request onto the same current query before
+        // holding one. A query change must not suppress current-window revocation.
+        model.search = "held current query"
+        XCTAssertTrue(awaiting: await model.reload())
+        let guiRead = expectation(description: "current GUI snapshot is held independently")
+        let heldIndex = await controlled.holdNextSnapshot { guiRead.fulfill() }
+        var guiFinished = false
+        let gui = Task { let result = await model.reload(); guiFinished = true; return result }
+        await fulfillment(of: [guiRead], timeout: 2)
+        let revokedRead = expectation(description: "current-window deletion metadata reaches observer")
+        let followingRead = expectation(description: "observer passed current revocation while GUI remains held")
+        await controlled.whenMetadataReads(3) { revokedRead.fulfill() }
+        await controlled.whenMetadataReads(4) { followingRead.fulfill() }
+        try await controlled.apply([.deleteHost(next.id)])
+        await fulfillment(of: [revokedRead], timeout: 2)
+        renamed.name = "current window following notification"
+        try await controlled.apply([.updateHost(renamed)])
+        await fulfillment(of: [followingRead], timeout: 2)
+        XCTAssertFalse(guiFinished)
+        XCTAssertTrue(intent.consumed); XCTAssertEqual(driver.state, .closed)
+        XCTAssertThrowsError(try prepared.commit())
+        XCTAssertTrue(model.sessions.tabs.isEmpty)
+        try await controlled.releaseSnapshot(heldIndex)
+        XCTAssertTrue(awaiting: await gui.value)
     }
 
     func testIsolationDirectoryRejectsSymlinkAndWrongRoot() async throws {
@@ -496,6 +948,210 @@ import OpenLXSSHFiles
     }
 }
 
+extension OpenLXSSHAppTests {
+    func testWindowTabsViewportUsesMeasuredBoundsAndTabEdgesForNavigation() async throws {
+        let a = UUID(), b = UUID(), c = UUID(), ids = [a, b, c]
+        let frames = [a: CGRect(x: 4, y: 0, width: 90, height: 34), b: CGRect(x: 98, y: 0, width: 180, height: 34), c: CGRect(x: 282, y: 0, width: 120, height: 34)]
+        let start = WorkspaceTabViewport(visibleRect: CGRect(x: 0, y: 0, width: 220, height: 40), contentWidth: 406)
+        XCTAssertFalse(start.canGoBack); XCTAssertTrue(start.canGoForward)
+        XCTAssertNil(start.navigationTarget(in: ids, frames: frames, forwards: false))
+        XCTAssertEqual(start.navigationTarget(in: ids, frames: frames, forwards: true), b)
+        XCTAssertTrue(start.contains(frames[a]!)); XCTAssertFalse(start.contains(frames[b]!))
+        let end = WorkspaceTabViewport(visibleRect: CGRect(x: 186, y: 0, width: 220, height: 40), contentWidth: 406)
+        XCTAssertTrue(end.canGoBack); XCTAssertFalse(end.canGoForward)
+        XCTAssertEqual(end.navigationTarget(in: ids, frames: frames, forwards: false), b)
+        XCTAssertNil(end.navigationTarget(in: ids, frames: frames, forwards: true))
+        let resized = WorkspaceTabViewport(visibleRect: CGRect(x: 0, y: 0, width: 500, height: 40), contentWidth: 406)
+        XCTAssertFalse(resized.canGoBack); XCTAssertFalse(resized.canGoForward); XCTAssertTrue(resized.contains(frames[c]!))
+        XCTAssertNil(start.navigationTarget(in: [UUID()], frames: frames, forwards: true))
+        try await verifyOwnedWindowTabStrip()
+    }
+
+    private func verifyOwnedWindowTabStrip() async throws {
+        _ = NSApplication.shared
+        let (repository, directory) = try repository(), host = sample("synthetic overflow")
+        try await repository.apply([.insertHost(host)])
+        let app = AppModel(repository: repository, location: .isolated(directory), sessionBuilder: WindowTabsLayoutBuilder(host: host))
+        _ = await app.reload()
+        for _ in 0..<9 { app.requestSession(hostID: host.id, mode: .newSession); await app.sessions.selectedTab?.preparation?.value }
+        let ids = app.sessions.tabs.map(\.id)
+        app.showWorkspace(.session(ids[0]))
+        let window = WindowTabsEventWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 160), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
+        let hosting = NSHostingView(rootView: WorkspaceTabBar(model: app))
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        addTeardownBlock { await app.sessions.closeAll(); await app.files.closeForWindow(); try await repository.close() }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        try await settleWindowTabs(window) { !descendants(hosting).compactMap { $0 as? NSScrollView }.isEmpty }
+        let scroll = try XCTUnwrap(descendants(hosting).compactMap { $0 as? NSScrollView }.first)
+        func tabView(_ id: UUID) throws -> WorkspaceTabMiddleClickView {
+            try XCTUnwrap(descendants(hosting).compactMap { $0 as? WorkspaceTabMiddleClickView }.first { $0.identifier?.rawValue == "tab.middle." + id.uuidString })
+        }
+        func fullyVisible(_ id: UUID) throws -> Bool {
+            let tab = try tabView(id), rect = tab.convert(tab.bounds, to: scroll.contentView)
+            return scroll.contentView.bounds.insetBy(dx: -1, dy: -1).contains(rect)
+        }
+        XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).bounds.width, scroll.contentView.bounds.width)
+        XCTAssertTrue(try fullyVisible(ids[0]))
+        func arrow(_ id: String) throws -> NSButton {
+            try XCTUnwrap(descendants(hosting).compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == id })
+        }
+        let forward = try arrow("workspace.tabs.forward")
+        XCTAssertTrue(forward.isEnabled); forward.performClick(nil)
+        try await settleWindowTabs(window) { scroll.contentView.bounds.minX > 0 }
+        let arrowOffset = scroll.contentView.bounds.minX
+        XCTAssertGreaterThan(arrowOffset, 0)
+        try await settleWindowTabs(window)
+        XCTAssertEqual(scroll.contentView.bounds.minX, arrowOffset, accuracy: 1, "Arrow navigation must not snap back to the active tab")
+        let clip = scroll.contentView, document = try XCTUnwrap(scroll.documentView)
+        let manual = min(document.bounds.width - clip.bounds.width, arrowOffset + clip.bounds.width / 2)
+        clip.scroll(to: NSPoint(x: manual, y: clip.bounds.minY)); scroll.reflectScrolledClipView(clip)
+        try await settleWindowTabs(window)
+        XCTAssertEqual(clip.bounds.minX, manual, accuracy: 1, "User scrolling must not reveal the old active tab")
+        window.setContentSize(NSSize(width: 1000, height: 160))
+        try await settleWindowTabs(window) { try fullyVisible(ids[0]) }
+        XCTAssertTrue(try fullyVisible(ids[0]), "Resize must reveal the active tab")
+        app.showWorkspace(.session(ids[8])); try await settleWindowTabs(window) { try fullyVisible(ids[8]) }
+        XCTAssertTrue(try fullyVisible(ids[8]), "Selection must reveal the exact active tab")
+        app.sessions.moveTab(ids[8], before: ids[0]); try await settleWindowTabs(window) { try fullyVisible(ids[8]) }
+        XCTAssertTrue(try fullyVisible(ids[8]), "Reorder must reveal the active tab after layout")
+        XCTAssertTrue(try arrow("workspace.tabs.forward").isEnabled)
+        XCTAssertFalse(try arrow("workspace.tabs.back").isEnabled)
+        XCTAssertEqual(app.workspacePage, .session(ids[8]))
+        print("WindowTabs owned NSWindow: arrow/manual retention and resize/select/reorder reveal reached")
+        await app.sessions.closeAll(); await app.files.closeForWindow(); try await repository.close()
+    }
+
+    private func settleWindowTabs(_ window: NSWindow, until condition: (() throws -> Bool)? = nil) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        var stableBounds: CGRect?, stablePasses = 0
+        repeat {
+            window.contentView?.layoutSubtreeIfNeeded()
+            if let condition, try condition() { return }
+            if condition == nil {
+                let bounds = window.contentView?.bounds
+                stablePasses = bounds == stableBounds ? stablePasses + 1 : 0; stableBounds = bounds
+                if stablePasses >= 10 { return } // Stability observation only, never an async completion signal.
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        } while ContinuousClock.now < deadline
+        XCTFail("Owned window did not reach the observed layout condition within 3 seconds")
+    }
+
+    func testWindowTabsFrameRecoveryPreservesVisibleAndClampsMissingDisplayCorruption() {
+        let main = NSRect(x: 0, y: 24, width: 1440, height: 876), other = NSRect(x: -1920, y: 24, width: 1920, height: 1056)
+        let good = NSRect(x: -1800, y: 70, width: 1120, height: 720)
+        XCTAssertEqual(MainWindowFramePreferences.recoveredFrame(good, visibleFrames: [main, other]), good)
+        for input in [good, NSRect(x: 30_000, y: -30_000, width: 1120, height: 720), NSRect(x: 0, y: 0, width: 9000, height: 9000), NSRect(x: 20, y: 20, width: 30, height: 40), NSRect(x: CGFloat.nan, y: 0, width: 1200, height: CGFloat.infinity)] {
+            let result = MainWindowFramePreferences.recoveredFrame(input, visibleFrames: [main])
+            XCTAssertTrue(main.contains(result)); XCTAssertGreaterThanOrEqual(result.width, 920); XCTAssertGreaterThanOrEqual(result.height, 580)
+        }
+        let noScreen = MainWindowFramePreferences.recoveredFrame(.zero, visibleFrames: [])
+        XCTAssertEqual(noScreen.size, MainWindowFramePreferences.minimumSize)
+    }
+
+    func testWindowTabsMiddleClickBelongsOnlyToExactNativeTargetAndNoModifierOrEditor() async throws {
+        _ = NSApplication.shared
+        let window = WindowTabsEventWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.orderOut(nil) }
+        let root = try XCTUnwrap(window.contentView)
+        let a = WorkspaceTabMiddleClickView(frame: NSRect(x: 120, y: 100, width: 160, height: 34))
+        let b = WorkspaceTabMiddleClickView(frame: NSRect(x: 290, y: 100, width: 160, height: 34))
+        let editor = NSTextField(string: "editor"), fixed = NSButton(title: "fixed", target: nil, action: nil)
+        editor.frame = NSRect(x: 120, y: 30, width: 220, height: 26); fixed.frame = NSRect(x: 0, y: 100, width: 100, height: 34)
+        let nativeViews: [NSView] = [fixed, editor, a, b]
+        nativeViews.forEach { root.addSubview($0) }
+        var aClosed = 0, bClosed = 0; a.closeAction = { aClosed += 1 }; b.closeAction = { bClosed += 1 }
+        func event(_ type: NSEvent.EventType, point: NSPoint, flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+            let base = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: flags, timestamp: 1, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+            guard type == .otherMouseDown || type == .otherMouseUp else { return base }
+            let cg = try XCTUnwrap(base.cgEvent)
+            cg.setIntegerValueField(.mouseEventButtonNumber, value: 2)
+            let screen = window.convertPoint(toScreen: point)
+            let height = NSScreen.screens.first?.frame.maxY ?? 0
+            cg.location = CGPoint(x: screen.x, y: height - screen.y)
+            let initial = try XCTUnwrap(NSEvent(cgEvent: cg))
+            let location = cg.location
+            cg.location = CGPoint(x: location.x + point.x - initial.locationInWindow.x, y: location.y + initial.locationInWindow.y - point.y)
+            let middle = try XCTUnwrap(NSEvent(cgEvent: cg))
+            XCTAssertEqual(middle.windowNumber, window.windowNumber)
+            XCTAssertEqual(middle.locationInWindow.x, point.x, accuracy: 0.1)
+            XCTAssertEqual(middle.locationInWindow.y, point.y, accuracy: 0.1)
+            return middle
+        }
+        let point = a.convert(NSPoint(x: 50, y: 15), to: nil)
+        let down = try event(.otherMouseDown, point: point), up = try event(.otherMouseUp, point: point)
+        print("WindowTabs middle public facts: button=\(down.buttonNumber) windowMatches=\(down.window === window) input=\(point) actual=\(down.locationInWindow) local=\(a.convert(down.locationInWindow, from: nil)) hidden=\(a.isHiddenOrHasHiddenAncestor) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil)")
+        XCTAssertEqual(down.buttonNumber, 2); XCTAssertTrue(a.owns(down)); XCTAssertFalse(b.owns(down))
+        a.otherMouseDown(with: down); a.otherMouseUp(with: up); XCTAssertEqual(aClosed, 1); XCTAssertEqual(bClosed, 0)
+        for flags in [NSEvent.ModifierFlags.command, .control, .option, .shift] {
+            let modified = try event(.otherMouseDown, point: point, flags: flags)
+            XCTAssertFalse(a.owns(modified)); a.otherMouseDown(with: modified); a.otherMouseUp(with: up)
+        }
+        XCTAssertFalse(a.owns(try event(.leftMouseDown, point: point))); XCTAssertFalse(a.owns(try event(.rightMouseDown, point: point)))
+        for view in [editor, fixed, b] as [NSView] {
+            let outside = view.convert(NSPoint(x: 10, y: 10), to: nil)
+            XCTAssertFalse(a.owns(try event(.otherMouseDown, point: outside)))
+        }
+        a.otherMouseDown(with: down); a.otherMouseUp(with: try event(.otherMouseUp, point: NSPoint(x: 10, y: 10)))
+        a.isHidden = true; XCTAssertFalse(a.owns(down)); a.otherMouseDown(with: down); a.otherMouseUp(with: up)
+        XCTAssertEqual(aClosed, 1); XCTAssertEqual(bClosed, 0); XCTAssertFalse(a.acceptsFirstResponder)
+        XCTAssertEqual(editor.stringValue, "editor")
+        a.isHidden = false
+        try await settleWindowTabs(window)
+        let parentPoint = a.convert(NSPoint(x: 50, y: 15), to: a.superview)
+        XCTAssertFalse(a.bounds.contains(parentPoint), "The test must exercise parent coordinates, not accidental local bounds")
+        XCTAssertNil(a.hitTest(parentPoint), "No current middle event must fall through")
+        var hitMiddle = false, ordinaryFellThrough = false
+        var routedTypes: [NSEvent.EventType] = []
+        window.observeEvent = { current, resolvedHit in
+            routedTypes.append(current.type)
+            XCTAssertTrue(NSApp.currentEvent === current, "NSApplication dispatch must establish this exact event, not a previous event")
+            XCTAssertTrue(current.window === window)
+            XCTAssertEqual(current.windowNumber, window.windowNumber)
+            guard current.window === window else { return }
+            let point = a.convert(current.locationInWindow, from: nil)
+            let parent = a.convert(point, to: a.superview)
+            if current.type == .otherMouseDown || current.type == .otherMouseUp { XCTAssertEqual(current.buttonNumber, 2) }
+            if current.type == .otherMouseDown {
+                XCTAssertTrue(resolvedHit === a, "The owning window must resolve the real child hit target")
+                hitMiddle = a.hitTest(parent) === a
+            }
+            if current.type == .leftMouseUp { ordinaryFellThrough = a.hitTest(parent) == nil }
+        }
+        // App-local dispatch only: do not post to the global event stream or replace currentEvent.
+        NSApp.sendEvent(down); NSApp.sendEvent(up)
+        XCTAssertTrue(hitMiddle, "Exact window middle event must hit the owned child using parent coordinates")
+        XCTAssertEqual(aClosed, 2); XCTAssertEqual(bClosed, 0)
+        let leftUp = try event(.leftMouseUp, point: point)
+        NSApp.sendEvent(leftUp)
+        XCTAssertTrue(ordinaryFellThrough); XCTAssertEqual(aClosed, 2)
+        XCTAssertEqual(routedTypes, [.otherMouseDown, .otherMouseUp, .leftMouseUp], "All three exact events must reach only the owned window")
+        window.observeEvent = nil
+        print("WindowTabs owned NSApplication dispatch: routed=\(routedTypes.count) exactMiddleHit=\(hitMiddle) primaryFallThrough=\(ordinaryFellThrough) closeA=\(aClosed) closeB=\(bClosed)")
+    }
+
+    func testWindowTabsIsolatedPreferencesDoNotUseGlobalFrameAutosaveOrRestoreConnections() async throws {
+        let (repository, directory) = try repository(), router = RecordingRouter()
+        let suite = "OpenLXSSH.WindowTabs.Tests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("sftp", forKey: ManagementPagePreferences.key)
+        let isolated = AppModel(repository: repository, sessionRouter: router, location: .isolated(directory), preferencesDefaults: defaults)
+        XCTAssertNil(isolated.mainWindowFrameAutosaveName)
+        XCTAssertTrue(isolated.desktopPreferencesDefaults === defaults)
+        XCTAssertTrue(awaiting: await isolated.reload()); XCTAssertTrue(isolated.sessions.tabs.isEmpty); XCTAssertTrue(router.requests.isEmpty)
+        let vault = VaultDesktopModel(app: isolated); XCTAssertTrue(awaiting: await vault.load())
+        vault.managementPage = .trust
+        XCTAssertNotNil(defaults.data(forKey: "OpenLXSSH.Vault.Desktop.v1.navigation.v1"))
+        XCTAssertTrue(isolated.sessions.tabs.isEmpty); XCTAssertTrue(router.requests.isEmpty)
+        await isolated.files.closeForWindow(); try await repository.close()
+    }
+}
+
 // Evaluate async results before passing them into XCTest's synchronous autoclosures.
 private func XCTAssertTrue(awaiting value: Bool, file: StaticString = #filePath, line: UInt = #line) {
     XCTAssertTrue(value, file: file, line: line)
@@ -519,6 +1175,46 @@ private actor AppModelFilesConnector: FilesConnecting {
     }
 }
 
+@MainActor private final class WindowTabsLayoutBuilder: SessionBuilding {
+    let host: HostConfiguration
+    init(host: HostConfiguration) { self.host = host }
+    func configuration(hostID: UUID) async throws -> (HostConfiguration, SSHSessionConfiguration) {
+        (host, try SessionEnvironment.configuration(host: host, keyPath: nil))
+    }
+    func prepare(hostID: UUID, sessionID: UUID) async throws -> ReadySession {
+        ReadySession(host: host, configuration: try SessionEnvironment.configuration(host: host, keyPath: nil), driver: WindowTabsLayoutDriver(id: sessionID))
+    }
+}
+@MainActor private final class WindowTabsLayoutDriver: SessionDriving {
+    let id: UUID
+    let terminal = NativeTerminalView()
+    var token: SessionToken?
+    var state: SSHSessionState = .idle
+    var canReconnect: Bool { false }
+    var onState: ((SessionToken?, SSHSessionState) -> Void)?
+    var onTrust: (([SessionTrustPrompt]) -> Void)?
+    var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
+    init(id: UUID) { self.id = id }
+    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
+        let value = SessionToken(sessionID: id, generation: 1); token = value; state = .connectionPending; onState?(value, state); return value
+    }
+    func accept(_ prompt: SessionTrustPrompt) async throws {}
+    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {}
+    func cancel() { state = .disconnected(nil); onState?(token, state) }
+    func closeTab() { state = .closed; terminal.releaseResources(); onState?(token, state) }
+}
+@MainActor private final class WindowTabsEventWindow: NSWindow {
+    var observeEvent: ((NSEvent, NSView?) -> Void)?
+    override func sendEvent(_ event: NSEvent) {
+        if let contentView {
+            let point = contentView.convert(event.locationInWindow, from: nil)
+            let parentPoint = contentView.convert(point, to: contentView.superview)
+            observeEvent?(event, contentView.hitTest(parentPoint))
+        }
+        super.sendEvent(event)
+    }
+}
+
 @MainActor private final class RecordingRouter: SessionRouting {
     var requests: [SessionRequest] = []
     var closeCount = 0
@@ -538,6 +1234,26 @@ private actor FailingRepository: AppRepositoryProtocol {
     func copyFolder(id: UUID) throws -> HostFolder { throw RepositoryError.notFound }
     func close() {}
 }
+private actor PreferenceSaveGate {
+    private var released = false
+    private var pending: CheckedContinuation<Void, Never>?
+    func suspend() async { if !released { await withCheckedContinuation { pending = $0 } } }
+    func release() { released = true; pending?.resume(); pending = nil }
+}
+
+private actor PreferencesReadFailureRepository: AppRepositoryProtocol {
+    private(set) var settings = AppSettings()
+    private(set) var writeCount = 0
+    func snapshot(query: HostQuery) throws -> AppSnapshot { throw RepositoryError.databaseBusy }
+    func apply(_ changes: [RepositoryChange]) throws {
+        guard changes.count == 1, case .saveSettings(let value) = changes[0] else { throw RepositoryError.invalidField("preferencesOnly") }
+        settings = value; writeCount += 1
+    }
+    func copyHost(id: UUID) throws -> HostConfiguration { throw RepositoryError.notFound }
+    func copyFolder(id: UUID) throws -> HostFolder { throw RepositoryError.notFound }
+    func close() {}
+}
+
 private actor DelayedRepository: AppRepositoryProtocol {
     func snapshot(query: HostQuery) async throws -> AppSnapshot {
         if query.search == "old" { try await Task.sleep(for: .milliseconds(150)) }
@@ -547,4 +1263,122 @@ private actor DelayedRepository: AppRepositoryProtocol {
     func copyHost(id: UUID) throws -> HostConfiguration { throw RepositoryError.notFound }
     func copyFolder(id: UUID) throws -> HostFolder { throw RepositoryError.notFound }
     func close() {}
+}
+
+/// Real isolated SQLite snapshots with a few explicitly held read boundaries.
+/// Metadata invalidations are the base repository's real stream; no SSH/Keychain.
+private actor ControlledReloadRepository: AppRepositoryProtocol {
+    let base: AppRepository
+    private var heldReads = 0
+    private var failReads = false
+    private var startedReads: Set<Int> = []
+    private var readObservers: [Int: @Sendable () -> Void] = [:]
+    private var metadataObservers: [Int: @Sendable () -> Void] = [:]
+    private var pending: [Int: (snapshot: AppSnapshot, reply: CheckedContinuation<AppSnapshot, Error>)] = [:]
+    private var holdMetadata = false
+    private var pendingMetadata: (value: SecurityMetadata, reply: CheckedContinuation<SecurityMetadata, Never>)?
+    private(set) var nextSnapshotIndex = 0
+    private(set) var metadataReadCount = 0
+    private(set) var writeCount = 0
+    var pendingReadCount: Int { pending.count }
+    init(base: AppRepository) { self.base = base }
+    func holdNextReads(_ count: Int) { precondition((1...2).contains(count)); heldReads = count }
+    func holdNextSnapshot(_ observer: @escaping @Sendable () -> Void) -> Int {
+        precondition(heldReads == 0)
+        heldReads = 1; readObservers[nextSnapshotIndex] = observer
+        return nextSnapshotIndex
+    }
+    func holdNextMetadataRead() { precondition(!holdMetadata && pendingMetadata == nil); holdMetadata = true }
+    func failSnapshotReads() { failReads = true }
+    func whenSnapshotStarts(_ index: Int, _ observer: @escaping @Sendable () -> Void) {
+        precondition(index < 32)
+        if startedReads.contains(index) { observer() } else { readObservers[index] = observer }
+    }
+    func whenMetadataReads(_ count: Int, _ observer: @escaping @Sendable () -> Void) {
+        precondition((1...32).contains(count))
+        if metadataReadCount >= count { observer() } else { metadataObservers[count] = observer }
+    }
+    private func started(_ index: Int) { startedReads.insert(index); readObservers.removeValue(forKey: index)?() }
+    func snapshot(query: HostQuery) async throws -> AppSnapshot {
+        let index = nextSnapshotIndex; nextSnapshotIndex += 1; precondition(index < 32)
+        if failReads { throw RepositoryError.databaseBusy }
+        let hold = heldReads > 0
+        if hold { heldReads -= 1 }
+        let value = try await base.snapshot(query: query)
+        if !hold { started(index); return value }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { reply in
+                pending[index] = (value, reply); started(index)
+            }
+        } onCancel: { Task { await self.cancelSnapshot(index) } }
+    }
+    private func cancelSnapshot(_ index: Int) { pending.removeValue(forKey: index)?.reply.resume(throwing: CancellationError()) }
+    func releaseSnapshot(_ index: Int) throws {
+        guard let value = pending.removeValue(forKey: index) else { throw RepositoryError.notFound }
+        value.reply.resume(returning: value.snapshot)
+    }
+    func releaseAll() {
+        let values = pending.values; pending = [:]
+        for value in values { value.reply.resume(throwing: CancellationError()) }
+        if let value = pendingMetadata { pendingMetadata = nil; value.reply.resume(returning: value.value) }
+    }
+    func metadataChanges() async -> AsyncStream<Void> { await base.metadataChanges() }
+    func securityMetadata() async throws -> SecurityMetadata {
+        let hold = holdMetadata; holdMetadata = false
+        let value = try await base.securityMetadata()
+        metadataReadCount += 1
+        if hold {
+            return await withCheckedContinuation { reply in
+                pendingMetadata = (value, reply)
+                metadataObservers.removeValue(forKey: metadataReadCount)?()
+            }
+        }
+        metadataObservers.removeValue(forKey: metadataReadCount)?()
+        return value
+    }
+    func releaseMetadataRead() throws {
+        guard let value = pendingMetadata else { throw RepositoryError.notFound }
+        pendingMetadata = nil; value.reply.resume(returning: value.value)
+    }
+    func apply(_ changes: [RepositoryChange]) async throws { writeCount += 1; try await base.apply(changes) }
+    func copyHost(id: UUID) async throws -> HostConfiguration { try await base.copyHost(id: id) }
+    func copyFolder(id: UUID) async throws -> HostFolder { try await base.copyFolder(id: id) }
+    func close() async throws { releaseAll(); try await base.close() }
+}
+
+/// Prepared-only logical driver. Neither preparation nor commit reaches SSH.
+@MainActor private final class PreparedMetadataBuilder: SessionBuilding {
+    let host: HostConfiguration
+    private(set) var driver: PreparedMetadataDriver?
+    init(host: HostConfiguration) { self.host = host }
+    func configuration(hostID: UUID) async throws -> (HostConfiguration, SSHSessionConfiguration) {
+        guard hostID == host.id else { throw RepositoryError.notFound }
+        return (host, try SessionEnvironment.configuration(host: host, keyPath: nil))
+    }
+    func prepare(hostID: UUID, sessionID: UUID) async throws -> ReadySession {
+        let valueConfiguration = try await configuration(hostID: hostID)
+        let value = PreparedMetadataDriver(id: sessionID); driver = value
+        return ReadySession(host: host, configuration: valueConfiguration.1, driver: value)
+    }
+}
+@MainActor private final class PreparedMetadataDriver: SessionDriving {
+    let id: UUID
+    let terminal = NativeTerminalView()
+    var token: SessionToken?
+    private(set) var state: SSHSessionState = .idle
+    var canReconnect: Bool { false }
+    var usesTypedAuthentication: Bool { true }
+    var onState: ((SessionToken?, SSHSessionState) -> Void)?
+    var onTrust: (([SessionTrustPrompt]) -> Void)?
+    var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
+    init(id: UUID) { self.id = id }
+    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
+        XCTFail("Prepared metadata regression must not start a connection")
+        throw TransportError.invalidConfiguration
+    }
+    func accept(_ prompt: SessionTrustPrompt) async throws {}
+    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {}
+    func cancel() { state = .disconnected(nil) }
+    func closeTab() { state = .closed; terminal.releaseResources() }
 }

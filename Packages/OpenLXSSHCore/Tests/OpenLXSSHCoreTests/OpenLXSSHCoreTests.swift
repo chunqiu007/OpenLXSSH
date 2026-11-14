@@ -36,6 +36,67 @@ final class OpenLXSSHCoreTests: XCTestCase {
         }
     }
 
+    func testV4DirectTransferMigrationPreservesExistingHostAndConfiguration() throws {
+        let host = sampleHost(); var settings = AppSettings()
+        settings.fontSize = 19; settings.startupPage = .sftp; settings.backgroundColor = "#123456"
+        try database.apply([.insertHost(host), .saveSettings(settings)])
+        try database.queue.write { db in
+            try db.execute(sql: "ALTER TABLE settings DROP COLUMN fileConflictPolicy")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('v5_direct_file_transfer', 'v6_ask_before_file_replacement')")
+        }
+        try reopen()
+        XCTAssertEqual(try database.settings().fileConflictPolicy, .ask)
+        XCTAssertEqual(try database.settings().fontSize, 19)
+        XCTAssertEqual(try database.settings().startupPage, .sftp)
+        XCTAssertEqual(try database.settings().backgroundColor, "#123456")
+        XCTAssertEqual(try database.hosts(), [host])
+    }
+    func testV5ConflictMigrationChangesOnlyAutomaticDefaultAndRunsOnce() throws {
+        let credential = CredentialReference(purpose: .password, isSavingAuthorized: true)
+        let passphrase = CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        let key = ManagedKeyReference(algorithm: .ed25519, passphraseCredentialRef: passphrase.id, label: "fixture key")
+        var host = sampleHost(); host.credentialRef = credential.id; host.savePasswordAuthorized = true
+        let folder = HostFolder(name: "fixture folder"), tag = HostTag(name: "fixture tag")
+        host.folderID = folder.id
+        try database.apply([.registerCredential(credential), .registerCredential(passphrase), .registerKey(key),
+            .saveFolder(folder), .addTag(tag), .insertHost(host), .assignTag(hostID: host.id, tagID: tag.id)])
+        for previous in FileConflictPreference.allCases {
+            var settings = AppSettings(); settings.fileConflictPolicy = previous
+            settings.fontSize = 19; settings.startupPage = .sftp; settings.backgroundColor = "#123456"
+            try database.saveSettings(settings)
+            try database.queue.write { try $0.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v6_ask_before_file_replacement'") }
+            let originalTables = try database.queue.read { db in
+                try ["hosts", "credentials", "managedKeys", "folders", "tags", "hostTags", "cleanupTickets"].map {
+                    ($0, try Row.fetchAll(db, sql: "SELECT * FROM \($0) ORDER BY rowid"))
+                }
+            }
+            let columns = try database.queue.read { try Row.fetchAll($0, sql: "PRAGMA table_info(settings)") }
+            try reopen()
+            var expected = settings; expected.fileConflictPolicy = previous == .autoRename ? .ask : previous
+            XCTAssertEqual(try database.settings(), expected)
+            XCTAssertEqual(try database.hosts(), [host])
+            try database.queue.read { db in
+                XCTAssertEqual(try Row.fetchAll(db, sql: "PRAGMA table_info(settings)"), columns)
+                for (table, rows) in originalTables { XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT * FROM \(table) ORDER BY rowid"), rows) }
+                XCTAssertEqual(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"), CoreSchema.versions)
+            }
+        }
+        var explicit = try database.settings(); explicit.fileConflictPolicy = .autoRename
+        try database.saveSettings(explicit); try reopen(); try reopen()
+        XCTAssertEqual(try database.settings(), explicit, "After the one-time v6 migration, a deliberate keep-both preference persists")
+    }
+    func testDirectTransferPreferenceDefaultsPersistAndRejectMalformedValues() throws {
+        XCTAssertEqual(try database.settings().fileConflictPolicy, .ask)
+        let old = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        XCTAssertEqual(old.fileConflictPolicy, .ask)
+        XCTAssertThrowsError(try JSONDecoder().decode(AppSettings.self, from: Data("{\"fileConflictPolicy\":\"unsafe\"}".utf8)))
+        for policy in FileConflictPreference.allCases {
+            var settings = try database.settings(); settings.fileConflictPolicy = policy
+            try database.saveSettings(settings); try reopen()
+            XCTAssertEqual(try database.settings().fileConflictPolicy, policy)
+        }
+        XCTAssertThrowsError(try database.queue.write { try $0.execute(sql: "UPDATE settings SET fileConflictPolicy = 'unsafe'") })
+    }
     func testDefaultsAndRealSQLiteConfiguration() throws {
         let settings = try database.settings()
         XCTAssertEqual(settings.historyLines, 10_000)
@@ -540,8 +601,8 @@ final class OpenLXSSHCoreTests: XCTestCase {
         settings.foregroundColor = "#AABBCC"; settings.backgroundColor = "#112233"; settings.cursorColor = "#445566"
         try database.apply([.insertHost(sampleHost()), .saveSettings(settings)])
         try database.queue.write { db in
-            try db.execute(sql: "ALTER TABLE settings DROP COLUMN cursorShape; ALTER TABLE settings DROP COLUMN cursorBlink; ALTER TABLE settings DROP COLUMN startupPage;")
-            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v4_desktop_preferences'")
+            try db.execute(sql: "ALTER TABLE settings DROP COLUMN cursorShape; ALTER TABLE settings DROP COLUMN cursorBlink; ALTER TABLE settings DROP COLUMN startupPage; ALTER TABLE settings DROP COLUMN fileConflictPolicy;")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('v4_desktop_preferences', 'v5_direct_file_transfer', 'v6_ask_before_file_replacement')")
             try db.execute(sql: extraSQL)
         }
         let rows = try database.queue.read { try Row.fetchAll($0, sql: "SELECT * FROM settings") }
@@ -557,6 +618,7 @@ final class OpenLXSSHCoreTests: XCTestCase {
         XCTAssertEqual(settings.historyLines, 3210); XCTAssertEqual(settings.fontSize, 17)
         XCTAssertEqual(settings.foregroundColor, "#AABBCC"); XCTAssertEqual(settings.backgroundColor, "#112233"); XCTAssertEqual(settings.cursorColor, "#445566")
         XCTAssertEqual(settings.cursorShape, .block); XCTAssertTrue(settings.cursorBlink); XCTAssertEqual(settings.startupPage, .vault)
+        XCTAssertEqual(settings.fileConflictPolicy, .ask)
         let projection = rows[0].columnNames.map { "\"" + $0 + "\"" }.joined(separator: ", ")
         try database.queue.read { db in
             XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT \(projection) FROM settings"), rows)

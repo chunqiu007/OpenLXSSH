@@ -5,10 +5,23 @@ import OpenLXSSHAskpass
 import OpenLXSSHTrust
 import COpenLXSSHAskpass
 @testable import OpenLXSSHTransport
+import SwiftTerm
 import XCTest
 
 private let publicEd = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE7UT0nd6jwWZVEVSodMrNLwfp8wralbSFtJ5vUAuvqg"
 private let changedEd = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICVjCQeOke+c616gj3L7T3Xi0vvxcnF4wNs5FYMv6g3C"
+
+@MainActor private final class DesktopInputRecorder: TerminalViewDelegate {
+    var data = Data()
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { self.data.append(contentsOf: data) }
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+    func bell(source: TerminalView) {}
+}
 
 private struct FixtureScanner: HostKeyScanning {
     let key: HostPublicKey
@@ -71,6 +84,22 @@ final class TransportTests: XCTestCase {
         XCTAssertTrue(text.contains("userknownhostsfile \(trust.knownHostsPath.value)"))
         XCTAssertFalse(config.text.contains("Include")); XCTAssertFalse(text.contains("proxycommand /"))
     }
+    func testDesktopCursorPreferenceUsesPublicRendererAPIWithoutSendingInput() throws {
+        let terminal = NativeTerminalView(), recorder = DesktopInputRecorder()
+        terminal.terminalDelegate = recorder
+        defer { terminal.terminalDelegate = nil; terminal.releaseResources() }
+        let cases: [(DesktopCursorShape, Bool, String)] = [(.block, true, "blinkBlock"), (.block, false, "steadyBlock"),
+            (.underline, true, "blinkUnderline"), (.underline, false, "steadyUnderline"), (.bar, true, "blinkBar"), (.bar, false, "steadyBar")]
+        for (shape, blinking, expected) in cases {
+            terminal.setDesktopCursor(shape: shape, blinking: blinking)
+            XCTAssertEqual(terminal.terminalStateSnapshot().cursorStyle.tagName, expected)
+            XCTAssertTrue(recorder.data.isEmpty)
+        }
+        // The preference changes no paste/input policy or dimensions.
+        XCTAssertTrue(terminal.pasteUserText("line one\n中文\n"))
+        XCTAssertEqual(recorder.data, Data("line one\n中文\n".utf8))
+    }
+
     func testFontBoundsMatchCoreAndRejectInvalidWithoutFallback() throws {
         let view = NativeTerminalView()
         defer { view.releaseResources() }
@@ -133,31 +162,98 @@ final class TransportTests: XCTestCase {
         try assertRGB(view.nativeForegroundColor, equals: foreground)
         try assertRGB(view.nativeBackgroundColor, equals: background)
     }
-    func testSystemColorsFollowAppearanceAfterLeavingCustomMode() async throws {
+    func testSystemColorsStayDesktopDarkAfterLeavingCustomMode() async throws {
         let view = NativeTerminalView()
         defer { view.releaseResources() }
         let dark = try XCTUnwrap(NSAppearance(named: .darkAqua)), light = try XCTUnwrap(NSAppearance(named: .aqua))
         view.setColors(foreground: .red, background: .green, cursor: .blue)
         view.appearance = light; view.setColorMode(.system)
-        guard case .system = view.explicitColorMode else { return XCTFail("system mode not restored") }
-        let lightBackground = try XCTUnwrap(view.nativeBackgroundColor.usingColorSpace(.deviceRGB))
-        for appearance in [dark, light] {
+        guard case .system = view.explicitColorMode else { return XCTFail("default mode not restored") }
+        for appearance in [dark, light, dark] {
             view.appearance = appearance
             view.viewDidChangeEffectiveAppearance()
             try? await Task.sleep(nanoseconds: 10_000_000)
-            var foreground: NSColor!, background: NSColor!
-            appearance.performAsCurrentDrawingAppearance {
-                foreground = NSColor.textColor.usingColorSpace(.deviceRGB)
-                background = NSColor.textBackgroundColor.usingColorSpace(.deviceRGB)
-            }
-            try assertRGB(view.nativeForegroundColor, equals: XCTUnwrap(foreground))
-            try assertRGB(view.nativeBackgroundColor, equals: XCTUnwrap(background))
-            try assertRGB(view.cursorColor, equals: XCTUnwrap(foreground))
-            if appearance === dark {
-                let actual = try XCTUnwrap(view.nativeBackgroundColor.usingColorSpace(.deviceRGB))
-                XCTAssertGreaterThan(abs(actual.redComponent - lightBackground.redComponent), 0.5)
-            }
+            try assertRGB(view.nativeForegroundColor, equals: NativeTerminalView.desktopForeground)
+            try assertRGB(view.nativeBackgroundColor, equals: NativeTerminalView.desktopBackground)
+            try assertRGB(view.cursorColor, equals: NativeTerminalView.desktopForeground)
         }
+    }
+    func testNativeRendererPreservesANSIAttributesUnicodeAndResetWithoutKeywordColoring() throws {
+        let view = NativeTerminalView(), baseline = NativeTerminalView()
+        defer { view.releaseResources(); baseline.releaseResources() }
+        baseline.feed(text: "D")
+        let baselineAttribute = try XCTUnwrap(baseline.terminalContentSnapshot(region: .viewport)?.rows.first?.cells.first?.attribute)
+        view.feed(text: "error stderr\r\n\u{1b}[31mR\u{1b}[38;5;196mP\u{1b}[38;2;1;2;3mT\u{1b}[1mB\u{1b}[7mI\u{1b}[0mD\r\n中文 🙂 e\u{301}\r\n")
+        let snapshot = try XCTUnwrap(view.terminalContentSnapshot(region: .history(maximumScrollbackRows: 100)))
+        let plain = try XCTUnwrap(snapshot.rows.first { $0.text.contains("error stderr") })
+        XCTAssertTrue(plain.cells.prefix(12).allSatisfy { $0.attribute.fg == .defaultColor })
+        let styled = try XCTUnwrap(snapshot.rows.first { $0.text.hasPrefix("RPTBID") })
+        XCTAssertEqual(styled.cells[0].attribute.fg, .ansi256(code: 1))
+        XCTAssertEqual(styled.cells[1].attribute.fg, .ansi256(code: 196))
+        XCTAssertEqual(styled.cells[2].attribute.fg, .trueColor(red: 1, green: 2, blue: 3))
+        XCTAssertTrue(styled.cells[3].attribute.style.contains(.bold))
+        XCTAssertTrue(styled.cells[4].attribute.style.contains(.inverse))
+        // SGR 0 restores the attributes of normally rendered default text;
+        // Attribute.empty is an uninitialized-cell sentinel, not that baseline.
+        XCTAssertEqual(styled.cells[5].attribute, baselineAttribute)
+        XCTAssertEqual(baselineAttribute.fg, .defaultColor)
+        XCTAssertEqual(baselineAttribute.bg, .defaultColor)
+        XCTAssertEqual(baselineAttribute.style, .none)
+        XCTAssertTrue(snapshot.rows.contains { $0.text.contains("中文 🙂 e\u{301}") })
+        view.feed(text: "\u{1b}[?1049hALT\u{1b}[?1049l")
+        XCTAssertFalse(try XCTUnwrap(view.terminalInputStateSnapshot()).isAlternateBuffer)
+        XCTAssertTrue(view.text.contains("error stderr"))
+    }
+    func testExactBoundedPasteCompositionAndDisconnectedInputUseNativeRenderer() throws {
+        let view = NativeTerminalView(), input = DesktopInputRecorder()
+        defer { view.terminalDelegate = nil; view.releaseResources() }
+        view.terminalDelegate = input
+        let text = "printf '中文🙂 e\u{301}'\nsecond\r\n\t\u{03}"
+        XCTAssertTrue(view.pasteUserText(text))
+        XCTAssertEqual(input.data, Data(text.utf8))
+        input.data = Data(); view.feed(text: "\u{1b}[?2004h")
+        XCTAssertTrue(view.pasteUserText(text))
+        XCTAssertEqual(input.data, Data("\u{1b}[200~".utf8) + Data(text.utf8) + Data("\u{1b}[201~".utf8))
+        input.data = Data()
+        XCTAssertFalse(view.pasteUserText(String(repeating: "x", count: TerminalSettings.maximumInputBytes)))
+        XCTAssertTrue(input.data.isEmpty)
+        view.feed(text: "\u{1b}[?2004l")
+        XCTAssertTrue(view.pasteUserText(String(repeating: "x", count: TerminalSettings.maximumInputBytes)))
+        XCTAssertEqual(input.data.count, TerminalSettings.maximumInputBytes)
+        input.data = Data()
+        XCTAssertFalse(view.pasteUserText(String(repeating: "x", count: TerminalSettings.maximumInputBytes + 1)))
+        XCTAssertTrue(input.data.isEmpty)
+        view.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(view.hasMarkedText()); XCTAssertTrue(input.data.isEmpty)
+        view.insertText("中文🙂 e\u{301}", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(input.data, Data("中文🙂 e\u{301}".utf8))
+        view.unmarkText(); input.data = Data(); view.inputEnabled = false
+        XCTAssertFalse(view.pasteUserText("blocked"))
+        view.insertText("blocked", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(input.data.isEmpty)
+    }
+    func testSearchCountsClearHistoryAndScrolledOutputDoNotSendShellInput() throws {
+        let view = NativeTerminalView(), input = DesktopInputRecorder()
+        defer { view.terminalDelegate = nil; view.releaseResources() }
+        view.terminalDelegate = input; view.setHistoryLimit(100)
+        for index in 0..<80 { view.feed(text: "history-\(index) marker\r\n") }
+        XCTAssertTrue(view.search("marker"))
+        var summary = view.searchMatchSummary("marker", limit: 1000)
+        XCTAssertEqual(summary.total, 80); XCTAssertGreaterThan(summary.index, 0)
+        XCTAssertTrue(view.search("marker", backwards: true))
+        summary = view.searchMatchSummary("marker", limit: 1000)
+        XCTAssertEqual(summary.total, 80)
+        view.scrollTo(row: 2)
+        let viewport = view.terminalStateSnapshot().viewportRow
+        view.feed(text: "new output\r\n")
+        XCTAssertEqual(view.terminalStateSnapshot().viewportRow, viewport)
+        view.scrollToLiveBottom()
+        XCTAssertGreaterThan(view.terminalStateSnapshot().viewportRow, viewport)
+        let live = try XCTUnwrap(view.terminalContentSnapshot(region: .viewport)).rows.map(\.text)
+        view.clearLocalHistory()
+        XCTAssertEqual(try XCTUnwrap(view.terminalContentSnapshot(region: .viewport)).rows.map(\.text), live)
+        XCTAssertFalse(view.search("history-0 marker"))
+        XCTAssertTrue(input.data.isEmpty)
     }
     private func assertRGB(_ actual: NSColor, equals expected: NSColor, file: StaticString = #filePath, line: UInt = #line) throws {
         let actual = try XCTUnwrap(actual.usingColorSpace(.deviceRGB), file: file, line: line)
@@ -209,7 +305,7 @@ final class TransportTests: XCTestCase {
         let s = try start(["--capture", String(expected.count)])
         let ready = await until { s.terminal.text.contains("CAPTURE-READY") }; XCTAssertTrue(ready)
         XCTAssertEqual(s.state, .connectionPending)
-        s.terminal.pasteFromApplication(sample)
+        s.terminal.pasteUserText(sample)
         let done = await until { s.canReconnect }; XCTAssertTrue(done); XCTAssertEqual(s.lastExitCode, 0)
         XCTAssertTrue(s.terminal.text.replacingOccurrences(of: "\n", with: "").contains("CAPTURE " + expected.map { String(format: "%02x", $0) }.joined()))
         let keys = try start(["--capture", "5"])

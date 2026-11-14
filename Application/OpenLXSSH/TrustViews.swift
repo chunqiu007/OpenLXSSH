@@ -7,10 +7,12 @@ struct TrustManagementView: View {
     @State private var verified = false
     var dismiss: () -> Void
     let embedded: Bool
+    let searchFocusRequest: UUID?
 
-    init(environment: SessionEnvironment, embedded: Bool = false, dismiss: @escaping () -> Void) {
+    init(environment: SessionEnvironment, embedded: Bool = false, searchFocusRequest: UUID? = nil, dismiss: @escaping () -> Void) {
         _model = StateObject(wrappedValue: TrustManagementModel(environment: environment))
         self.dismiss = dismiss; self.embedded = embedded
+        self.searchFocusRequest = searchFocusRequest
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -66,7 +68,7 @@ struct TrustManagementView: View {
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
-            NativeField(placeholder: "搜索端点、算法或公钥指纹", id: "trust.manage.search", text: $model.search)
+            NativeField(placeholder: "搜索端点、算法或公钥指纹", id: "trust.manage.search", text: $model.search, focusRequest: searchFocusRequest)
                 .frame(height: 28).accessibilityLabel("搜索已知主机端点、算法或指纹")
             if !model.search.isEmpty {
                 Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }

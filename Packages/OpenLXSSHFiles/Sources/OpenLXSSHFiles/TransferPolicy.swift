@@ -11,12 +11,15 @@ public enum TransferRisk: Sendable, Equatable {
 }
 public typealias TransferRiskHandler = @Sendable (TransferRisk) async -> Bool
 public struct TransferPolicy: Sendable {
+    public let acceptsTechnicalLimits: Bool
     public let confirmRisk: TransferRiskHandler?
     public let serverCommit: ServerCommitConfirmation?
-    public init(confirmRisk: TransferRiskHandler? = nil, serverCommit: ServerCommitConfirmation? = nil) {
+    public init(confirmRisk: TransferRiskHandler? = nil, serverCommit: ServerCommitConfirmation? = nil, acceptsTechnicalLimits: Bool = false) {
+        self.acceptsTechnicalLimits = acceptsTechnicalLimits
         self.confirmRisk = confirmRisk; self.serverCommit = serverCommit
     }
     func require(_ risk: TransferRisk) async throws {
+        if acceptsTechnicalLimits { return }
         guard let confirmRisk else { throw FileServiceError(.riskRejected, operation: "explicit-risk-confirmation-required") }
         guard await confirmRisk(risk) else { throw FileServiceError(.riskRejected, operation: "risk-rejected") }
     }
@@ -71,6 +74,7 @@ enum TransferChecks {
 
 extension RemoteFileService {
     public var serverBinding: UUID? { nil }
+    public var terminalFailure: FileServiceError? { nil }
     public func commit(_ source: RemotePath, to destination: RemotePath, request: CommitRequest,
                        token: CancellationToken) async throws {
         if request.mode == .replaceExisting {
@@ -80,7 +84,8 @@ extension RemoteFileService {
             }
             try await TransferChecks.requireUnchanged(self, path: destination, expected: expected, digest: digest, token: token)
         } else if capabilities.noReplace == .needsServerConfirmation {
-            guard let binding = serverBinding, request.serverConfirmation?.serverBinding == binding else {
+            guard let binding = serverBinding, request.serverConfirmation?.serverBinding == binding,
+                  request.serverConfirmation?.parent == destination.parent, source.parent == destination.parent else {
                 throw FileServiceError(.needsCapabilityConfirmation, operation: "server-no-replace-unproven", path: destination)
             }
         }

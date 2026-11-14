@@ -294,9 +294,16 @@ final class ServiceOperationTests: XCTestCase, @unchecked Sendable {
         let before = await manager.snapshot()
         do { _ = try await manager.enqueueBatch([request, invalid]); XCTFail("Batch rejection must be atomic") }
         catch let error as FileServiceError { XCTAssertEqual(error.kind, .closed) }
+        let rejected = await manager.snapshot()
+        XCTAssertEqual(rejected, before, "Rejected batch must leave the entire pre-close snapshot unchanged")
         await manager.closeIdleServices([firstID, secondID, firstID, unknown, secondID])
         XCTAssertEqual(first.closes, 1); XCTAssertEqual(second.closes, 1); XCTAssertEqual(unrelated.closes, 0)
-        let after = await manager.snapshot(); XCTAssertEqual(after, before)
+        let after = await manager.snapshot()
+        XCTAssertEqual(after.jobs, before.jobs); XCTAssertEqual(after.isClosed, before.isClosed)
+        XCTAssertEqual(after.serviceOperations, before.serviceOperations); XCTAssertEqual(after.planResources, before.planResources)
+        let retainedRegistration = try XCTUnwrap(before.services.first { $0.id == unrelatedID })
+        XCTAssertEqual(after.services, [retainedRegistration], "Only the exact unrelated registration remains after deliberate targeted close")
+        XCTAssertGreaterThan(after.serviceRevision, before.serviceRevision, "Actual service removal must publish a newer lifetime revision")
         for id in [firstID, secondID] {
             do {
                 _ = try await manager.withServiceOperation(serviceID: id, hostID: "local") { service, token in try await service.list(.root, token: token) }

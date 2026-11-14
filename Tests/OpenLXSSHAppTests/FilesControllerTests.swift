@@ -1,6 +1,8 @@
 import Combine
+import AppKit
 import Darwin
 import Foundation
+import SwiftUI
 import XCTest
 import OpenLXSSHCore
 import OpenLXSSHFiles
@@ -57,6 +59,163 @@ import OpenLXSSHTrust
         model.connect(input())
         return (model, connector, original)
     }
+    func testDirectDefaultTreeAndBatchStartWithoutReviewAndSurvivePageHide() async throws {
+        let remote = try root(), localRoot = try root()
+        try Data("direct-file".utf8).write(to: localRoot.appendingPathComponent("small.txt"))
+        try FileManager.default.createDirectory(at: localRoot.appendingPathComponent("目录"), withIntermediateDirectories: false)
+        try Data("中文".utf8).write(to: localRoot.appendingPathComponent("目录/子项.txt"))
+        let model = FilesController(connector: LocalFilesTestConnector(root: remote), idleTimeout: nil)
+        addTeardownBlock { await model.closeForWindow() }
+        await connect(model)
+        let action = try model.enqueueUploads([localRoot.appendingPathComponent("small.txt"), localRoot.appendingPathComponent("目录")], context: model.transferContext(upload: true))
+        model.hide()
+        let ids = try await action.value
+        XCTAssertEqual(ids.count, 2); XCTAssertNil(model.transferPlanReview); XCTAssertNil(model.transferPlanPhase)
+        XCTAssertFalse(model.tasksVisible, "User action does not open a large task view")
+        let deadline = ContinuousClock.now + .seconds(5)
+        while true {
+            let jobs = await model.manager.snapshot().jobs.filter { ids.contains($0.id) }
+            XCTAssertTrue(jobs.allSatisfy { $0.pendingDecision == nil && $0.state != .waitingRisk })
+            if jobs.count == 2 && jobs.allSatisfy({ !$0.state.isActive }) { XCTAssertTrue(jobs.allSatisfy { $0.state == .succeeded }); break }
+            guard .now < deadline else { XCTFail("Direct batch must not wait for confirmation"); break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("small.txt")), Data("direct-file".utf8))
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("目录/子项.txt")), Data("中文".utf8))
+    }
+    func testDefaultConflictKeepBothAndCancelPreserveOriginalAndRejectLateAnswers() async throws {
+        let remote = try root(), localRoot = try root(), original = Data("original".utf8), incoming = Data("incoming".utf8)
+        let source = localRoot.appendingPathComponent("report.zip")
+        try incoming.write(to: source); try original.write(to: remote.appendingPathComponent("report.zip"))
+        let model = FilesController(connector: LocalFilesTestConnector(root: remote), idleTimeout: nil)
+        addTeardownBlock { await model.closeForWindow() }; await connect(model)
+        XCTAssertEqual(model.conflictPreference, .ask)
+        let firstIDs = try await model.enqueueUploads([source], context: model.transferContext(upload: true)).value
+        let firstID = try XCTUnwrap(firstIDs.first)
+        try await waitForBoundary { await model.manager.snapshot().jobs.first { $0.id == firstID }?.pendingDecision != nil }
+        var snapshot = await model.manager.snapshot()
+        let first = try XCTUnwrap(snapshot.jobs.first { $0.id == firstID }?.pendingDecision)
+        XCTAssertEqual(snapshot.jobs.first { $0.id == firstID }?.state, .waitingConflict)
+        XCTAssertNil(model.pendingRisk); XCTAssertNil(model.transferPlanReview)
+        let accepted = await model.answerTransfer(first, answer: .conflict(.autoRename, applyToBatch: false)); XCTAssertTrue(accepted)
+        let lateCancel = await model.cancelTransferDecision(first); XCTAssertFalse(lateCancel)
+        try await waitForBoundary { await model.manager.snapshot().jobs.first { $0.id == firstID }?.state == .succeeded }
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report.zip")), original)
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report (1).zip")), incoming)
+        let nextIDs = try await model.enqueueUploads([source], context: model.transferContext(upload: true)).value
+        let nextID = try XCTUnwrap(nextIDs.first)
+        try await waitForBoundary { await model.manager.snapshot().jobs.first { $0.id == nextID }?.pendingDecision != nil }
+        snapshot = await model.manager.snapshot()
+        let next = try XCTUnwrap(snapshot.jobs.first { $0.id == nextID }?.pendingDecision)
+        let stale = await model.answerTransfer(first, answer: .conflict(.overwrite, applyToBatch: true)); XCTAssertFalse(stale)
+        let cancelled = await model.cancelTransferDecision(next); XCTAssertTrue(cancelled)
+        try await waitForBoundary { await model.manager.snapshot().jobs.first { $0.id == nextID }?.state == .cancelled }
+        let late = await model.answerTransfer(next, answer: .conflict(.overwrite, applyToBatch: true)); XCTAssertFalse(late)
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report.zip")), original)
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report (1).zip")), incoming)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: remote.path)), ["report.zip", "report (1).zip"])
+        XCTAssertNil(model.pendingRisk)
+    }
+    func testExplicitKeepBothAndRememberedSkipOverwrite() async throws {
+        let remote = try root(), localRoot = try root()
+        let source = localRoot.appendingPathComponent("report.zip")
+        try Data("incoming".utf8).write(to: source); try Data("original".utf8).write(to: remote.appendingPathComponent("report.zip"))
+        let model = FilesController(connector: LocalFilesTestConnector(root: remote), idleTimeout: nil)
+        addTeardownBlock { await model.closeForWindow() }; await connect(model)
+        for preference in [FileConflictPreference.autoRename, .skip, .overwrite] {
+            model.updateTransferPreference(preference)
+            let ids = try await model.enqueueUploads([source], context: model.transferContext(upload: true)).value
+            let deadline = ContinuousClock.now + .seconds(5)
+            while true {
+                let snapshots = await model.manager.snapshot().jobs
+                let job = try XCTUnwrap(snapshots.first { ids.contains($0.id) })
+                XCTAssertNil(job.pendingDecision)
+                if !job.state.isActive { XCTAssertEqual(job.state, preference == .skip ? .skipped : .succeeded); break }
+                guard .now < deadline else { XCTFail("Remembered conflict preference must not wait"); break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            if preference != .overwrite { XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report.zip")), Data("original".utf8)) }
+        }
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report (1).zip")), Data("incoming".utf8))
+        XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("report.zip")), Data("incoming".utf8))
+    }
+    func testDirectDownloadExplicitKeepBothPreservesExistingLocalTarget() async throws {
+        let remote = try root(), destination = try root()
+        try Data("download".utf8).write(to: remote.appendingPathComponent("sample.txt"))
+        try Data("original".utf8).write(to: destination.appendingPathComponent("sample.txt"))
+        let model = FilesController(connector: LocalFilesTestConnector(root: remote), idleTimeout: nil)
+        addTeardownBlock { await model.closeForWindow() }; await connect(model)
+        model.updateTransferPreference(.autoRename)
+        let entries = model.entries.filter { $0.name == (try? FileName("sample.txt")) }
+        let ids = try await model.enqueueDownloads(entries, to: destination, context: model.transferContext(upload: false)).value
+        XCTAssertEqual(ids.count, 1); XCTAssertNil(model.transferPlanReview); XCTAssertFalse(model.tasksVisible)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while true {
+            let values = await model.manager.snapshot().jobs
+            let job = try XCTUnwrap(values.first { ids.contains($0.id) }); XCTAssertNil(job.pendingDecision)
+            if !job.state.isActive { XCTAssertEqual(job.state, .succeeded); break }
+            guard .now < deadline else { XCTFail("Direct download must not wait"); break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("sample.txt")), Data("original".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("sample (1).txt")), Data("download".utf8))
+    }
+    func testCancelledTreeRetryPreparationFailureIsGloballyVisibleWithoutNewJob() async throws {
+        let remote = try root(), localRoot = try root(), tree = localRoot.appendingPathComponent("tree")
+        try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: false)
+        try Data("source".utf8).write(to: tree.appendingPathComponent("file"))
+        try FileManager.default.createDirectory(at: remote.appendingPathComponent("tree"), withIntermediateDirectories: false)
+        let model = FilesController(connector: LocalFilesTestConnector(root: remote), idleTimeout: nil)
+        addTeardownBlock { await model.closeForWindow() }; model.updateTransferPreference(.ask); await connect(model)
+        let ids = try await model.enqueueUploads([tree], context: model.transferContext(upload: true)).value
+        let id = try XCTUnwrap(ids.first)
+        try await waitForBoundary { await model.manager.snapshot().jobs.first { $0.id == id }?.pendingDecision != nil }
+        await model.cancelTransfer(id)
+        try await waitForBoundary { await model.manager.snapshot().jobs.first { $0.id == id }?.state == .cancelled }
+        try FileManager.default.removeItem(at: tree)
+        do { _ = try await model.retryTransfer(id).value; XCTFail("Missing retry source admitted") }
+        catch { XCTAssertNotNil(model.transferPreparationIssue) }
+        let snapshot = await model.manager.snapshot()
+        XCTAssertEqual(snapshot.jobs.count, 1); XCTAssertEqual(snapshot.jobs.first?.state, .cancelled)
+        XCTAssertNil(model.transferPlanPhase); XCTAssertNil(model.transferPlanReview)
+        XCTAssertEqual(model.transferPreparationIssue?.code, model.issue?.code)
+    }
+    func testFilesPreferenceResetReturnsAskAndKeepsOtherDraftFields() {
+        var settings = AppSettings(); settings.fileConflictPolicy = .overwrite; settings.startupPage = .sftp
+        var draft = SettingsDraft(settings); draft.reset(.files)
+        XCTAssertEqual(draft.value.fileConflictPolicy, .ask); XCTAssertEqual(draft.value.startupPage, .sftp)
+    }
+    func testActualRootTrustAndKeyboardSheetsAllowCloseReviewAndCancelTheirOwner() async throws {
+        _ = NSApplication.shared
+        for script in [ScriptedFilesConnector.Script.trust, .keyboard] {
+            let (model, connector, _) = try await scripted(script)
+            try await waitForScriptedPrompt(model, connector)
+            let trust = model.trustPrompt, keyboard = model.keyboardPrompt
+            let hosting = NSHostingController(rootView: FilesApplicationUI(model: model, showsTasks: false))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
+            window.contentViewController = hosting; window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil); window.contentViewController = nil; window.close() }
+            try await waitForBoundary {
+                hosting.view.layoutSubtreeIfNeeded()
+                return window.attachedSheet is NativeOwnedSheetWindow
+            }
+            let sheet = try XCTUnwrap(window.attachedSheet as? NativeOwnedSheetWindow)
+            XCTAssertTrue(sheet.sheetParent === window)
+            XCTAssertFalse(sheet.preventsApplicationTerminationWhenModal,
+                "The production FilesApplicationUI must opt in only its current authentication sheet")
+            XCTAssertTrue(sheet.attemptClose())
+            await model.waitUntilCurrentWorkCompletes()
+            try await waitForBoundary { window.attachedSheet == nil }
+            XCTAssertNil(model.trustPrompt); XCTAssertNil(model.keyboardPrompt)
+            XCTAssertEqual(model.state, .disconnected); XCTAssertFalse(model.hasPendingOperations)
+            if let prompt = trust { XCTAssertFalse(model.answerTrust(prompt, once: true)) }
+            if let prompt = keyboard { XCTAssertFalse(model.answerKeyboard(prompt, answers: prompt.prompts.map { _ in .init(utf8: "late") })) }
+            let resolved = await connector.repliesAlreadyResolved
+            XCTAssertEqual(resolved, [true], "The exact unanswered callback must be revoked before a late reply")
+        }
+    }
     func testStartsHiddenAndRepeatedShowDoesNotConnect() async throws {
         let (_, connector, model) = try local()
         XCTAssertFalse(model.visible)
@@ -68,6 +227,182 @@ import OpenLXSSHTrust
         XCTAssertEqual(awaited: await connector.count, 1)
         model.hide(); XCTAssertEqual(model.state, .ready)
         await model.closeForWindow(); XCTAssertFalse(model.visible)
+    }
+    // 2026-11-04 user-session retention supersedes the former automatic idle disconnect.
+    // Original strategy test is preserved in sftp91/before; background idle tests remain active.
+    func testUserHeldIdleConnectionSurvivesHideAndBrowseThenExplicitDisconnectCloses() async throws {
+        let root = try root(), connector = LocalFilesTestConnector(root: root)
+        let folder = root.appendingPathComponent("kept")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try Data("public original".utf8).write(to: folder.appendingPathComponent("original"))
+        let model = FilesController(connector: connector, idleTimeout: .milliseconds(40), healthInterval: .milliseconds(20))
+        await connect(model)
+        model.browse(try RemotePath("/kept")); await model.waitUntilCurrentWorkCompletes()
+        let path = model.path, entries = model.entries
+        model.hide(); try await Task.sleep(for: .milliseconds(160))
+        XCTAssertEqual(model.state, .ready); XCTAssertEqual(model.path, path); XCTAssertEqual(model.entries, entries)
+        model.show(host: model.selectedHost); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertTrue(model.canTransfer); XCTAssertFalse(model.canConnect)
+        model.browse(path); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready); XCTAssertEqual(model.entries, entries)
+        let idleCount = await connector.count; XCTAssertEqual(idleCount, 1)
+        model.cancelCurrent(); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .disconnected); XCTAssertTrue(model.canConnect); XCTAssertFalse(model.canTransfer)
+        let closed = await model.manager.snapshot(); XCTAssertTrue(closed.services.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("original")), Data("public original".utf8))
+        model.connect(input()); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready)
+        let reconnectCount = await connector.count; XCTAssertEqual(reconnectCount, 2)
+        await model.closeForWindow()
+    }
+    func testSFTPHealthChecksDistinguishServerReplyFromTransportAndStopOnExplicitClose() async throws {
+        let root = try root(), wrapped = try HealthFilesTestService(root: root)
+        let model = FilesController(connector: FixedFilesConnector(service: wrapped), idleTimeout: .milliseconds(20), healthInterval: .milliseconds(20))
+        await connect(model)
+        await wrapped.setHealthFailure(.permissionDenied)
+        try await waitForBoundary { await wrapped.healthCount >= 2 }
+        XCTAssertEqual(model.state, .ready)
+        await wrapped.setHealthFailure(.transport)
+        try await waitForBoundary {
+            let counts = await wrapped.counts, snapshot = await model.manager.snapshot()
+            return model.state == .failed && counts.closes == 1 && snapshot.services.isEmpty
+        }
+        XCTAssertEqual(model.issue?.code, "files.transport"); XCTAssertFalse(model.canTransfer)
+        let counts = await wrapped.counts
+        XCTAssertEqual(counts.closes, 1)
+        let released = await model.manager.snapshot(); XCTAssertTrue(released.services.isEmpty)
+        await model.closeForWindow()
+        let final = await wrapped.counts; XCTAssertEqual(final.closes, 1)
+    }
+    func testExplicitDisconnectCancelsQueuedHealthAndLateTransportReplyCannotBecomeFailure() async throws {
+        let root = try root(), pause = FilesTestPause()
+        let wrapped = try HealthFilesTestService(root: root, pause: pause)
+        let model = FilesController(connector: FixedFilesConnector(service: wrapped), healthInterval: .milliseconds(20))
+        await connect(model)
+        await pause.arm(); await wrapped.setHealthFailure(.transport)
+        await pause.waitForArrival()
+        model.cancelCurrent()
+        XCTAssertEqual(model.state, .closing)
+        await pause.release(); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .disconnected)
+        XCTAssertNil(model.issue, "Explicit disconnect is a normal state; a late health failure must not manufacture an error")
+        let counts = await wrapped.counts, snapshot = await model.manager.snapshot()
+        XCTAssertEqual(counts.closes, 1); XCTAssertTrue(snapshot.services.isEmpty)
+        await model.closeForWindow()
+    }
+    func testUncertainRemoteCreateGuidanceDoesNotClaimOwnershipOrRequireEngineerProbe() throws {
+        for operation in ["probe-directory-create-outcome-uncertain", "transfer-file-create-outcome-uncertain"] {
+            let issue = AppIssue.files(FileServiceError(.timeout, operation: operation, path: try RemotePath("/.openlxssh-owned-candidate"), code: 7191))
+            XCTAssertEqual(issue.code, "files.timeout")
+            XCTAssertTrue(issue.message.contains("可能已创建成功")); XCTAssertTrue(issue.message.contains("人工核实"))
+            XCTAssertFalse(issue.message.contains("手动能力")); XCTAssertFalse(issue.message.contains("已清理"))
+        }
+    }
+    func testBrowseNetworkFailureReleasesExactUserLeaseButPermissionKeepsReady() async throws {
+        let root = try root(), remote = try HealthFilesTestService(root: root)
+        let model = FilesController(connector: FixedFilesConnector(service: remote), healthInterval: nil)
+        await connect(model)
+        await remote.setListFailure(.permissionDenied)
+        model.browse(.root); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready); XCTAssertEqual(model.issue?.code, "files.permissionDenied")
+        await remote.setListFailure(.transport)
+        model.browse(.root); await model.waitUntilCurrentWorkCompletes()
+        try await waitForBoundary { await model.manager.snapshot().services.isEmpty }
+        XCTAssertEqual(model.state, .failed); XCTAssertEqual(model.issue?.code, "files.transport")
+        let closed = await remote.counts; XCTAssertEqual(closed.closes, 1)
+        await model.closeForWindow()
+    }
+    func testLateBrowseFailureAfterHostChangeCannotFailNewConnection() async throws {
+        let root = try root(), pause = FilesTestPause()
+        let old = try HealthFilesTestService(root: root, pause: pause), fresh = try HealthFilesTestService(root: root)
+        let connector = SequentialFilesTestConnector(services: [old, fresh])
+        let model = FilesController(connector: connector, healthInterval: nil)
+        await connect(model)
+        await old.setListFailure(.transport); await pause.arm()
+        model.browse(.root); await pause.waitForArrival()
+        let next = host()
+        model.show(host: next); model.connect(input())
+        await pause.release(); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready); XCTAssertNil(model.issue)
+        let oldCount = await old.counts, newCount = await fresh.counts
+        XCTAssertEqual(oldCount.closes, 1); XCTAssertEqual(newCount.closes, 0)
+        XCTAssertEqual(awaited: await connector.count, 2)
+        await model.closeForWindow()
+    }
+    func testTransferBackendTerminalFactRetiresRemoteButLocalSourceErrorDoesNot() async throws {
+        let failures: [FileServiceError.Kind?] = [nil, .transport, .cancelled]
+        for remoteFailure in failures {
+            let remoteFails = remoteFailure != nil
+            let root = try root(), remoteRoot = root.appendingPathComponent("remote"), sourceRoot = root.appendingPathComponent("source")
+            try FileManager.default.createDirectory(at: remoteRoot, withIntermediateDirectories: false)
+            try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: false)
+            let bytes = Data("owned transfer bytes".utf8), source = sourceRoot.appendingPathComponent("file")
+            try bytes.write(to: source)
+            let remote = try HealthFilesTestService(root: remoteRoot)
+            let model = FilesController(connector: FixedFilesConnector(service: remote), healthInterval: nil,
+                localService: { fd in try FaultingFilesUploadSource(fd: fd, failRead: !remoteFails) })
+            await connect(model)
+            if let remoteFailure { await remote.setWriteFailure(remoteFailure) }
+            let ids = try await model.enqueueUploads([source], context: model.transferContext(upload: true)).value
+            let id = try XCTUnwrap(ids.first)
+            try await waitForBoundary { await model.manager.snapshot().jobs.contains { $0.id == id && !$0.state.isActive } }
+            let snapshot = await model.manager.snapshot(), job = try XCTUnwrap(snapshot.jobs.first { $0.id == id })
+            XCTAssertEqual(job.state, remoteFailure == .cancelled ? .cancelled : .failed)
+            XCTAssertEqual(job.error?.kind, remoteFailure ?? .transport)
+            if remoteFails {
+                let expected: FilesState = remoteFailure == .cancelled ? .disconnected : .failed
+                try await waitForBoundary {
+                    let count = await remote.counts
+                    return model.state == expected && count.closes == 1
+                }
+                XCTAssertEqual(model.issue?.code, remoteFailure == .cancelled ? "files.cancelled" : "files.transport")
+                XCTAssertFalse(model.canTransfer)
+            } else {
+                XCTAssertEqual(model.state, .ready); XCTAssertTrue(model.canTransfer)
+                let count = await remote.counts; XCTAssertEqual(count.closes, 0)
+                XCTAssertNil(remote.terminalFailure)
+            }
+            XCTAssertEqual(try Data(contentsOf: source), bytes)
+            let remaining = try FileManager.default.contentsOfDirectory(atPath: remoteRoot.path)
+            if remoteFails {
+                XCTAssertEqual(remaining.count, 1)
+                let retained = try XCTUnwrap(job.retainedTemporaryPaths.first)
+                XCTAssertEqual(retained.parent, .root)
+                XCTAssertTrue(retained.name?.bytes.starts(with: Data(".openlxssh-transfer.".utf8)) == true)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: remoteRoot.path + FileDisplay.path(retained)))
+            } else { XCTAssertTrue(remaining.isEmpty) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: remoteRoot.appendingPathComponent("file").path))
+            await model.closeForWindow()
+        }
+    }
+    func testServiceSnapshotVersionAndManagerIdentityRejectStaleClosureOfNewConnection() async throws {
+        let (root, connector, model) = try local()
+        await connect(model)
+        let manager = model.manager
+        model.receiveManagerSnapshot(.init(jobs: [], isClosed: false), manager: manager)
+        XCTAssertEqual(model.state, .ready); XCTAssertTrue(model.canTransfer)
+        model.cancelCurrent(); await model.waitUntilCurrentWorkCompletes()
+        let released = await manager.snapshot()
+        // A newest-only stream may deliver just this final snapshot, without closing.
+        model.receiveManagerSnapshot(released, manager: manager)
+        XCTAssertEqual(model.state, .disconnected); XCTAssertTrue(model.canConnect)
+        model.connect(input()); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready)
+        model.receiveManagerSnapshot(released, manager: manager)
+        XCTAssertEqual(model.state, .ready); XCTAssertTrue(model.canTransfer)
+        let unrelated = try LocalFileService(root: root)
+        let unrelatedID = try await manager.registerService(unrelated, hostID: "unrelated")
+        await manager.closeIdleServices([unrelatedID])
+        model.receiveManagerSnapshot(await manager.snapshot(), manager: manager)
+        XCTAssertEqual(model.state, .ready); XCTAssertTrue(model.canTransfer)
+        let beforeWindowClose = await connector.count; XCTAssertEqual(beforeWindowClose, 2)
+        await model.closeForWindow()
+        model.show(host: host()); await model.waitUntilCurrentWorkCompletes()
+        model.connect(input()); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready); XCTAssertFalse(manager === model.manager)
+        model.receiveManagerSnapshot(.init(jobs: [], isClosed: true, serviceRevision: .max), manager: manager)
+        XCTAssertEqual(model.state, .ready); XCTAssertTrue(model.canTransfer)
+        await model.closeForWindow()
     }
     func testLocalRawNameBrowseGoMkdirRenameConflictAndDeletePlanChange() async throws {
         let (root, _, model) = try local()
@@ -142,6 +477,7 @@ import OpenLXSSHTrust
         try Data("new".utf8).write(to: source.appendingPathComponent("report"))
         try Data("existing".utf8).write(to: remote.appendingPathComponent("report"))
         await connect(model)
+        model.updateTransferPreference(.ask) // Hold an actual conflict to inspect metadata/owner identity.
         let original = try XCTUnwrap(model.selectedHost), manager = model.manager
         let context = try model.transferContext(upload: true), entries = model.entries
         let ids = try await model.enqueueUploads([source.appendingPathComponent("report")], context: context).value
@@ -293,25 +629,16 @@ import OpenLXSSHTrust
         XCTAssertEqual(model.state, .ready)
         await model.closeForWindow()
     }
-    func testOverwriteRequiresExplicitRiskAndBoundProbeOnlyCreatesApprovedOwnDirectory() async throws {
+    func testExplicitRenameOverwriteDoesNotAskTechnicalRiskAndAdvancedProbeStaysScoped() async throws {
         let root = try root()
         try Data("source-data".utf8).write(to: root.appendingPathComponent("source"))
         try Data("target-data".utf8).write(to: root.appendingPathComponent("target"))
         let service = try BoundLocalFilesService(root: root), model = FilesController(connector: FixedFilesConnector(service: service), idleTimeout: nil)
         model.show(host: host()); await model.waitUntilCurrentWorkCompletes(); model.connect(input()); await model.waitUntilCurrentWorkCompletes()
         let source = try XCTUnwrap(model.entries.first { $0.name.bytes == Data("source".utf8) })
-        let rejectedRisk = Task { @MainActor in await self.nextRisk(model) }
-        await Task.yield(); model.rename(source, name: try FileName("target"), conflict: .overwrite)
-        let firstID = await rejectedRisk.value
-        model.answerRisk(false, id: firstID); await model.waitUntilCurrentWorkCompletes()
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("target")), Data("target-data".utf8))
-        let acceptedRisk = Task { @MainActor in await self.nextRisk(model) }
-        await Task.yield(); model.rename(source, name: try FileName("target"), conflict: .overwrite)
-        let secondID = await acceptedRisk.value
-        XCTAssertNotEqual(firstID, secondID)
-        model.answerRisk(true, id: firstID) // stale confirmation must not unblock this operation
-        XCTAssertEqual(model.riskID, secondID)
-        model.answerRisk(true, id: secondID); await model.waitUntilCurrentWorkCompletes()
+        model.rename(source, name: try FileName("target"), conflict: .overwrite)
+        await model.waitUntilCurrentWorkCompletes()
+        XCTAssertNil(model.pendingRisk); XCTAssertNil(model.riskID)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("target")), Data("source-data".utf8))
         model.prepareProbe(); await model.waitUntilCurrentWorkCompletes()
         let review = try XCTUnwrap(model.probeReview)
@@ -397,6 +724,23 @@ import OpenLXSSHTrust
         XCTAssertEqual(resolved, [true, true])
         await model.closeForWindow()
     }
+    func testRootPendingTrustAutomaticPresentationWaitsForVisibleOwnerAndOnceConsumesOnlyIt() async throws {
+        let root = try root(), connector = ScriptedFilesConnector(root: root, script: .trust)
+        let model = FilesController(connector: connector, idleTimeout: nil)
+        model.show(host: host()); await model.waitUntilCurrentWorkCompletes()
+        let promptWait = Task { @MainActor in await self.nextTrust(model) }
+        await Task.yield(); model.connect(input()); let prompt = await promptWait.value
+        XCTAssertNil(model.pendingAuthenticationPresentation(modalAvailable: false))
+        if case .trust(let shown) = model.pendingAuthenticationPresentation(modalAvailable: true) { XCTAssertEqual(shown.id, prompt.id) }
+        else { XCTFail("Visible SFTP trust must be automatically reachable") }
+        model.hide(); XCTAssertNil(model.pendingAuthenticationPresentation(modalAvailable: true))
+        model.show(host: prompt.request.host)
+        XCTAssertTrue(model.answerTrust(prompt, once: true)); XCTAssertFalse(model.answerTrust(prompt, once: false))
+        XCTAssertNil(model.trustPrompt)
+        await connector.advanceRound(); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready)
+        await model.closeForWindow()
+    }
     func testSyntheticTrustRequiresExplicitFingerprintAndChangedIsRejected() async throws {
         let root = try root(), connector = ScriptedFilesConnector(root: root, script: .trust)
         let model = FilesController(connector: connector, idleTimeout: nil)
@@ -418,6 +762,94 @@ import OpenLXSSHTrust
         XCTAssertEqual(changed.issue?.code, "files.untrusted")
         if let prompt = changed.trustPrompt { XCTAssertFalse(changed.answerTrust(prompt, verified: true)) }
         await changed.closeForWindow()
+    }
+    private func changedFact(_ identity: HostIdentity) async throws -> ChangedHostKey {
+        let directory = try root(), store = try HostTrustStore(directory: AbsolutePath(directory.appendingPathComponent("changed-consumer-trust").path))
+        let first = try filesChangedKey(31), next = try filesChangedKey(32)
+        guard case .pending(let pending) = try await store.evaluate(host: identity, key: first) else {
+            throw FileServiceError(.untrusted, operation: "test-changed-pending")
+        }
+        try await store.confirm(pending, displayedFingerprint: pending.fingerprint)
+        guard case .rejected(let changed) = try await store.evaluate(host: identity, key: next) else {
+            throw FileServiceError(.untrusted, operation: "test-changed-rejected")
+        }
+        return changed
+    }
+    private func changedConsumer() async throws -> (FilesController, ChangedFilesConnector) {
+        let connector = ChangedFilesConnector(root: try root()), model = FilesController(connector: connector, idleTimeout: nil)
+        addTeardownBlock { await connector.cancelAll(); await model.closeForWindow() }
+        model.show(host: host()); await model.waitUntilCurrentWorkCompletes(); model.connect(input())
+        _ = try await connector.request(0)
+        return (model, connector)
+    }
+    func testTypedChangedErrorOnlyAfterRuntimeCancellationPreservesFailedPromptAndRejectsAcceptance() async throws {
+        let (model, connector) = try await changedConsumer(), request = try await connector.request(0)
+        let changed = try await changedFact(HostIdentity(address: HostAddress(request.host.address), port: SSHPort(request.host.port)))
+        await connector.fail(0, error: FileServiceError(.untrusted, operation: "host-key", changedHostKey: changed), cancelRuntime: true)
+        await model.waitUntilCurrentWorkCompletes()
+        let prompt = try XCTUnwrap(model.trustPrompt)
+        guard case .changed(let fact) = prompt.event else { return XCTFail("typed changed fact") }
+        XCTAssertEqual(fact, changed); XCTAssertEqual(prompt.request, request)
+        XCTAssertEqual(model.state, .failed); XCTAssertEqual(model.issue?.code, "files.untrusted")
+        XCTAssertFalse(model.answerTrust(prompt, once: true)); XCTAssertFalse(model.answerTrust(prompt, once: false))
+        XCTAssertNotNil(model.pendingAuthenticationPresentation(modalAvailable: true))
+        let count = await connector.count; XCTAssertEqual(count, 1)
+    }
+    func testTypedChangedCallbackAndErrorBothOrdersKeepOnePromptAndDismissalCannotReviveIt() async throws {
+        for callbackFirst in [false, true] {
+            let (model, connector) = try await changedConsumer(), request = try await connector.request(0)
+            let changed = try await changedFact(HostIdentity(address: HostAddress(request.host.address), port: SSHPort(request.host.port)))
+            var originalID: UUID?
+            if callbackFirst {
+                _ = await connector.emit(0, changed: changed)
+                try await waitForBoundary { model.trustPrompt != nil }
+                originalID = model.trustPrompt?.id
+            }
+            await connector.fail(0, error: FileServiceError(.untrusted, operation: "host-key", changedHostKey: changed), cancelRuntime: true)
+            await model.waitUntilCurrentWorkCompletes()
+            let prompt = try XCTUnwrap(model.trustPrompt)
+            if let originalID { XCTAssertEqual(prompt.id, originalID) }
+            let reply = await connector.emit(0, changed: changed)
+            XCTAssertEqual(model.trustPrompt?.id, prompt.id)
+            XCTAssertFalse(reply.resolve(.confirm(displayedFingerprint: changed.presentedFingerprint)))
+            model.cancelTrust(prompt); await model.waitUntilCurrentWorkCompletes()
+            _ = await connector.emit(0, changed: changed)
+            XCTAssertNil(model.trustPrompt); XCTAssertEqual(model.state, .disconnected)
+        }
+    }
+    func testTypedChangedWrongEndpointAndGenericFailuresNeverManufactureChangedPrompt() async throws {
+        for typedWrongEndpoint in [false, true] {
+            let (model, connector) = try await changedConsumer(), request = try await connector.request(0)
+            let wrong = try await changedFact(HostIdentity(address: HostAddress(request.host.address), port: SSHPort(request.host.port + 1)))
+            if typedWrongEndpoint { _ = await connector.emit(0, changed: wrong); XCTAssertNil(model.trustPrompt) }
+            let error = typedWrongEndpoint
+                ? FileServiceError(.untrusted, operation: "host-key", changedHostKey: wrong)
+                : FileServiceError(.transport, operation: "connect")
+            await connector.fail(0, error: error)
+            await model.waitUntilCurrentWorkCompletes()
+            XCTAssertEqual(model.state, .failed); XCTAssertNil(model.trustPrompt)
+            XCTAssertEqual(model.issue?.code, typedWrongEndpoint ? "files.untrusted" : "files.transport")
+        }
+    }
+    func testTypedChangedOldRequestNewGenerationAndClosedWindowRejectLateFacts() async throws {
+        let (model, connector) = try await changedConsumer(), old = try await connector.request(0)
+        let changed = try await changedFact(HostIdentity(address: HostAddress(old.host.address), port: SSHPort(old.host.port)))
+        await connector.holdFailure(0, error: FileServiceError(.untrusted, operation: "host-key", changedHostKey: changed))
+        try await connector.failureHeld(0)
+        model.cancelCurrent(); await connector.releaseFailure(0); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertNil(model.trustPrompt); XCTAssertEqual(model.state, .disconnected)
+        model.connect(input()); let current = try await connector.request(1)
+        XCTAssertNotEqual(current.generation, old.generation)
+        _ = await connector.emit(0, changed: changed); XCTAssertNil(model.trustPrompt)
+        try await connector.succeed(1); await model.waitUntilCurrentWorkCompletes()
+        XCTAssertEqual(model.state, .ready)
+        let previousManager = model.manager
+        await model.closeForWindow()
+        _ = await connector.emit(0, changed: changed); _ = await connector.emit(1, changed: changed)
+        XCTAssertNil(model.trustPrompt); XCTAssertFalse(model.visible); XCTAssertEqual(model.state, .disconnected)
+        XCTAssertFalse(model.manager === previousManager)
+        model.show(host: host()); await model.waitUntilCurrentWorkCompletes()
+        _ = await connector.emit(1, changed: changed); XCTAssertNil(model.trustPrompt)
     }
     private func nextKeyboard(_ model: FilesController, excluding: UUID? = nil) async -> FilesKeyboardPrompt {
         await withCheckedContinuation { reply in
@@ -460,11 +892,98 @@ import OpenLXSSHTrust
     }
 }
 
+/// Virtual failure delivery into the real FilesController consumer; never contacts SSH/SFTP,
+/// invokes saved credentials, or treats these logical outcomes as interoperability evidence.
+private actor ChangedFilesConnector: FilesConnecting {
+    private struct Attempt {
+        let request: FilesRequest
+        let token: CancellationToken
+        let trust: FileHostTrustHandler
+    }
+    let root: URL
+    private var attempts: [Attempt] = []
+    private var results: [Int: Result<any RemoteFileService, any Error>] = [:]
+    private var held: [Int: any Error] = [:]
+    private var entered = Set<Int>(), released = Set<Int>()
+    var count: Int { attempts.count }
+    init(root: URL) { self.root = root }
+    func connect(request: FilesRequest, input: FilesConnectInput, token: CancellationToken,
+                 trust: @escaping FileHostTrustHandler, keyboard: @escaping FilesKeyboardHandler,
+                 isCurrent: @escaping @Sendable () async -> Bool) async throws -> any RemoteFileService {
+        let index = attempts.count; attempts.append(Attempt(request: request, token: token, trust: trust))
+        let deadline = ContinuousClock.now + .seconds(3)
+        while results[index] == nil {
+            if let failure = held[index] {
+                entered.insert(index)
+                while !released.contains(index) {
+                    guard .now < deadline else { throw FileServiceError(.timeout, operation: "test-held-changed") }
+                    await withCheckedContinuation { continuation in
+                        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(10)) { continuation.resume() }
+                    }
+                }
+                held[index] = nil; throw failure
+            }
+            try token.check()
+            guard .now < deadline else { throw FileServiceError(.timeout, operation: "test-changed-result") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return try results.removeValue(forKey: index)!.get()
+    }
+    func request(_ index: Int) async throws -> FilesRequest {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !attempts.indices.contains(index) {
+            guard .now < deadline else { throw FileServiceError(.timeout, operation: "test-changed-request") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return attempts[index].request
+    }
+    func emit(_ index: Int, changed: ChangedHostKey) async -> ChallengeReply<FileHostTrustAnswer> {
+        let reply = ChallengeReply<FileHostTrustAnswer>()
+        attempts[index].trust(.changed(changed), reply)
+        // receiveTrust is queued on MainActor. An event queued on the same main dispatch
+        // executor afterwards is a delivery fence, without importing an internal mailbox wait.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertFalse(reply.resolve(.confirm(displayedFingerprint: changed.presentedFingerprint)),
+            "Changed informational reply must already be cancelled by its consumer")
+        return reply
+    }
+    func fail(_ index: Int, error: any Error, cancelRuntime: Bool = false) {
+        results[index] = .failure(error)
+        if cancelRuntime { attempts[index].token.cancel() }
+    }
+    func succeed(_ index: Int) throws { results[index] = .success(try LocalFileService(root: root)) }
+    func holdFailure(_ index: Int, error: any Error) { held[index] = error }
+    func failureHeld(_ index: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !entered.contains(index) {
+            guard .now < deadline else { throw FileServiceError(.timeout, operation: "test-changed-held") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+    func releaseFailure(_ index: Int) { released.insert(index) }
+    func cancelAll() {
+        for attempt in attempts { attempt.token.cancel() }
+        released.formUnion(held.keys)
+    }
+}
+private func filesChangedKey(_ byte: UInt8) throws -> HostPublicKey {
+    var blob = Data()
+    for part in [Data("ssh-ed25519".utf8), Data(repeating: byte, count: 32)] {
+        var length = UInt32(part.count).bigEndian
+        withUnsafeBytes(of: &length) { blob.append(contentsOf: $0) }; blob.append(part)
+    }
+    return try HostPublicKey(algorithm: "ssh-ed25519", base64: blob.base64EncodedString())
+}
+
 private actor BoundLocalFilesService: RemoteFileService {
     nonisolated let capabilities = FileServiceCapabilities(traversal: .localDescriptorNoFollow, exclusiveCreate: true, noReplace: .atomicLocal, canAttemptAtomicReplace: true)
     nonisolated let serverBinding: UUID? = UUID()
     let base: LocalFileService
     init(root: URL) throws { base = try LocalFileService(root: root) }
+    // Explicit forwarding for this local I/O test substitute, not remote login evidence.
+    func initialDirectory(token: CancellationToken) async throws -> RemotePath { try await base.initialDirectory(token: token) }
     func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] { try await base.list(path, token: token) }
     func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes { try await base.lstat(path, token: token) }
     func open(_ path: RemotePath, mode: OpenMode, token: CancellationToken) async throws -> FileHandleID { try await base.open(path, mode: mode, token: token) }
@@ -494,6 +1013,8 @@ private actor BrowsePauseService: RemoteFileService {
     let pause: FilesTestPause
     private(set) var closeCount = 0
     init(root: URL, pause: FilesTestPause) throws { base = try LocalFileService(root: root); self.pause = pause }
+    // Explicit forwarding for this local I/O test substitute, not remote login evidence.
+    func initialDirectory(token: CancellationToken) async throws -> RemotePath { try await base.initialDirectory(token: token) }
     func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] { await pause.suspendIfArmed(); return try await base.list(path, token: token) }
     func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes { try await base.lstat(path, token: token) }
     func open(_ path: RemotePath, mode: OpenMode, token: CancellationToken) async throws -> FileHandleID { try await base.open(path, mode: mode, token: token) }
@@ -618,4 +1139,93 @@ private actor ScriptedFilesConnector: FilesConnecting {
 
 private func XCTAssertEqual<T: Equatable>(awaited value: T, _ expected: T, file: StaticString = #filePath, line: UInt = #line) {
     XCTAssertEqual(value, expected, file: file, line: line)
+}
+
+private actor HealthFilesTestService: RemoteFileService {
+    nonisolated let capabilities = FileServiceCapabilities(traversal: .localDescriptorNoFollow, exclusiveCreate: true, noReplace: .atomicLocal, canAttemptAtomicReplace: true)
+    let base: LocalFileService
+    private var failure: FileServiceError.Kind?
+    private var listFailure: FileServiceError.Kind?
+    private var writeFailure: FileServiceError.Kind?
+    nonisolated private let terminalState = FilesFailureFact()
+    nonisolated var terminalFailure: FileServiceError? { terminalState.snapshot() }
+    private var checkingHealth = false
+    private(set) var healthCount = 0
+    private var closes = 0
+    private let pause: FilesTestPause?
+    var counts: (health: Int, closes: Int) { (healthCount, closes) }
+    init(root: URL, pause: FilesTestPause? = nil) throws { base = try LocalFileService(root: root); self.pause = pause }
+    func setHealthFailure(_ kind: FileServiceError.Kind) { checkingHealth = true; failure = kind; healthCount = 0 }
+    func setListFailure(_ kind: FileServiceError.Kind) { listFailure = kind }
+    func setWriteFailure(_ kind: FileServiceError.Kind) { writeFailure = kind }
+    func initialDirectory(token: CancellationToken) async throws -> RemotePath { try await base.initialDirectory(token: token) }
+    func list(_ p: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] {
+        await pause?.suspendIfArmed()
+        if let listFailure { throw FileServiceError(listFailure, operation: "fixture-list", path: p) }
+        return try await base.list(p, token: token)
+    }
+    func lstat(_ p: RemotePath, token: CancellationToken) async throws -> FileAttributes {
+        if checkingHealth && p == .root {
+            healthCount += 1
+            await pause?.suspendIfArmed()
+            if let failure { throw FileServiceError(failure, operation: "fixture-sftp-health", path: p) }
+        }
+        return try await base.lstat(p, token: token)
+    }
+    func open(_ p: RemotePath, mode: OpenMode, token: CancellationToken) async throws -> FileHandleID { try await base.open(p, mode: mode, token: token) }
+    func read(_ h: FileHandleID, maxBytes: Int, token: CancellationToken) async throws -> Data { try await base.read(h, maxBytes: maxBytes, token: token) }
+    func write(_ h: FileHandleID, data: Data, token: CancellationToken) async throws -> Int {
+        if let writeFailure {
+            let error = FileServiceError(writeFailure, operation: "fixture-remote-write")
+            await base.close() // Publish a terminal fact only after this fixture's native FD really closes.
+            terminalState.record(error); throw error
+        }
+        return try await base.write(h, data: data, token: token)
+    }
+    func finish(_ h: FileHandleID, token: CancellationToken) async throws { try await base.finish(h, token: token) }
+    func closeHandle(_ h: FileHandleID) async throws { try await base.closeHandle(h) }
+    func mkdir(_ p: RemotePath, token: CancellationToken) async throws { try await base.mkdir(p, token: token) }
+    func rename(_ a: RemotePath, to b: RemotePath, mode: RenameMode, token: CancellationToken) async throws { try await base.rename(a, to: b, mode: mode, token: token) }
+    func remove(_ p: RemotePath, directory: Bool, token: CancellationToken) async throws { try await base.remove(p, directory: directory, token: token) }
+    nonisolated func cancel() {}
+    func close() async { closes += 1; await base.close() }
+}
+
+private final class FilesFailureFact: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: FileServiceError?
+    func record(_ error: FileServiceError) { lock.lock(); value = error; lock.unlock() }
+    func snapshot() -> FileServiceError? { lock.lock(); defer { lock.unlock() }; return value }
+}
+private actor SequentialFilesTestConnector: FilesConnecting {
+    let services: [any RemoteFileService]
+    private(set) var count = 0
+    init(services: [any RemoteFileService]) { self.services = services }
+    func connect(request: FilesRequest, input: FilesConnectInput, token: CancellationToken,
+                 trust: @escaping FileHostTrustHandler, keyboard: @escaping FilesKeyboardHandler,
+                 isCurrent: @escaping @Sendable () async -> Bool) async throws -> any RemoteFileService {
+        try token.check(); guard count < services.count else { throw FileServiceError(.closed, operation: "test-no-next-service") }
+        let next = services[count]; count += 1; return next
+    }
+}
+private actor FaultingFilesUploadSource: RemoteFileService {
+    nonisolated let capabilities = FileServiceCapabilities(traversal: .localDescriptorNoFollow, exclusiveCreate: true, noReplace: .atomicLocal, canAttemptAtomicReplace: true)
+    let base: LocalFileService
+    let failRead: Bool
+    init(fd: Int32, failRead: Bool) throws { base = try LocalFileService(rootDirectoryDescriptor: fd); self.failRead = failRead }
+    func list(_ p: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] { try await base.list(p, token: token) }
+    func lstat(_ p: RemotePath, token: CancellationToken) async throws -> FileAttributes { try await base.lstat(p, token: token) }
+    func open(_ p: RemotePath, mode: OpenMode, token: CancellationToken) async throws -> FileHandleID { try await base.open(p, mode: mode, token: token) }
+    func read(_ h: FileHandleID, maxBytes: Int, token: CancellationToken) async throws -> Data {
+        if failRead { throw FileServiceError(.transport, operation: "fixture-local-source-read") }
+        return try await base.read(h, maxBytes: maxBytes, token: token)
+    }
+    func write(_ h: FileHandleID, data: Data, token: CancellationToken) async throws -> Int { try await base.write(h, data: data, token: token) }
+    func finish(_ h: FileHandleID, token: CancellationToken) async throws { try await base.finish(h, token: token) }
+    func closeHandle(_ h: FileHandleID) async throws { try await base.closeHandle(h) }
+    func mkdir(_ p: RemotePath, token: CancellationToken) async throws { try await base.mkdir(p, token: token) }
+    func rename(_ a: RemotePath, to b: RemotePath, mode: RenameMode, token: CancellationToken) async throws { try await base.rename(a, to: b, mode: mode, token: token) }
+    func remove(_ p: RemotePath, directory: Bool, token: CancellationToken) async throws { try await base.remove(p, directory: directory, token: token) }
+    nonisolated func cancel() {}
+    func close() async { await base.close() }
 }

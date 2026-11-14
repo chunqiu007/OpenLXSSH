@@ -1,5 +1,19 @@
 # 正常 Debug 工程预览：身份与未验边界
 
+## Codex 本次实测：R2 隔离离线预览（2026-11-01）
+
+R2 已独立构建、离线 Development 签名并实际运行。它仅用于观察产品页面和本地草稿，不具备网络连接能力；**未达到 UX_READY_FOR_USER，也不替代下文R1或完整SSH/SFTP候选。**
+
+- 副本：`DerivedData/UXPreview/Engineering-R2/OpenLXSSH.app`；身份单同目录`identity.json`，独立bundleID `org.openlxssh.OpenLXSSH.EngineeringPreview`，arm64/minOS26、Hardened Runtime、timestamp=none、strict/deep验证通过，无Apple请求，旧安装和R1未覆盖。
+- main SHA256：`54f6c9fa68a6fb6749052627f42ce029bbfb64626c0414b6c8e1374b3483616c`。源码记录包含827个项目公开文件的逐文件摘要，不能只用Git HEAD代表未提交整合输入；此清单不是全部vendor输入证明。
+- 首次构建成功，隔离测试16项/8断言失败。实际根因是Core/Foundation的`/var`与Darwin物理`/private/var`别名在数据库记录门被字面误拒，以及测试ACL文本构造在当前Darwin返回nil。两文件窄修后原断言全保留、新增跨根/文件名拒绝；工程师17/0，主管独立同产物17/0、exit0。原失败xcresult不改写。
+- 无参、旧fixture、缺参数、错合同四项预NSApp拒64。合法合同首案因主管新建的Engineering-R2/Inputs目录为0755而拒64；保留准备失败记录，只将本轮新建两目录改0700，之后PID63234正常运行并经CmdQ自然exit0。
+- 当前Codex能观察原生AX与真实像素。实际完成：空主机页→虚构主机输入→70000端口错误/保存禁用→改22→草稿关闭取消保留→关闭保护保存返回列表→单击只看详情；切换密钥空页、SFTP双栏本地空目录/远端离线、Cmd+,打开统一设置与取消返回。
+- 真实JPEG：`DerivedData/CodexTakeover/20261101/screenshots/r2-host-details.jpg`、`r2-keys-empty.jpg`、`r2-sftp-offline.jpg`、`r2-settings-general.jpg`。截图只含虚构条目和本轮临时路径；它们不能证明真实终端、MFA、远端SFTP、规定三尺寸或全屏。
+- 本次观察出的待修细节包括空详情标题偏低、主机编辑/隔离说明冗长。未完成的真实输入法、Finder、粘贴、窗口关闭矩阵和资源门仍保留；不会把旧客户端图像失败继续当本次工具限制。
+
+证据根：`DerivedData/CodexTakeover/20261101/`；包含`r2-test-command.json`与原失败、`r2-fixed-test-command.json`、`r2-primary-test-command.json`、修复前源码/精确patch、两次启动记录和运行日志。下文R1与旧GUI调查保留其历史范围。
+
 结论：**正常Debug工程预览已构建并离线签名；不是HostProbe，尚未完成正常启动/GUI检查，未UX_READY_FOR_USER。** 2026-11-01。
 
 ## 精确副本

@@ -31,16 +31,13 @@ struct FilesPanelView: View {
                 .font(.caption).lineLimit(2)
             Text("独立直连认证；不使用终端当前目录或内层 SSH。符号链接默认不跟随。").font(.caption2).foregroundStyle(.secondary)
             if model.state != .ready {
-                NativeSecureField(id: "files.initial.secret", placeholder: model.selectedHost?.authentication.needsKey == true ? "本次私钥口令（无口令留空）" : "本次密码", text: $initialSecret).frame(height: 26)
+                NativeSecureField(id: "files.initial.secret", placeholder: model.selectedHost?.authentication.needsKey == true ? "本次私钥口令（无口令留空）" : "本次密码", text: $initialSecret,
+                                  onSubmit: { _ in connectInitial() }).frame(height: 26)
                 NativeButton(title: useSaved ? "本次明确使用已保存秘密 · 点击取消" : "本次使用已保存密码／私钥口令", id: "files.initial.saved", enabled: !model.busy) { useSaved.toggle() }.fixedSize()
                 if model.selectedHost?.authentication.needsKey == false {
                     NativeButton(title: keyboardOnly ? "仅交互认证 · 点击改初始密码" : "改为仅交互认证", id: "files.initial.keyboardOnly", enabled: !model.busy) { keyboardOnly.toggle() }.fixedSize()
                 }
-                NativeButton(title: "连接 SFTP", id: "files.connect", enabled: model.canConnect && !model.busy) {
-                    let secret: FilesInitialSecret = useSaved ? .saved : .manual(.init(utf8: initialSecret))
-                    initialSecret = ""
-                    model.connect(FilesConnectInput(primary: secret, keyboardOnly: keyboardOnly))
-                }.fixedSize()
+                NativeButton(title: "连接 SFTP", id: "files.connect", enabled: model.canConnect && !model.busy, isProminent: true) { connectInitial() }.fixedSize()
             }
             HStack {
                 Text(status).font(.caption)
@@ -68,7 +65,7 @@ struct FilesPanelView: View {
                 NativeButton(title: "重命名…", id: "files.rename", enabled: currentEntry != nil && model.state == .ready && !model.busy) { if let entry = currentEntry { dialog = FilesDialog(content: .rename(entry)) } }.fixedSize()
                 NativeButton(title: "删除计划…", id: "files.delete", enabled: currentEntry != nil && model.state == .ready && !model.busy) { if let entry = currentEntry { dialog = FilesDialog(content: .delete(entry)) } }.fixedSize()
             }
-            NativeButton(title: "核对非覆盖 rename 能力…", id: "files.probe.prepare", enabled: model.state == .ready && !model.busy) { model.prepareProbe() }.fixedSize()
+            NativeButton(title: "检查非覆盖提交能力…", id: "files.probe.prepare", enabled: model.state == .ready && !model.busy) { model.prepareProbe() }.fixedSize()
             if let review = model.deleteReview { NativeButton(title: "核对精确删除范围…", id: "files.delete.review") { dialog = FilesDialog(content: .deletion(review)) }.fixedSize() }
             if let review = model.probeReview { NativeButton(title: "批准能力探测计划…", id: "files.probe.review") { dialog = FilesDialog(content: .probe(review)) }.fixedSize() }
             if let report = model.lastDeleteReport {
@@ -118,6 +115,12 @@ struct FilesPanelView: View {
         }
     }
     private var currentEntry: DirectoryEntry? { selected.count == 1 ? model.entries.first { selected.contains($0.name) } : nil }
+    private func connectInitial() {
+        guard model.canConnect, !model.busy else { return }
+        let secret: FilesInitialSecret = useSaved ? .saved : .manual(.init(utf8: initialSecret))
+        initialSecret = ""
+        model.connect(FilesConnectInput(primary: secret, keyboardOnly: keyboardOnly))
+    }
     private var status: String {
         switch model.state {
         case .disconnected: "未连接（手动连接）"
@@ -142,7 +145,7 @@ struct FilesEntryTable: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true
         let table = NSTableView(); table.identifier = NSUserInterfaceItemIdentifier("files.entries")
-        for (id, title, width) in [("name", "名称（原始字节）", 280.0), ("kind", "类型", 100.0)] {
+        for (id, title, width) in [("name", "名称", 280.0), ("kind", "类型", 100.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; table.addTableColumn(column)
         }
         table.rowHeight = 25; table.usesAlternatingRowBackgroundColors = true; table.allowsEmptySelection = true; table.allowsMultipleSelection = true

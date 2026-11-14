@@ -44,5 +44,5 @@ Core首次仅triple的18/0实际min15，保留且不冒min26；第二次显式ta
 
 - 实际设置GUI最小父窗/三尺寸、字体picker、许可显示、焦点与真实Save/Discard/Cancel；旧NativeSmoke单Grid设置流程需工具owner按真实分类适配，不能改产品迎合旧测试。
 - window frame、分栏比例、Vault深子页恢复；标签overflow箭头/resize-reorder可见/中键/immutable批量清单；展示名称/删除配置badge与连接快照分离。这些不在本轮完成范围。
-- 新Core migration与全局关闭层变化需主管独立关键复验后才作相关本地提交；不将工程师DONE作整体验收。
+- 新Core migration与全局关闭层变化已由主管独立Core18、Prefs/Close/Files43复验；本地`0936fd6`仅提交Core模型/迁移/测试和本报告，实际设置App/UI尚未整批暂存，不冒整体完成。
 - 不Release/生产/live/Keychain/Apple/最终出包；默认Direct不变，不启用未定案Native活性迁移。

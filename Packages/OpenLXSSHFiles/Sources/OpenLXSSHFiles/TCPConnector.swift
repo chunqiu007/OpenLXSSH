@@ -91,8 +91,13 @@ final class ConnectedSocket: @unchecked Sendable {
 }
 enum TCPConnector {
     static func connect(_ identity: HostIdentity, timeout: TimeInterval, token: CancellationToken,
-                        resolver: AddressResolver = .shared) async throws -> ConnectedSocket {
+                        resolver: AddressResolver = .shared,
+                        access: @Sendable (HostIdentity, CancellationToken) async throws -> Void = { identity, token in
+                            try await LocalNetworkAccess.wait(for: identity, token: token)
+                        }) async throws -> ConnectedSocket {
         guard timeout.isFinite, timeout > 0, timeout <= 300 else { throw FileServiceError(.invalidPath, operation: "connect-timeout") }
+        try await access(identity, token)
+        try token.check()
         let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
         return try await withTaskCancellationHandler {
             let addresses = try await resolver.resolve(identity, deadline: deadline, token: token)

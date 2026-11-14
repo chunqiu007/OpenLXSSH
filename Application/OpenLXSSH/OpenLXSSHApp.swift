@@ -1,59 +1,204 @@
 import AppKit
 import SwiftUI
+import OpenLXSSHTransport
 #if HOST_PROBE
 import OpenLXSSHFiles
 #endif
 
 @main enum OpenLXSSHEntry {
     @MainActor static func main() {
+        #if PREVIEW_ISOLATED
+        let previewRoot: EngineeringPreviewRoot
         do {
+            guard let options = try EngineeringPreviewArguments.parse(Array(CommandLine.arguments.dropFirst()), mode: .isolatedPreview),
+                  Bundle.main.bundleIdentifier == EngineeringPreviewArguments.bundleID else { throw EngineeringPreviewFailure.arguments }
+            try EngineeringPreviewContract.load(options)
+            previewRoot = try EngineeringPreviewRoot.createFresh(runID: options.runID)
+        } catch {
+            FileHandle.standardError.write(Data("OpenLXSSH: explicit isolated Engineering-R2 contract required; launch refused.\n".utf8))
+            exit(64)
+        }
+        #elseif LOCAL_CANDIDATE
+        let localCandidate: LocalCandidateBootstrap
+        do { localCandidate = try LocalCandidateBootstrap.load(arguments: Array(CommandLine.arguments.dropFirst())) }
+        catch {
+            FileHandle.standardError.write(Data("OpenLXSSH: invalid local candidate identity or prepared data root; launch refused.\n".utf8))
+            exit(64)
+        }
+        #else
+        do {
+            guard !CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--local-candidate") }) else { throw EngineeringPreviewFailure.arguments }
             #if HOST_PROBE
-            let real = try AppRealIntegrationArguments.parse(Array(CommandLine.arguments.dropFirst()), hostProbe: true)
+            _ = try EngineeringPreviewArguments.parse(Array(CommandLine.arguments.dropFirst()), mode: .hostProbe)
             #else
-            let real = try AppRealIntegrationArguments.parse(Array(CommandLine.arguments.dropFirst()), hostProbe: false)
+            _ = try EngineeringPreviewArguments.parse(Array(CommandLine.arguments.dropFirst()), mode: .shipping)
             #endif
-            if real.action == .help { print(AppRealIntegrationArguments.help); return }
-            if real.action == .validate { print("Real fixture syntax only; no file/network I/O."); return }
+        } catch {
+            FileHandle.standardError.write(Data("OpenLXSSH: isolated preview flags refused.\n".utf8)); exit(64)
+        }
+        do {
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            #if HOST_PROBE
+            let concurrent = try AppConcurrentArguments.parse(arguments, hostProbe: true)
+            #else
+            let concurrent = try AppConcurrentArguments.parse(arguments, hostProbe: false)
+            #endif
+            if concurrent.action == .help { print(AppConcurrentArguments.help); return }
+            if concurrent.action == .validate { print("Concurrent keyKI syntax only; no I/O."); return }
+            #if HOST_PROBE
+            let trust = try AppTrustArguments.parse(arguments, hostProbe: true)
+            #else
+            let trust = try AppTrustArguments.parse(arguments, hostProbe: false)
+            #endif
+            if trust.action == .help { print(AppTrustArguments.help); return }
+            if trust.action == .validate { print("Trust fixture syntax only; no I/O."); return }
+            #if HOST_PROBE
+            let cancel = try AppFilesCancelArguments.parse(arguments, hostProbe: true)
+            #else
+            let cancel = try AppFilesCancelArguments.parse(arguments, hostProbe: false)
+            #endif
+            if cancel.action == .help { print(AppFilesCancelArguments.help); return }
+            if cancel.action == .validate { print("Files cancel retry syntax only; no I/O."); return }
+            #if HOST_PROBE
+            let conflict = try AppFilesConflictArguments.parse(arguments, hostProbe: true)
+            #else
+            let conflict = try AppFilesConflictArguments.parse(arguments, hostProbe: false)
+            #endif
+            if conflict.action == .help { print(AppFilesConflictArguments.help); return }
+            if conflict.action == .validate { print("Files conflict syntax only; no file/network I/O."); return }
+            #if HOST_PROBE
+            let files = try AppFilesManifestArguments.parse(arguments, hostProbe: true)
+            #else
+            let files = try AppFilesManifestArguments.parse(arguments, hostProbe: false)
+            #endif
+            if files.action == .help { print(AppFilesManifestArguments.help); return }
+            if files.action == .validate { print("Files manifest fixture syntax only; no file/network I/O."); return }
+            #if HOST_PROBE
+            let mfa = try AppMFAArguments.parse(arguments, hostProbe: true)
+            #else
+            let mfa = try AppMFAArguments.parse(arguments, hostProbe: false)
+            #endif
+            if mfa.action == .help { print(AppMFAArguments.help); return }
+            if mfa.action == .validate { print("Native MFA fixture syntax only; no file/network I/O."); return }
+            #if HOST_PROBE
+            let password = try AppNativePasswordArguments.parse(arguments, hostProbe: true)
+            #else
+            let password = try AppNativePasswordArguments.parse(arguments, hostProbe: false)
+            #endif
+            if password.action == .help { print(AppNativePasswordArguments.help); return }
+            if password.action == .validate { print("Native password fixture syntax only; no file/network I/O."); return }
+            #if HOST_PROBE
+            let native = try AppNativeFiniteArguments.parse(arguments, hostProbe: true)
+            #else
+            let native = try AppNativeFiniteArguments.parse(arguments, hostProbe: false)
+            #endif
+            if native.action == .help { print(AppNativeFiniteArguments.help); return }
+            if native.action == .validate { print("Native App fixture syntax only; no file/network I/O."); return }
+            if concurrent.action == .none && trust.action == .none && cancel.action == .none && conflict.action == .none && files.action == .none && mfa.action == .none && password.action == .none && native.action == .none {
+                #if HOST_PROBE
+                let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: true)
+                #else
+                let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: false)
+                #endif
+                if real.action == .help { print(AppRealIntegrationArguments.help); return }
+                if real.action == .validate { print("Real fixture syntax only; no file/network I/O."); return }
+            }
         } catch {
             FileHandle.standardError.write(Data("OpenLXSSH: real fixture flags refused.\n".utf8)); exit(64)
         }
+        #endif
         let application = NSApplication.shared
         application.setActivationPolicy(.regular)
         let delegate: AppDelegate
+        #if PREVIEW_ISOLATED
+        delegate = AppDelegate(previewRoot: previewRoot)
+        #elseif LOCAL_CANDIDATE
+        delegate = AppDelegate(localCandidate: localCandidate)
+        #else
         do { delegate = try AppDelegate(arguments: Array(CommandLine.arguments.dropFirst())) }
         catch {
             FileHandle.standardError.write(Data("OpenLXSSH: invalid isolated test arguments.\n".utf8))
             exit(64)
         }
+        #endif
         application.delegate = delegate
         withExtendedLifetime(delegate) { application.run() }
     }
 }
 
+#if PREVIEW_ISOLATED
+private struct EngineeringPreviewBanner: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        Text(verbatim: model.engineeringPreviewDescription)
+            .font(.caption.monospaced()).textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            .background(Color.orange.opacity(0.15))
+            .accessibilityIdentifier("engineeringPreview.identity")
+    }
+}
+#endif
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     let model: AppModel
+    #if LOCAL_CANDIDATE
+    private let localCandidate: LocalCandidateBootstrap
+    #endif
     private(set) var mainWindow: NSWindow?
     private var terminating = false
     private var windowClosing = false
     private var windowCloseApproved = false
-    private var closeIntent: CloseIntent?
+    private var closeAdmissionFrozen = false
+    private var closeRequest = AppCloseRequestState()
+    private var closeIntent: AppCloseIntent? { closeRequest.intent }
     private var closeFlow: Task<Void, Never>?
     private var terminationReplyPending = false
-    private var closeApproved = false
+    private var closeApproved: Bool { closeRequest.approved }
     private var transferClosePrompt: NSPanel?
     private var transferCloseReply: CheckedContinuation<Bool, Never>?
     private var retainedCleanupReply: CheckedContinuation<Void, Never>?
-    private enum CloseIntent { case window, quit }
     #if HOST_PROBE
     private let smoke: NativeSmoke.Options?
     private var realIntegration: AppRealIntegration?
+    private var nativeFiniteIntegration: AppNativeFiniteIntegration?
     var realQuitBeforeStoresClose: ((TransferManagerSnapshot) async throws -> Void)?
     var realQuitAfterStoresClose: (() async throws -> Void)?
     var realQuitFailure: (() -> Void)?
     #endif
 
+    #if PREVIEW_ISOLATED
+    init(previewRoot: EngineeringPreviewRoot) {
+        model = AppModel(engineeringPreview: previewRoot)
+        super.init()
+    }
+    #elseif LOCAL_CANDIDATE
+    init(localCandidate: LocalCandidateBootstrap) {
+        self.localCandidate = localCandidate
+        model = localCandidate.makeModel()
+        super.init()
+    }
+    #else
     init(arguments: [String]) throws {
         #if HOST_PROBE
+        let concurrent = try AppConcurrentArguments.parse(arguments, hostProbe: true)
+        let trust = try AppTrustArguments.parse(arguments, hostProbe: true)
+        let cancel = try AppFilesCancelArguments.parse(arguments, hostProbe: true)
+        let conflict = try AppFilesConflictArguments.parse(arguments, hostProbe: true)
+        let files = try AppFilesManifestArguments.parse(arguments, hostProbe: true)
+        let mfa = try AppMFAArguments.parse(arguments, hostProbe: true)
+        let password = try AppNativePasswordArguments.parse(arguments, hostProbe: true)
+        let native = try AppNativeFiniteArguments.parse(arguments, hostProbe: true)
+        if concurrent.action == .live || trust.action == .live || cancel.action == .live || conflict.action == .live || files.action == .live || mfa.action == .live || password.action == .live || native.action == .live {
+            let existing = cancel.action == .live ? cancel.contractPath : (conflict.action == .live ? conflict.contractPath : (files.action == .live ? files.contractPath : (mfa.action == .live ? mfa.contractPath : (password.action == .live ? password.contractPath : native.contractPath))))
+            let selected = concurrent.action == .live ? concurrent.contractPath : (trust.action == .live ? trust.contractPath : existing)
+            guard let path = selected else { throw AppNativeFiniteFailure.arguments }
+            let bootstrap = try AppNativeFiniteIntegration.bootstrap(path: path)
+            model = bootstrap.model
+            smoke = nil
+            super.init()
+            nativeFiniteIntegration = AppNativeFiniteIntegration(delegate: self, bootstrap: bootstrap)
+            return
+        }
         let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: true)
         if real.action == .live {
             guard let path = real.contractPath,
@@ -85,42 +230,94 @@ import OpenLXSSHFiles
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             filesConnector = LocalFilesProbeConnector(root: root)
         } else { filesConnector = nil }
+        let preferenceDefaults: UserDefaults? = options == nil ? .standard : nil
         model = AppModel(repository: repository, security: SecurityCoordinator(repository: repository, location: location,
-                         credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder, filesConnector: filesConnector)
+                         credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder, filesConnector: filesConnector,
+                         preferencesDefaults: preferenceDefaults)
         #else
+        _ = try AppConcurrentArguments.parse(arguments, hostProbe: false)
+        _ = try AppTrustArguments.parse(arguments, hostProbe: false)
+        _ = try AppFilesCancelArguments.parse(arguments, hostProbe: false)
+        _ = try AppFilesConflictArguments.parse(arguments, hostProbe: false)
+        _ = try AppFilesManifestArguments.parse(arguments, hostProbe: false)
+        _ = try AppMFAArguments.parse(arguments, hostProbe: false)
+        _ = try AppNativePasswordArguments.parse(arguments, hostProbe: false)
+        _ = try AppNativeFiniteArguments.parse(arguments, hostProbe: false)
         _ = try AppRealIntegrationArguments.parse(arguments, hostProbe: false)
         guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw CocoaError(.validationMissingMandatoryProperty) }
-        model = AppModel(repository: AppRepository())
+        model = AppModel(repository: AppRepository(), preferencesDefaults: .standard)
         #endif
         super.init()
     }
+    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         showMainWindow()
         #if HOST_PROBE
-        if let realIntegration { Task { await realIntegration.run() } }
+        if let nativeFiniteIntegration { nativeFiniteIntegration.start() }
+        else if let realIntegration { Task { await realIntegration.run() } }
         else if let smoke {
             Task { await NativeSmoke(delegate: self, options: smoke).run() }
         }
         #endif
     }
 
+    #if HOST_PROBE
+    func applicationWillTerminate(_ notification: Notification) {
+        nativeFiniteIntegration?.applicationWillTerminate()
+    }
+    #endif
+
     @objc func showMainWindow() {
         guard !terminating, !model.lifecycle.terminating else { return }
         if let mainWindow { mainWindow.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        #if PREVIEW_ISOLATED
+        window.title = "OpenLXSSH · Engineering-R2 · 隔离离线"
+        window.isRestorable = false
+        #elseif LOCAL_CANDIDATE
+        window.title = "OpenLXSSH · 本地体验候选"
+        window.isRestorable = false
+        #else
         window.title = "OpenLXSSH"
+        #endif
         window.identifier = NSUserInterfaceItemIdentifier("OpenLXSSH.main")
+        WorkspaceWindowChrome.configure(window)
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 920, height: 580)
+        window.minSize = MainWindowFramePreferences.minimumSize
+        #if PREVIEW_ISOLATED
+        window.contentView = NSHostingView(rootView: VStack(spacing: 0) {
+            EngineeringPreviewBanner(model: model)
+            MainView(model: model)
+        })
+        #else
         window.contentView = NSHostingView(rootView: MainView(model: model))
+        #endif
         window.delegate = self
         window.center()
+        if let name = model.mainWindowFrameAutosaveName {
+            _ = window.setFrameUsingName(name, force: true)
+            recoverMainWindowFrame(window)
+            _ = window.setFrameAutosaveName(name)
+        }
         mainWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         Task { await model.reload() }
+    }
+
+    private func recoverMainWindowFrame(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen), !window.inLiveResize else { return }
+        let frame = MainWindowFramePreferences.recoveredFrame(window.frame, visibleFrames: NSScreen.screens.map(\.visibleFrame))
+        if window.frame != frame { window.setFrame(frame, display: window.isVisible) }
+    }
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        recoverMainWindowFrame(window)
+    }
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        if let mainWindow { recoverMainWindowFrame(mainWindow) }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -134,7 +331,7 @@ import OpenLXSSHFiles
         model.windowClosed()
         mainWindow?.contentView = nil
         mainWindow = nil
-        windowCloseApproved = false
+        windowCloseApproved = false; closeAdmissionFrozen = false
         if !terminating { model.lifecycle.resumeAfterContinue() }
     }
 
@@ -150,33 +347,35 @@ import OpenLXSSHFiles
         requestClose(.quit)
         return .terminateLater
     }
-    private func requestClose(_ intent: CloseIntent) {
-        if closeIntent == .quit || intent == .quit { closeIntent = .quit } else { closeIntent = .window }
-        // Synchronous revocation precedes the first task/actor hop, but does not cancel jobs.
-        model.lifecycle.freezeCloseAdmission()
-        if closeFlow != nil, closeApproved, intent == .quit { approveTermination() }
-        guard closeFlow == nil else { return }
+    private func requestClose(_ intent: AppCloseIntent) {
+        let startsFlow = closeRequest.request(intent)
+        // A quit joining an approved window cleanup shares its result. Permanent
+        // termination is gated below, never merely by approving presentation review.
+        guard startsFlow else { return }
         windowClosing = true
         closeFlow = Task { @MainActor [self] in
+            // Review runs before admission revocation, transfer snapshots, credential
+            // reads, or any cleanup. A cancelled review is purely presentation state.
+            guard allowsGlobalCloseReview else { cancelCloseAttempt(); return }
+            let review = model.requestWindowCloseReview()
+            guard await model.lifecycle.freezeAfterCloseReview(review, isCurrent: { model.isWindowCloseReviewCurrent(review) }) else {
+                cancelCloseAttempt(); return
+            }
+            closeAdmissionFrozen = true
             let active = await model.lifecycle.activeTransferSnapshot()
+            guard model.isWindowCloseReviewCurrent(review) else { cancelCloseAttempt(); return }
             if active {
                 let cancelAndClose = await askTransferClose()
-                if !cancelAndClose {
-                    model.lifecycle.resumeAfterContinue()
-                    closeIntent = nil; closeFlow = nil; closeApproved = false; windowClosing = false
-                    mainWindow?.makeKeyAndOrderFront(nil)
-                    if terminationReplyPending { terminationReplyPending = false; replyToTermination(false) }
-                    return
-                }
+                guard cancelAndClose, model.isWindowCloseReviewCurrent(review) else { cancelCloseAttempt(); return }
             }
-            // A declined quit never sets these permanent flags. An approved quit joining
-            // window cleanup does so immediately and shares the same owned cleanup task.
-            closeApproved = true
-            if closeIntent == .quit { approveTermination() }
+            // Draft and transfer decisions stay before cleanup. Approval is not proof
+            // the native connection is closed; keep quit reversible until the result gate.
+            model.finishWindowCloseReview()
+            closeRequest.approve()
             let managerBeforeClose = model.files.manager
             let labelsBeforeClose = model.files.transferLabels
             model.files.deferResetUntilCloseAcknowledged()
-            _ = await model.lifecycle.closeConnections(cancelTransfers: true, retainAdmissionFreeze: true)
+            let closeResult = await model.lifecycle.closeConnectionsResult(cancelTransfers: true, retainAdmissionFreeze: true)
             let finalTransfers = await managerBeforeClose.snapshot()
             let retained = finalTransfers.jobs.flatMap { job in job.retainedTemporaryPaths.map { path -> String in
                 let label = labelsBeforeClose[job.id]
@@ -186,6 +385,11 @@ import OpenLXSSHFiles
             } }
             if !retained.isEmpty { await showRetainedCleanup(retained) }
             model.files.finishWindowCloseReset()
+            guard closeResult.complete else {
+                model.issue = SessionController.incompleteCloseIssue
+                cancelCloseAttempt()
+                return
+            }
             if closeIntent == .quit {
                 approveTermination()
                 #if HOST_PROBE
@@ -210,9 +414,13 @@ import OpenLXSSHFiles
                     }
                 }
                 #endif
+                #if HOST_PROBE
+                await nativeFiniteIntegration?.beforeStoresClose(finalTransfers)
+                #endif
                 do { try await model.security.close(); try await model.repository.close() }
                 catch {
                     #if HOST_PROBE
+                    nativeFiniteIntegration?.storesCloseFailed()
                     if realQuitBeforeStoresClose != nil {
                         realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
                     }
@@ -220,6 +428,7 @@ import OpenLXSSHFiles
                     /* Do not log database or credential error descriptions. */
                 }
                 #if HOST_PROBE
+                await nativeFiniteIntegration?.afterStoresClose()
                 if let realQuitAfterStoresClose {
                     do { try await realQuitAfterStoresClose() }
                     catch {
@@ -230,9 +439,36 @@ import OpenLXSSHFiles
                 terminationReplyPending = false; replyToTermination(true)
             } else {
                 windowCloseApproved = true; mainWindow?.performClose(nil)
-                closeIntent = nil; closeFlow = nil; closeApproved = false; windowClosing = false
+                closeRequest.reset(); closeFlow = nil; windowClosing = false
             }
         }
+    }
+    /// Unknown system sheets/open panels are never force-ended or replaced by the
+    /// global review. Owned editor sheets route their exact nested prompt themselves.
+    private var allowsGlobalCloseReview: Bool {
+        var sheet = mainWindow?.attachedSheet
+        while let current = sheet {
+            guard current is NativeOwnedSheetWindow else {
+                return false
+            }
+            sheet = current.attachedSheet
+        }
+        if NSApp.modalWindow != nil {
+            return false
+        }
+        if let key = NSApp.keyWindow, key !== mainWindow, !(key is NativeOwnedSheetWindow) {
+            return false
+        }
+        return true
+    }
+    private func cancelCloseAttempt() {
+        model.finishWindowCloseReview()
+        if closeAdmissionFrozen { model.lifecycle.resumeAfterContinue() }
+        closeAdmissionFrozen = false
+        closeRequest.reset(); closeFlow = nil; windowClosing = false
+        // Preserve the current editor/auth responder instead of forcing the parent key.
+        if mainWindow?.attachedSheet == nil { mainWindow?.makeKeyAndOrderFront(nil) }
+        if terminationReplyPending { terminationReplyPending = false; replyToTermination(false) }
     }
     private func approveTermination() {
         guard !terminating else { return }
@@ -321,12 +557,31 @@ import OpenLXSSHFiles
             let item = viewMenu.addItem(withTitle: title, action: action, keyEquivalent: key); item.target = self
             if key == "]" || key == "[" { item.keyEquivalentModifierMask = [.command, .shift] }
         }
+        let terminalItem = NSMenuItem(); menu.addItem(terminalItem)
+        let terminalMenu = NSMenu(title: "终端"); terminalItem.submenu = terminalMenu
+        for action in [TerminalDesktopAction.search, .clearHistory, .scrollToBottom, .increaseFont, .decreaseFont, .resetFont, .connectionInfo, .disconnect, .reconnect] {
+            if [.clearHistory, .increaseFont, .connectionInfo].contains(action) { terminalMenu.addItem(.separator()) }
+            let key: String
+            switch action { case .increaseFont: key = "+"; case .decreaseFont: key = "-"; case .resetFont: key = "0"; default: key = "" }
+            let item = terminalMenu.addItem(withTitle: action.title, action: #selector(terminalAction(_:)), keyEquivalent: key)
+            item.target = self; item.representedObject = action.rawValue
+            item.identifier = NSUserInterfaceItemIdentifier("terminal." + action.rawValue)
+        }
+        let fontPlus = terminalMenu.addItem(withTitle: "放大字号", action: #selector(terminalAction(_:)), keyEquivalent: "=")
+        fontPlus.target = self; fontPlus.representedObject = TerminalDesktopAction.increaseFont.rawValue
+        fontPlus.isAlternate = true
         let windowItem = NSMenuItem(); menu.addItem(windowItem)
         let windowMenu = NSMenu(title: "窗口"); windowItem.submenu = windowMenu; NSApp.windowsMenu = windowMenu
         windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         let fullScreen = windowMenu.addItem(withTitle: "进入全屏幕", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f"); fullScreen.keyEquivalentModifierMask = [.command, .control]
         NSApp.mainMenu = menu
+        let helpItem = NSMenuItem(); menu.addItem(helpItem)
+        let helpMenu = NSMenu(title: "帮助"); helpItem.submenu = helpMenu; NSApp.helpMenu = helpMenu
+        let shortcuts = helpMenu.addItem(withTitle: "快捷键与鼠标", action: #selector(showTerminalHelp), keyEquivalent: ""); shortcuts.target = self
+        for (title, action) in [("版本与本地数据说明", #selector(showLocalDataHelp)), ("本地诊断预览…", #selector(showDiagnostics)), ("第三方许可…", #selector(showLicenses))] {
+            let item = helpMenu.addItem(withTitle: title, action: action, keyEquivalent: ""); item.target = self
+        }
     }
     private var interactionContext: WorkspaceInteractionContext {
         let keyWindow = NSApp.keyWindow
@@ -339,11 +594,25 @@ import OpenLXSSHFiles
     private var allowsWorkspaceActions: Bool {
         !terminating && !windowClosing && !model.lifecycle.terminating && interactionContext.allowsWorkspaceActions
     }
+    private var allowsWorkspaceFind: Bool {
+        guard allowsWorkspaceActions, model.canSearchWorkspace else { return false }
+        let responder = (NSApp.keyWindow ?? mainWindow)?.firstResponder
+        let fieldInput = (responder as? NSTextField)?.currentEditor() as? any NSTextInputClient
+        let marked = (responder as? any NSTextInputClient)?.hasMarkedText() == true
+            || fieldInput?.hasMarkedText() == true
+        return interactionContext.allowsWorkspaceFind(hasMarkedText: marked)
+    }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard !terminating, !model.lifecycle.terminating else { return false }
-        if menuItem.action == #selector(closeWorkspace) { return transferClosePrompt == nil && !windowClosing }
+        if menuItem.action == #selector(closeWorkspace) {
+            return transferClosePrompt == nil && (!windowClosing || (!closeApproved && mainWindow?.attachedSheet != nil))
+        }
         guard allowsWorkspaceActions else { return false }
-        if menuItem.action == #selector(findInWorkspace) { return model.canSearchWorkspace && interactionContext.allowsWorkspaceSearch }
+        if menuItem.action == #selector(terminalAction(_:)),
+           let raw = menuItem.representedObject as? String, let action = TerminalDesktopAction(rawValue: raw) {
+            return !interactionContext.isEditingText && model.sessions.canPerformTerminalAction(action)
+        }
+        if menuItem.action == #selector(findInWorkspace) { return allowsWorkspaceFind }
         if menuItem.action == #selector(disconnectSession) { return model.workspacePage.sessionID != nil && model.sessions.selectedTab?.isReusable == true }
         if menuItem.action == #selector(reconnectSession) { return model.workspacePage.sessionID != nil && model.sessions.selectedTab?.canReconnect == true }
         if menuItem.action == #selector(connectionInfo) { return model.workspacePage.sessionID != nil }
@@ -356,24 +625,73 @@ import OpenLXSSHFiles
     @objc private func showSFTP() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.showWorkspace(.sftp) }
     @objc private func nextWorkspace() { guard allowsWorkspaceActions else { return }; model.switchWorkspace(by: 1) }
     @objc private func previousWorkspace() { guard allowsWorkspaceActions else { return }; model.switchWorkspace(by: -1) }
-    @objc private func connectionInfo() { guard allowsWorkspaceActions else { return }; model.sendWorkspaceCommand(.connectionInfo) }
+    @objc private func connectionInfo() { guard allowsWorkspaceActions else { return }; model.sessions.performTerminalAction(.connectionInfo) }
+    @objc private func terminalAction(_ sender: NSMenuItem) {
+        guard allowsWorkspaceActions, !interactionContext.isEditingText,
+              let raw = sender.representedObject as? String, let action = TerminalDesktopAction(rawValue: raw) else { return }
+        model.sessions.performTerminalAction(action)
+    }
+    @objc private func showTerminalHelp() {
+        showPublicHelp(title: "快捷键与鼠标", text: DesktopHelp.shortcuts)
+    }
+    @objc private func showLocalDataHelp() {
+        #if PREVIEW_ISOLATED
+        showPublicHelp(title: "Engineering-R2 · 隔离数据", text: model.engineeringPreviewDescription)
+        #elseif LOCAL_CANDIDATE
+        showPublicHelp(title: "本地体验候选 · 数据说明", text: DesktopHelp.versionDescription() + "\n\n" + localCandidate.dataDescription)
+        #else
+        showPublicHelp(title: "版本与本地数据", text: DesktopHelp.versionDescription() + "\n\n" + DesktopHelp.localDataDescription)
+        #endif
+    }
+    @objc private func showDiagnostics() {
+        guard allowsWorkspaceActions else { return }
+        showMainWindow(); model.sendWorkspaceCommand(.diagnostics)
+    }
+    @objc private func showLicenses() {
+        guard allowsWorkspaceActions else { return }
+        let text = DesktopHelp.licenses.map { "—— " + $0.title + " ——\n\n" + DesktopHelp.licenseText($0) }.joined(separator: "\n\n")
+        showPublicHelp(title: "第三方许可（本地 bundle）", text: text)
+    }
+    private func showPublicHelp(title: String, text: String) {
+        guard allowsWorkspaceActions else { return }
+        showMainWindow()
+        guard let mainWindow else { return }
+        let alert = NSAlert(); alert.messageText = title
+        alert.informativeText = "本地只读内容，不访问网络、不收集日志。"
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 630, height: 350))
+        scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
+        let view = NSTextView(frame: scroll.bounds)
+        view.isEditable = false; view.isSelectable = true; view.isRichText = false
+        view.font = .systemFont(ofSize: 13); view.string = text
+        view.isVerticallyResizable = true; view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = true
+        scroll.documentView = view; alert.accessoryView = scroll
+        alert.addButton(withTitle: "关闭"); NativeSheetCloseRouting.register(alert); alert.beginSheetModal(for: mainWindow)
+    }
     @objc private func findInWorkspace() {
-        guard allowsWorkspaceActions, interactionContext.allowsWorkspaceSearch else { return }
+        guard allowsWorkspaceFind else { return }
         model.sendWorkspaceCommand(.search)
     }
     @objc private func disconnectSession() { guard allowsWorkspaceActions else { return }; if let id = model.workspacePage.sessionID { model.sessions.disconnect(id) } }
     @objc private func reconnectSession() { guard allowsWorkspaceActions else { return }; if let id = model.workspacePage.sessionID { model.sessions.reconnect(id) } }
     @objc private func closeWorkspace() {
-        guard !terminating, !windowClosing, transferClosePrompt == nil else { return }
+        guard !terminating, transferClosePrompt == nil else { return }
         if let sheet = mainWindow?.attachedSheet {
             var current = sheet
             while let nested = current.attachedSheet { current = nested }
-            if let parent = current.sheetParent { parent.endSheet(current, returnCode: .cancel); current.orderOut(nil) }
-            else { current.performClose(nil) }
+            _ = NativeSheetCloseRouting.attemptClose(current)
             return
         }
-        if let modal = NSApp.modalWindow { modal.performClose(nil); return }
-        if let keyWindow = NSApp.keyWindow, keyWindow !== mainWindow { keyWindow.performClose(nil); return }
+        guard !windowClosing else { return }
+        if let modal = NSApp.modalWindow {
+            _ = NativeSheetCloseRouting.attemptClose(modal)
+            return
+        }
+        if let keyWindow = NSApp.keyWindow, keyWindow !== mainWindow {
+            _ = NativeSheetCloseRouting.attemptClose(keyWindow)
+            return
+        }
         if model.workspacePage.sessionID != nil { Task { _ = await model.closeCurrentWorkspace() } }
         else { mainWindow?.performClose(nil) }
     }

@@ -6,6 +6,7 @@ import OpenLXSSHFiles
 @MainActor final class FilesPathPicker {
     private var active: NSOpenPanel?
     private var generation = UUID()
+    var isChoosing: Bool { active != nil }
     #if HOST_PROBE
     var testSelection: [URL]?
     #endif
@@ -38,6 +39,28 @@ import OpenLXSSHFiles
         generation = UUID()
         if let panel = active { panel.cancel(nil) }
         active = nil
+    }
+    /// A new user selection, never a silent reopening of a remembered URL.
+    @discardableResult func chooseRetry(upload: Bool, original: URL, window: NSWindow?,
+                                       completion: @escaping ([URL]?) -> Void) -> Bool {
+        guard active == nil, let window else { return false }
+        let panel = NSOpenPanel(), id = UUID(); generation = id; active = panel
+        panel.title = upload ? "重新选择任务原来的上传来源" : "重新选择任务原来的下载目标目录"
+        panel.message = "位置必须与原任务一致；选择后将重新核对传输清单，不会自动覆盖。"
+        panel.directoryURL = upload ? original.deletingLastPathComponent() : original
+        panel.canChooseFiles = upload; panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false; panel.resolvesAliases = false; panel.canCreateDirectories = false
+        #if HOST_PROBE
+        if let urls = testSelection { testSelection = nil; active = nil; completion(urls); return true }
+        #endif
+        panel.beginSheetModal(for: window) { [weak self, weak panel] response in
+            MainActor.assumeIsolated {
+                guard let self, self.generation == id, self.active === panel else { return }
+                self.active = nil
+                completion(response == .OK ? panel?.urls : nil)
+            }
+        }
+        return true
     }
 }
 

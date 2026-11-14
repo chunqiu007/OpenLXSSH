@@ -2,6 +2,12 @@
 
 状态：**覆盖索引，不是完成证明。** 116父项均保留 INVESTIGATED；子项 VERIFIED 只表示该行明确列出的窄门。2026-11-01。
 
+当前Codex实际候选与GUI新证据见 `codex-local-candidate-review.md`，其日期化检查点覆盖本索引中旧“普通Direct/本次密码Native不同路”及“尚无像素”的当前时态。旧窄门和失败保留；父116状态不因新构建批量提升。
+
+最新窄门索引：子项114行（69 VERIFIED /42 IMPLEMENTED /3 INVESTIGATED），新增R16主机整行点击及真实文件对目录冲突窄门，结构校验matrix114-integrity.json。此前子项112行（67 VERIFIED /42 IMPLEMENTED /3 INVESTIGATED），新增零活动Host真实Quit及帮助/诊断窄门，结构校验 `DerivedData/CodexTakeover/20261102/matrix112-integrity.json`。以下较早110/106数量是历史。
+
+最新窄门索引：子项110行（65 VERIFIED /42 IMPLEMENTED /3 INVESTIGATED）；新增R13标签拖排/精确动作、R10组织操作与R11标签Return四窄门，结构校验 `DerivedData/CodexTakeover/20261102/matrix110-integrity.json`。此前106行（61 VERIFIED /42 IMPLEMENTED /3 INVESTIGATED），结构校验见`DerivedData/CodexTakeover/20261101/matrix106-integrity.json`。R5～R9的往返、Finder/清记录、草稿、字号、批关闭、真实选区复制、idle主动状态及关SSH保SFTP已按各自行范围记录；原R9拖排失败保留；R13窗口内跟踪前反向/无效后二次已通过；重连重试的树下载GUI窄门已在R10实际通过，原R8失败保留。下文较早“待GUI”由新候选报告的日期化范围覆盖，不能据此把整个父项改绿。
+
 本索引把没有独立子行的要求关联到已有共享组件证据，不新造61个probe、不用单测替代GUI。逐入口触发/owner/副作用详见 `termius-parity-subitems.csv`；父项原文及状态详见 `termius-parity-matrix.csv`。用户规定的1000×650、1280×800、1440×900逻辑尺寸及全屏、操作位置与通用状态表均不缩减。
 
 ## V：视觉与响应布局（8条）
@@ -29,14 +35,14 @@
 - H04/H05/H08/H09：Core本地字面搜索/多tag AND/稳定排序、层级路径/循环拒绝、删组保主机与原子copy见 `u2a-core-review.md`、`u2b-repository-review.md`；公开metadata更新与失败保快照见 `reliability-app-review.md`。UI展开/选择恢复、chips/清除及排序标识另验，不引入凭据继承。
 - H06/H11：复制不扩授权、共享引用与删除快照/展示badge见 `u2b-repository-review.md`、`close-management-review.md`、`window-tabs-review.md`。实际菜单和已删配置呈现未由底层事务代验。
 - H10：加载失败保最后快照、筛选空不等0主机见 `reliability-app-review.md`；首次空/无选择/创建入口仍需实际页态。
-- H12：实际authenticated回调与最近时间更新、immutable连接身份见 `u1-workspace-review.md`、`auth-app-adapter-review.md`；真实候选primary/shell阶段见认证实网报告。普通Direct/本次密码Native仍不同路，不把SFTPready/标签存在当新SSH认证成功。
+- H12：实际authenticated回调与最近时间更新、immutable连接身份见 `u1-workspace-review.md`、`auth-app-adapter-review.md`；真实候选primary/shell阶段见认证实网报告。普通和本次密码默认已统一Native，R2两入口真实密码登录成立；密钥/两类KI的新完整GUI仍待。不把SFTPready/标签存在当新SSH认证成功。
 
 ## E：主机编辑与秘密（12条）
 
 覆盖ID：DX-E01、DX-E02、DX-E03、DX-E04、DX-E05、DX-E06、DX-E07、DX-E08、DX-E09、DX-E10、DX-E11、DX-E12。
 
 - E01/E02/E03/E04：稳定草稿、字段校验、明确保存、Save/Discard/Cancel、保存冻结/准确presentation见 `desktop-integration-review.md`、`reliability-app-review.md`、`close-management-review.md`。实际分区/错误焦点/Tab与Enter/Escape/原生关闭仍待；不能把模型7项当按钮已点击。
-- E05：旧四枚举/ID/key与credential引用/授权保留见 `u2a-core-review.md`；两主方式UI与runtime候选见 `auth-app-adapter-review.md`。普通入口和本次密码入口不等价，当前缺口见 `../adr/ux-native-ssh-entry-consistency.md`，不以迁移过关替产品接线。
+- E05：旧四枚举/ID/key与credential引用/授权保留见 `u2a-core-review.md`；两主方式UI与runtime候选见 `auth-app-adapter-review.md`。普通和本次密码已共用真实NativeBuilder/Environment，ADR见 `../adr/ux-native-ssh-entry-consistency.md`；R2两入口密码已真实输入，其他认证GUI仍待。
 - E06/E08：一次性intent的prepare/dismiss/commit与saved授权/未知KI隔离见 `auth-app-adapter-review.md`；真实本次密码分项见 `app-password-transient-review.md`。秘密掩码/显示/失焦及真实UI仍未验，App整体资源失败保留。
 - E07：共用公开密钥目录、duplicate复用、准确UUID的label completion见 `key-duplicate-import-review.md`、`close-management-review.md`；实际inline picker/生成返回草稿、取消与系统选择器另验。
 - E09：Core同事务陈旧拒绝、commit后只读恢复不重复保存凭据见 `reliability-core-review.md`、`reliability-app-review.md`，不重同无变化事务测试。
@@ -121,4 +127,4 @@
 
 UX-01工作区→W及U1；UX-02三尺寸与布局→V/N/F；UX-03本次密码→E06/A02；UX-04旧四类兼容与metadata→E05/E10/H；UX-05四组合及并发→A；UX-06未知KI/OTP/内层不投秘密→A04/A05/X09；UX-07首次信任→T及SSH/SFTP各自握手；UX-08连接参数变化→E10/H12；UX-09终端主题/输入→N02/N05/N09/N10；UX-10两会话/TUI/释放→W08/W09/N11/N12；UX-11双栏传输→F/Q01；UX-12冲突/取消/错误/旧响应→F11/F12/Q/X02；UX-13数据/旧产物/秘密边界→K/X09/X10；UX-14新版真实构建/GUI/截图/交付→V08/P/X及候选清单。此为导航索引，精确UX原文仍以 `termius-redesign-handoff.md` 为准，不把本映射当逐条验收。
 
-普通**新建连接**用当前默认Direct；reuse可能选中最近有效的Native候选标签，重连保持原driver及tab.builder，不因点击列表悄换后端。此当前策略的四项实际AppModel/Controller/Editor逻辑消费者见 `entry-routing-contract-review.md`，主独立4/0；它们不是后端统一或SSH互通证明。所有操作位置/状态应在正常候选上按 `local-candidate-walkthrough.md` 记录真实结果，不能用HostProbe无参数作空白环境。未完成项包括普通入口一致性、PAM取消卫生、旧App资源失败，以及需要实际前台/像素/实体键鼠的门；整体尚未交付，未 `UX_READY_FOR_USER`。
+普通**新建连接**和本次密码prepared入口现在默认共用同一NativeSessionBuilder/SessionEnvironment，显式测试注入保留。R2已实证保存并连接/列表普通重连密码、精确信任与真实终端输出；R3断流分类和Files UI定向164/0、主新7项7/0。不将这些窄门当四认证组合或完整资源通过。新候选身份、原始证据与当前失败见 `codex-local-candidate-review.md`。PAM取消卫生、密钥picker真实崩溃、旧App资源整案及其余GUI/实体门仍待；未 `UX_READY_FOR_USER`。

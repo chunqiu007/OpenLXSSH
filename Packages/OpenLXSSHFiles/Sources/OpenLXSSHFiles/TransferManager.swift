@@ -4,11 +4,23 @@ public typealias TransferServiceID = UUID
 public typealias TransferJobID = UUID
 public typealias TransferBatchID = UUID
 
+/// A user-owned connected file session, separate from transient operations and jobs.
+/// Only its issuing manager can release it; copied or late releases are harmless.
+public struct TransferServiceSessionLease: Sendable, Equatable {
+    public let serviceID: TransferServiceID
+    fileprivate let managerID: UUID
+    fileprivate let ownerID: UUID
+}
+
 public struct TransferLocation: Sendable, Equatable {
     public let serviceID: TransferServiceID
     public let path: RemotePath
     public init(serviceID: TransferServiceID, path: RemotePath) { self.serviceID = serviceID; self.path = path }
 }
+/// The personal desktop default is direct. Strict mode remains available for clients
+/// which intentionally implement independent technical-risk review.
+public enum TransferExecutionMode: Sendable, Equatable { case strict, direct }
+public enum TransferConflictPolicy: String, Sendable { case autoRename, overwrite, skip, ask }
 public enum TransferKind: String, Sendable { case file, tree }
 /// Descriptors contain identity and paths only, never services, authentication or file contents.
 public struct TransferRequest: Sendable, Equatable {
@@ -18,10 +30,11 @@ public struct TransferRequest: Sendable, Equatable {
     public let destination: TransferLocation
     public let kind: TransferKind
     public let sourceManifest: TransferSourceManifest?
+    public let conflictPolicy: TransferConflictPolicy?
     public init(hostID: String, batchID: TransferBatchID = UUID(), source: TransferLocation,
-                destination: TransferLocation, kind: TransferKind = .file, sourceManifest: TransferSourceManifest? = nil) {
+                destination: TransferLocation, kind: TransferKind = .file, sourceManifest: TransferSourceManifest? = nil, conflictPolicy: TransferConflictPolicy? = nil) {
         self.hostID = hostID; self.batchID = batchID; self.source = source; self.destination = destination; self.kind = kind
-        self.sourceManifest = sourceManifest
+        self.sourceManifest = sourceManifest; self.conflictPolicy = conflictPolicy
     }
 }
 public enum TransferJobState: String, Sendable {
@@ -80,15 +93,17 @@ public struct TransferServiceOperationSnapshot: Sendable, Equatable {
     public let hostID: String
     public let cancellationRequested: Bool
 }
-/// Admission/lifetime facts owned by this manager, not a network-health probe.
-/// A service disappears only after its actual close has returned.
+/// Admission/lifetime facts plus an optional backend-confirmed terminal disposition.
+/// A service disappears only after its actual close has returned; job errors from the
+/// other endpoint never become a connection-health claim.
 public struct TransferServiceSnapshot: Sendable, Equatable {
     public enum State: Sendable, Equatable { case available, closing }
     public let id: TransferServiceID
     public let hostID: String?
     public let state: State
-    public init(id: TransferServiceID, hostID: String?, state: State) {
-        self.id = id; self.hostID = hostID; self.state = state
+    public let terminalFailure: FileServiceError?
+    public init(id: TransferServiceID, hostID: String?, state: State, terminalFailure: FileServiceError? = nil) {
+        self.id = id; self.hostID = hostID; self.state = state; self.terminalFailure = terminalFailure
     }
 }
 public struct TransferManagerSnapshot: Sendable, Equatable {
@@ -118,6 +133,8 @@ public actor TransferManager {
         let service: any RemoteFileService
         let hostID: String?
         var users = 0
+        var sessionOwners: Set<UUID> = []
+        var retireWhenUnused = false
         var idleGeneration = UUID()
         var idleTask: Task<Void, Never>?
         var closing: Task<Void, Never>?
@@ -128,6 +145,7 @@ public actor TransferManager {
         let retryOf: TransferJobID?
         let request: TransferRequest
         let serverConfirmation: ServerCommitConfirmation?
+        let conflictPolicy: TransferConflictPolicy
         let token = CancellationToken()
         var state: TransferJobState = .queued
         var bytes: UInt64 = 0
@@ -172,6 +190,8 @@ public actor TransferManager {
     private struct ManifestBudget { let entries: Int; let bytes: Int; var jobs: Set<TransferJobID> }
     private let managerIdentity = UUID()
     private let planLimits: TransferPlanLimits
+    private let executionMode: TransferExecutionMode
+    private var conflictPolicy: TransferConflictPolicy
     private var plans: [UUID: PlanRecord] = [:]
     private var manifestBudgets: [UUID: ManifestBudget] = [:]
     private struct BatchKey: Hashable { let hostID: String; let batchID: TransferBatchID }
@@ -196,28 +216,32 @@ public actor TransferManager {
 
     public init(engine: SafeTransferEngine = .init(), maxConcurrentJobs: Int = 2, maxQueuedJobs: Int = 128,
                 maxStoredJobs: Int = 512, idleTimeout: Duration? = .seconds(60), maxServiceOperations: Int = 128,
-                planLimits: TransferPlanLimits = .init()) {
+                planLimits: TransferPlanLimits = .init(), executionMode: TransferExecutionMode = .strict,
+                conflictPolicy: TransferConflictPolicy = .ask) {
         precondition((1...8).contains(maxConcurrentJobs) && (1...1024).contains(maxQueuedJobs))
         precondition(maxStoredJobs >= maxConcurrentJobs + maxQueuedJobs && maxStoredJobs <= 10_000)
         precondition(idleTimeout == nil || idleTimeout! > .zero)
         precondition((1...128).contains(maxServiceOperations))
         self.engine = engine; self.maxConcurrentJobs = maxConcurrentJobs; self.maxQueuedJobs = maxQueuedJobs
         self.maxStoredJobs = maxStoredJobs; self.idleTimeout = idleTimeout; self.maxServiceOperations = maxServiceOperations
-        self.planLimits = planLimits
+        self.planLimits = planLimits; self.executionMode = executionMode; self.conflictPolicy = conflictPolicy
     }
+
+    public func setConflictPolicy(_ policy: TransferConflictPolicy) { conflictPolicy = policy }
 
     /// Transfers service lifetime ownership to the manager. Remote services must be bound to their
     /// actual host ID; nil is intended for local roots. One object cannot be rebound to another host.
     /// Closing an idle service is terminal: reconnect explicitly and register a new service object.
     public func registerService(_ service: any RemoteFileService, hostID: String? = nil) throws -> TransferServiceID {
         guard !closed else { throw FileServiceError(.closed, operation: "transfer-manager") }
+        guard service.terminalFailure == nil else { throw FileServiceError(.closed, operation: "register-terminated-service") }
         if let hostID { try validateHost(hostID) }
         guard hostID != nil || service.capabilities.traversal == .localDescriptorNoFollow else {
             throw FileServiceError(.conflict, operation: "remote-service-requires-host-binding")
         }
         let identity = ObjectIdentifier(service)
         if let id = serviceIDs[identity], let existing = services[id] {
-            guard existing.closing == nil, existing.hostID == hostID else {
+            guard existing.closing == nil, !existing.retireWhenUnused, existing.hostID == hostID else {
                 throw FileServiceError(.conflict, operation: "service-already-bound")
             }
             return id
@@ -237,12 +261,32 @@ public actor TransferManager {
         let id = try registerService(service, hostID: hostID)
         return (id, snapshot())
     }
+    /// Register and retain in one actor turn, before any idle timer can expire.
+    public func registerSessionServiceWithSnapshot(_ service: any RemoteFileService, hostID: String) throws
+        -> (id: TransferServiceID, lease: TransferServiceSessionLease, snapshot: TransferManagerSnapshot) {
+        let id = try registerService(service, hostID: hostID)
+        guard services[id]!.sessionOwners.count < 16 else { throw FileServiceError(.resourceLimit, operation: "service-session-owners") }
+        let owner = UUID()
+        services[id]!.idleTask?.cancel(); services[id]!.idleTask = nil
+        services[id]!.idleGeneration = UUID(); services[id]!.sessionOwners.insert(owner)
+        let lease = TransferServiceSessionLease(serviceID: id, managerID: managerIdentity, ownerID: owner)
+        return (id, lease, snapshot())
+    }
+    /// Relinquishes precisely this connection owner. Remaining jobs/operations drain normally;
+    /// after their last lease ends a detached service closes rather than living indefinitely.
+    public func releaseSessionService(_ lease: TransferServiceSessionLease) async {
+        guard lease.managerID == managerIdentity, var record = services[lease.serviceID],
+              record.sessionOwners.remove(lease.ownerID) != nil else { return }
+        if record.sessionOwners.isEmpty { record.retireWhenUnused = true }
+        services[lease.serviceID] = record
+        if record.users == 0 && record.sessionOwners.isEmpty { await closeServices([lease.serviceID]) }
+    }
     public var hasActiveWork: Bool { !plans.isEmpty || !serviceOperations.isEmpty || jobs.values.contains { $0.state.isActive } }
     public func snapshot() -> TransferManagerSnapshot {
         TransferManagerSnapshot(jobs: order.compactMap { jobs[$0]?.snapshot }, isClosed: closed,
             serviceOperations: serviceOperationOrder.compactMap { serviceOperations[$0]?.snapshot }, planResources: planResources,
             services: services.map { id, record in
-                TransferServiceSnapshot(id: id, hostID: record.hostID, state: record.closing == nil ? .available : .closing)
+                TransferServiceSnapshot(id: id, hostID: record.hostID, state: record.closing == nil ? .available : .closing, terminalFailure: record.service.terminalFailure)
             }.sorted { $0.id.uuidString < $1.id.uuidString }, serviceRevision: serviceRevision)
     }
     private var planResources: TransferPlanResources {
@@ -287,7 +331,7 @@ public actor TransferManager {
         }
         try validateHost(hostID)
         let token = operationToken ?? CancellationToken(); try token.check()
-        guard let record = services[serviceID], record.closing == nil else {
+        guard let record = services[serviceID], record.closing == nil, record.service.terminalFailure == nil else {
             throw FileServiceError(.closed, operation: "service-operation-unavailable")
         }
         guard record.hostID == nil || record.hostID == hostID else {
@@ -353,7 +397,7 @@ public actor TransferManager {
             throw FileServiceError(.conflict, operation: "retry-requires-failed-or-cancelled-job")
         }
         let old = previous.request
-        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind)
+        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind, conflictPolicy: conflictPolicy)
         return try await prepare([request], confirmations: previous.serverConfirmation.map { [old.destination.serviceID: $0] } ?? [:],
                                  retryOf: jobID, token: token)
     }
@@ -369,7 +413,7 @@ public actor TransferManager {
         let old = previous.request
         let request = TransferRequest(hostID: old.hostID, batchID: batchID,
             source: .init(serviceID: sourceService, path: old.source.path),
-            destination: .init(serviceID: destinationService, path: old.destination.path), kind: old.kind)
+            destination: .init(serviceID: destinationService, path: old.destination.path), kind: old.kind, conflictPolicy: conflictPolicy)
         return try await prepare([request], confirmations: serverConfirmation.map { [destinationService: $0] } ?? [:],
                                  retryOf: jobID, token: token)
     }
@@ -383,7 +427,7 @@ public actor TransferManager {
         guard requests.allSatisfy({ $0.sourceManifest == nil }) else { throw FileServiceError(.conflict, operation: "prepare-requires-unplanned-requests") }
         try validateAdmission(requests, confirmations: confirmations)
         let descriptorBytes = requests.reduce(0) { $0 + 512 + $1.hostID.utf8.count + $1.source.path.bytes.count + $1.destination.path.bytes.count }
-        let planOverhead = descriptorBytes + 512 + requests.count * 256 + confirmations.values.reduce(0) { $0 + 128 + $1.evidence.utf8.count }
+        let planOverhead = descriptorBytes + 512 + requests.count * 256 + confirmations.values.reduce(0) { $0 + 128 + $1.evidence.utf8.count + $1.parent.bytes.count }
         guard requests.count <= 128, planOverhead <= planLimits.maxMetadataBytes else {
             throw FileServiceError(.resourceLimit, operation: "manifest-request-metadata-limit")
         }
@@ -450,7 +494,7 @@ public actor TransferManager {
                 remainingEntries -= manifest.entries.count; remainingBytes -= size
                 issues += manifest.issues.map { TransferPlanIssue(requestIndex: index, error: $0) }
                 result.append(TransferRequest(hostID: request.hostID, batchID: request.batchID, source: request.source,
-                    destination: request.destination, kind: request.kind, sourceManifest: manifest))
+                    destination: request.destination, kind: request.kind, sourceManifest: manifest, conflictPolicy: request.conflictPolicy))
             }
             try token.check()
             return TransferBatchPlan(id: id, createdAt: created, expiresAt: created.addingTimeInterval(Double(limits.lifetime.components.seconds) + Double(limits.lifetime.components.attoseconds) / 1e18), requests: result, issues: issues)
@@ -553,7 +597,7 @@ public actor TransferManager {
         }
         let old = previous.request
         guard old.sourceManifest == nil else { throw FileServiceError(.conflict, operation: "manifest-retry-requires-prepare-and-confirm") }
-        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind)
+        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind, conflictPolicy: conflictPolicy)
         try validateAdmission([request], confirmations: previous.serverConfirmation.map { [request.destination.serviceID: $0] } ?? [:])
         let id = insert(request, confirmation: previous.serverConfirmation, retryOf: jobID)
         publish(); pump(); return id
@@ -589,7 +633,7 @@ public actor TransferManager {
                 }
             }
             for location in [request.source, request.destination] {
-                guard let record = services[location.serviceID], record.closing == nil else {
+                guard let record = services[location.serviceID], record.closing == nil, record.service.terminalFailure == nil else {
                     throw FileServiceError(.closed, operation: "transfer-service-unavailable", path: location.path)
                 }
                 guard record.hostID == nil || record.hostID == request.hostID else {
@@ -611,7 +655,7 @@ public actor TransferManager {
     }
     private func insert(_ request: TransferRequest, confirmation: ServerCommitConfirmation?, retryOf: TransferJobID?) -> TransferJobID {
         let id = UUID()
-        jobs[id] = JobRecord(id: id, retryOf: retryOf, request: request, serverConfirmation: confirmation)
+        jobs[id] = JobRecord(id: id, retryOf: retryOf, request: request, serverConfirmation: confirmation, conflictPolicy: request.conflictPolicy ?? conflictPolicy)
         order.append(id)
         for serviceID in Set([request.source.serviceID, request.destination.serviceID]) { retainService(serviceID) }
         return id
@@ -635,7 +679,7 @@ public actor TransferManager {
                 })
                 let policy = TransferPolicy(confirmRisk: { risk in
                     await self.risk(id, generation: generation, risk: risk)
-                }, serverCommit: evidence)
+                }, serverCommit: evidence, acceptsTechnicalLimits: executionMode == .direct)
                 do {
                     let report: TransferReport
                     switch request.kind {
@@ -668,6 +712,14 @@ public actor TransferManager {
         try job.token.check()
         let key = BatchKey(hostID: job.request.hostID, batchID: job.request.batchID)
         if let decision = batchDecisions[key] { return decision }
+        if executionMode == .direct {
+            switch job.conflictPolicy {
+            case .autoRename: return .autoRename
+            case .overwrite: return .overwrite
+            case .skip: return .skip
+            case .ask: break
+            }
+        }
         let answer = await ask(id, generation: generation, question: .conflict(conflict))
         try job.token.check()
         guard case .conflict(let decision, _)? = answer else { throw FileServiceError(.cancelled, operation: "transfer-decision") }
@@ -699,7 +751,7 @@ public actor TransferManager {
         switch (request.question, answer) {
         case (.conflict, .conflict(let decision, let apply)):
             if apply {
-                guard decision == .overwrite || decision == .skip else { return false }
+                guard decision == .overwrite || decision == .skip || decision == .autoRename else { return false }
                 batchDecisions[BatchKey(hostID: job.request.hostID, batchID: job.request.batchID)] = decision
             }
         case (.risk, .risk): break
@@ -729,6 +781,13 @@ public actor TransferManager {
         jobs[id] = job; workers[id] = nil
         releaseServices(job.request); clearBatchIfFinished(job.request)
         publish(); pump()
+    }
+    /// A dismissed or delayed conflict sheet cannot cancel a later decision or an
+    /// already resumed job. Only the exact still-pending request owns this cancellation.
+    @discardableResult public func cancelPendingDecision(_ request: TransferDecisionRequest) -> Bool {
+        guard !closed, let job = jobs[request.jobID], job.generation == request.generation,
+              !job.token.isCancelled, job.pending == request, job.reply != nil else { return false }
+        return cancel(job.id)
     }
     /// Queued jobs cancel immediately. Running/decision-waiting jobs remain active until the engine
     /// returns its real cleanup result; cancelling a job never cancels an unrelated service/host.
@@ -773,22 +832,25 @@ public actor TransferManager {
         order.removeAll { jobs[$0] == nil }; publish(); return count
     }
     private func scheduleIdle(_ id: TransferServiceID) {
-        guard !closed, var service = services[id], service.users == 0, service.closing == nil, let idleTimeout else { return }
+        guard !closed, var service = services[id], service.users == 0, service.sessionOwners.isEmpty,
+              service.closing == nil, service.retireWhenUnused || idleTimeout != nil else { return }
+        let delay = service.retireWhenUnused ? Duration.zero : idleTimeout!
         service.idleTask?.cancel()
         let generation = UUID(); service.idleGeneration = generation
         service.idleTask = Task { [weak self] in
-            do { try await Task.sleep(for: idleTimeout) } catch { return }
+            do { try await Task.sleep(for: delay) } catch { return }
             await self?.expireService(id, generation: generation)
         }
         services[id] = service
     }
     private func expireService(_ id: TransferServiceID, generation: UUID) async {
-        guard let record = services[id], record.users == 0, record.idleGeneration == generation else { return }
+        guard let record = services[id], record.users == 0, record.sessionOwners.isEmpty, record.idleGeneration == generation else { return }
         await closeServices([id])
     }
-    /// Explicit idle release (e.g. window close with no work). Job AND service-operation users win.
+    /// Explicit background release. User sessions, jobs and service-operation users all win.
     /// Hiding a panel or ending an observation is NOT a service-close operation.
-    public func closeIdleServices() async { await closeServices(services.filter { $0.value.users == 0 }.map(\.key)) }
+    /// Window shutdown uses cancelAllAndWait(), which also releases user sessions.
+    public func closeIdleServices() async { await closeServices(services.filter { $0.value.users == 0 && $0.value.sessionOwners.isEmpty }.map(\.key)) }
     /// Releases only these services if idle now; unknown/repeated IDs are harmless.
     /// Active job/operation users are skipped, not scheduled for a later close.
     /// Awaits actual close completion, sharing any in-progress release or shutdown close.
@@ -797,7 +859,7 @@ public actor TransferManager {
         var pending: [(TransferServiceID, Task<Void, Never>)] = []
         var changed = false
         for id in ids {
-            guard var record = services[id], record.users == 0 else { continue }
+            guard var record = services[id], record.users == 0, record.sessionOwners.isEmpty else { continue }
             record.idleTask?.cancel(); record.idleTask = nil
             let service = record.service
             let task = record.closing ?? Task { await service.close() }
@@ -832,6 +894,8 @@ public actor TransferManager {
             for id in pendingPlans { await self.discardPreparedBatch(id) }
             for worker in running { await worker.value }
             for operation in operations { await operation.value }
+            // Shutdown owns all remaining user sessions as well as background roots.
+            for id in Array(self.services.keys) { self.services[id]!.sessionOwners.removeAll() }
             await self.closeServices(Array(self.services.keys))
             self.publish()
             for observer in self.observers.values { observer.finish() }

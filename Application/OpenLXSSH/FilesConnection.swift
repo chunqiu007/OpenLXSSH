@@ -102,7 +102,9 @@ actor LibSSH2FilesConnector: FilesConnecting {
                 authentication.append(.password(password.secret.withUnsafeBytes { Data($0) }))
             }
         }
-        if input.keyboardOnly || host.authentication == .passwordWithMFA || host.authentication == .privateKeyWithMFA {
+        // Legacy storage values preserve IDs/authorization, but both selected primaries
+        // support a separate, always-manual KI method on this same connection.
+        if !authentication.isEmpty || input.keyboardOnly {
             authentication.append(.keyboardInteractive { challenge, reply in
                 keyboard(FilesKeyboardChallenge(name: challenge.name, instruction: challenge.instruction,
                     prompts: challenge.prompts.map { ($0.bytes, $0.echo) }), reply)
@@ -220,16 +222,26 @@ extension AppIssue {
     static func files(_ error: Error) -> AppIssue {
         if let repository = error as? RepositoryError { return .sanitized(repository) }
         guard let typed = error as? FileServiceError else { return .security(error) }
+        if typed.kind == .timeout, typed.operation == "local-network-access" {
+            return AppIssue(code: "files.localNetworkAccessRequired", message: "本地网络访问尚未获准。请在 macOS“系统设置 → 隐私与安全性 → 本地网络”检查此 App 的访问权限，然后手动连接；尚未进行 SSH 握手或认证。")
+        }
+        if typed.kind == .cancelled, typed.operation == "session-closed-after-operation-cancel" {
+            return AppIssue(code: "files.cancelled", message: "文件操作已取消，此SFTP连接已关闭。可手动重新连接；不会自动重试认证或传输。")
+        }
+        if ["probe-directory-create-outcome-uncertain", "transfer-file-create-outcome-uncertain"].contains(typed.operation) {
+            return AppIssue(code: "files." + typed.kind.rawValue,
+                message: "连接在创建临时对象时中断；服务器可能已创建成功。所示临时路径需人工核实，App不会在后续连接中自动删除它；原有目标未被本次提交替换。")
+        }
         let message: String
         switch typed.kind {
-        case .closed: message = "文件连接已关闭或已闲置释放。请手动重新连接；不会自动触发认证。"
+        case .closed: message = "文件连接已关闭。请手动重新连接；不会自动触发认证。"
         case .cancelled: message = "文件操作已取消；已提交的文件变更不会被伪称回滚。"
         case .authentication: message = "SFTP 认证未完成，或已保存凭据不可用。请手动输入重试；不会猜测挑战或保存 OTP。"
         case .untrusted: message = "SFTP 主机身份未获信任或已变化，连接已拒绝。请独立核实后在可信主机管理处理。"
         case .conflict: message = "文件名已存在或类型冲突。可明确选择跳过、其他名称或经风险确认的覆盖。"
         case .symbolicLink: message = "符号链接被拒绝，不会进入或跟随。删除链接本身必须明确选择。"
         case .invalidPath: message = "路径或名称无效。名称不得为空、含斜杠、NUL、. 或 ..；操作始终保留原始字节。"
-        case .needsCapabilityConfirmation: message = "此连接尚无非覆盖 rename 能力证据。请显式核对并运行自有临时目录能力检查，不能假定服务器支持。"
+        case .needsCapabilityConfirmation: message = "无法确认服务器能安全提交此文件，已停止操作以保护原有文件。请查看失败详情或选择其他可写目录。"
         case .riskRejected: message = "所需风险未明确确认、确认已过期或范围已变化；未继续操作。"
         case .raceDetected: message = "文件或目录在计划后发生变化，已停止操作。请刷新并重新准备计划。"
         case .permissionDenied: message = "文件服务拒绝权限；请检查目标权限，不会自动提权。"

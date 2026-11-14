@@ -59,7 +59,7 @@ public actor TransferScheduler {
     }
 }
 public enum ConflictDecision: Sendable, Equatable {
-    case fail, skip, overwrite
+    case fail, skip, overwrite, autoRename
     /// Explicit single-item alternate name. It is never reused implicitly for every item in a tree.
     case renameTo(FileName)
 }
@@ -76,7 +76,8 @@ public struct TransferItemResult: Sendable, Equatable {
     public let source: RemotePath
     public let destination: RemotePath
     public let state: TransferItemState
-    /// Present when cleanup could not remove this owned temporary file. Never auto-scanned/deleted later.
+    /// An owned cleanup failure or a create-acknowledgement-uncertain candidate. The error
+    /// distinguishes uncertainty; this is never later authority to scan or delete the path.
     public let retainedTemporary: RemotePath?
     public let acknowledgedRisks: [TransferRisk]
     public init(source: RemotePath, destination: RemotePath, state: TransferItemState,
@@ -97,8 +98,13 @@ public struct TransferConflict: Sendable, Equatable {
     public let source: RemotePath
     public let destination: RemotePath
     public let existing: FileAttributes
+    /// The engine's validated source type. Legacy callers leave this unknown.
+    public let sourceKind: FileKind
     public init(source: RemotePath, destination: RemotePath, existing: FileAttributes) {
-        self.source = source; self.destination = destination; self.existing = existing
+        self.init(source: source, destination: destination, existing: existing, sourceKind: .unknown)
+    }
+    public init(source: RemotePath, destination: RemotePath, existing: FileAttributes, sourceKind: FileKind) {
+        self.source = source; self.destination = destination; self.existing = existing; self.sourceKind = sourceKind
     }
 }
 public struct TransferHooks: Sendable {
@@ -117,7 +123,22 @@ public struct TransferHooks: Sendable {
 /// The same engine serves uploads and downloads by swapping source and destination services.
 /// No shell or SFTP emulation. Each item has its own exclusive sibling temp; commits use
 /// no-replace by default, or explicit risk-confirmed atomic replace with known-race checks.
+private actor ScopedCommitEvidenceCache {
+    struct Key: Hashable { let server: UUID; let parent: RemotePath }
+    struct Value { let confirmation: ServerCommitConfirmation; let expires: ContinuousClock.Instant }
+    private var values: [Key: Value] = [:]
+    func get(server: UUID, parent: RemotePath) -> ServerCommitConfirmation? {
+        let key = Key(server: server, parent: parent)
+        guard let value = values[key], value.expires > .now else { values[key] = nil; return nil }
+        return value.confirmation
+    }
+    func put(_ confirmation: ServerCommitConfirmation, server: UUID, parent: RemotePath) {
+        if values.count >= 256 { values = values.filter { $0.value.expires > .now }; if values.count >= 256 { values.removeAll() } }
+        values[Key(server: server, parent: parent)] = Value(confirmation: confirmation, expires: .now + .seconds(300))
+    }
+}
 public struct SafeTransferEngine: Sendable {
+    private let commitEvidence = ScopedCommitEvidenceCache()
     public let scheduler: TransferScheduler
     public let chunkSize: Int
     public let maxDepth: Int
@@ -151,9 +172,12 @@ public struct SafeTransferEngine: Sendable {
                           _ policy: TransferPolicy, _ hooks: TransferHooks,
                           acknowledgedRisks: [TransferRisk] = [], manifest: TransferSourceManifest? = nil) async -> TransferItemResult {
         var temporary: RemotePath?
+        var retainedProbeDirectory: RemotePath?
+        var uncertainTemporary: RemotePath?
         var sourceHandle: FileHandleID?
         var destinationHandle: FileHandleID?
         var risks = acknowledgedRisks
+        var attemptedNoReplaceCommit = false
         do {
             try token.check()
             for (service, path) in [(source, sourcePath), (destination, destinationPath)] where service.capabilities.traversal == .remoteComponentLstat {
@@ -175,9 +199,12 @@ public struct SafeTransferEngine: Sendable {
                 let existing = try await destination.lstat(destinationPath, token: token)
                 var decision = conflict
                 if decision == .fail, let resolveConflict = hooks.resolveConflict {
-                    decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing))
+                    decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing, sourceKind: attr.kind))
                     try token.check()
                     try await manifest?.validateSource(source, path: sourcePath, token: token)
+                }
+                if decision == .autoRename {
+                    return await copyWithAutomaticName(source, sourcePath, destination, destinationPath, token, policy, hooks, manifest: manifest)
                 }
                 if case .renameTo = decision {
                     let target = try conflictDestination(destinationPath, decision)
@@ -205,9 +232,30 @@ public struct SafeTransferEngine: Sendable {
                 if expectedTarget != nil { throw FileServiceError(.raceDetected, operation: "selected-target-disappeared", path: destinationPath) }
             }
             guard destination.capabilities.exclusiveCreate else { throw FileServiceError(.unsupported, operation: "exclusive-create-unavailable") }
+            var serverCommit = policy.serverCommit
+            if policy.acceptsTechnicalLimits, destination.terminalFailure == nil, let binding = destination.serverBinding,
+               let cached = await commitEvidence.get(server: binding, parent: destinationPath.parent) { serverCommit = cached }
             if expectedTarget == nil && destination.capabilities.noReplace == .needsServerConfirmation {
-                guard let binding = destination.serverBinding, policy.serverCommit?.serverBinding == binding else {
-                    throw FileServiceError(.needsCapabilityConfirmation, operation: "server-no-replace-unproven", path: destinationPath)
+                let matches = destination.serverBinding != nil && serverCommit?.serverBinding == destination.serverBinding
+                    && serverCommit?.parent == destinationPath.parent
+                if !matches {
+                    let result: NoReplaceProbeResult
+                    do { result = try await ServerCommitProbe.verifyForTransfer(service: destination, parent: destinationPath.parent, token: token) }
+                    catch let error as FileServiceError where error.kind == .needsCapabilityConfirmation {
+                        throw FileServiceError(.unsupported, operation: "upload-safe-commit-unavailable", path: destinationPath, code: error.code)
+                    }
+                    if !result.retainedPaths.isEmpty { retainedProbeDirectory = result.directory }
+                    guard let evidence = result.confirmation, result.error == nil else {
+                        let failure = result.error ?? FileServiceError(.unsupported, operation: "upload-safe-commit-unavailable", path: destinationPath)
+                        if failure.kind == .needsCapabilityConfirmation {
+                            throw FileServiceError(.unsupported, operation: "upload-no-replace-check-failed", path: result.directory, code: failure.code)
+                        }
+                        throw failure
+                    }
+                    serverCommit = evidence
+                    if policy.acceptsTechnicalLimits, let binding = destination.serverBinding {
+                        await commitEvidence.put(evidence, server: binding, parent: destinationPath.parent)
+                    }
                 }
             }
             try await manifest?.validateSource(source, path: sourcePath, token: token)
@@ -223,6 +271,10 @@ public struct SafeTransferEngine: Sendable {
                     destinationHandle = try await destination.open(candidate, mode: .exclusiveWrite, token: token)
                     temporary = candidate; owned = true; break
                 } catch let error as FileServiceError where error.kind == .conflict { continue }
+                catch let error as FileServiceError where [.timeout, .transport, .cancelled, .closed, .io].contains(error.kind) {
+                    uncertainTemporary = candidate
+                    throw FileServiceError(error.kind, operation: "transfer-file-create-outcome-uncertain", path: candidate, code: error.code)
+                }
             }
             guard owned, let sh = sourceHandle, let dh = destinationHandle else {
                 throw FileServiceError(.conflict, operation: "temporary-reservation", path: destinationPath)
@@ -281,7 +333,8 @@ public struct SafeTransferEngine: Sendable {
             try await manifest?.validateSource(source, path: sourcePath, token: token)
             let request = CommitRequest(mode: expectedTarget == nil ? .noReplace : .replaceExisting,
                 expectedTarget: expectedTarget, expectedContentSHA256: targetDigest,
-                acceptNonCASOverwriteRisk: expectedTarget != nil, serverConfirmation: policy.serverCommit)
+                acceptNonCASOverwriteRisk: expectedTarget != nil, serverConfirmation: serverCommit)
+            attemptedNoReplaceCommit = expectedTarget == nil
             try await destination.commit(temp, to: destinationPath, request: request, token: token)
             temporary = nil
             // Cancellation after the atomic commit cannot undo a completed item; report the actual outcome.
@@ -298,8 +351,60 @@ public struct SafeTransferEngine: Sendable {
                     try await destination.remove(temporary, directory: false, token: cleanup)
                 } catch { retained = temporary }
             }
-            return failure(error, source: sourcePath, destination: destinationPath, retained: retained, risks: risks)
+            // Resolve only a collision from the actual noReplace commit after its owned
+            // temporary was cleaned. Initial rejections and raceDetected never ask again.
+            if attemptedNoReplaceCommit, policy.acceptsTechnicalLimits,
+               let conflictError = error as? FileServiceError, conflictError.kind == .conflict,
+               retained == nil, retainedProbeDirectory == nil, uncertainTemporary == nil,
+               !token.isCancelled, let resolve = hooks.resolveConflict {
+                do {
+                    let existing = try await destination.lstat(destinationPath, token: token)
+                    let decision = try await resolve(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing, sourceKind: .regular))
+                    try token.check()
+                    let once = TransferHooks(progress: hooks.progress, beforeCommit: hooks.beforeCommit)
+                    switch decision {
+                    case .skip:
+                        return TransferItemResult(source: sourcePath, destination: destinationPath, state: .skipped, retainedTemporary: nil, acknowledgedRisks: risks)
+                    case .autoRename:
+                        return await copyWithAutomaticName(source, sourcePath, destination, destinationPath, token, policy, hooks, manifest: manifest)
+                    case .renameTo(let name):
+                        return await copyFile(source, sourcePath, destination, try destinationPath.parent.appending(name), .fail, token, policy, once, manifest: manifest)
+                    case .overwrite:
+                        return await copyFile(source, sourcePath, destination, destinationPath, .overwrite, token, policy, once, manifest: manifest)
+                    case .fail: break
+                    }
+                } catch { return failure(error, source: sourcePath, destination: destinationPath, risks: risks) }
+            }
+            return failure(error, source: sourcePath, destination: destinationPath, retained: retained ?? retainedProbeDirectory ?? uncertainTemporary, risks: risks)
         }
+    }
+    /// Keep original filename bytes, including undecodable UTF-8, and add a familiar suffix.
+    /// The destination is still committed with noReplace; an existence check grants no overwrite right.
+    public static func automaticName(_ original: FileName, index: Int) throws -> FileName {
+        guard (1...1000).contains(index) else { throw FileServiceError(.resourceLimit, operation: "automatic-name-index") }
+        let bytes = original.bytes
+        let dot = bytes.lastIndex(of: 46)
+        let split = dot.flatMap { $0 > bytes.startIndex ? $0 : nil } ?? bytes.endIndex
+        let suffix = Data(" (\(index))".utf8)
+        return try FileName(bytes: Data(bytes[..<split]) + suffix + Data(bytes[split...]))
+    }
+    private func copyWithAutomaticName(_ source: any RemoteFileService, _ sourcePath: RemotePath,
+        _ destination: any RemoteFileService, _ original: RemotePath, _ token: CancellationToken,
+        _ policy: TransferPolicy, _ hooks: TransferHooks, manifest: TransferSourceManifest?) async -> TransferItemResult {
+        do {
+            guard let name = original.name else { throw FileServiceError(.invalidPath, operation: "automatic-name-root") }
+            for index in 1...1000 {
+                try token.check()
+                let candidate = try original.parent.appending(Self.automaticName(name, index: index))
+                do { _ = try await destination.lstat(candidate, token: token); continue }
+                catch let error as FileServiceError where error.kind == .notFound { }
+                let result = await copyFile(source, sourcePath, destination, candidate, .fail, token, policy,
+                    TransferHooks(progress: hooks.progress, beforeCommit: hooks.beforeCommit), manifest: manifest)
+                if case .failed(let error) = result.state, error.kind == .conflict, result.retainedTemporary == nil { continue }
+                return result
+            }
+            throw FileServiceError(.conflict, operation: "automatic-name-limit", path: original)
+        } catch { return failure(error, source: sourcePath, destination: original) }
     }
     /// Recursion is bounded; symlinks/unknown/special files are individual failures, never followed/skipped silently.
     /// Directories are merged; this is deliberately NOT a whole-tree transaction.
@@ -317,7 +422,50 @@ public struct SafeTransferEngine: Sendable {
             throw FileServiceError(.invalidPath, operation: "copy-tree-into-itself", path: target)
         }
         return try await scheduler.onHost(hostID, token: token) {
-            if case .renameTo = conflict {
+            try token.check()
+            try await sourceManifest?.validateSource(source, path: sourcePath, token: token)
+            guard try await source.lstat(sourcePath, token: token).kind == .directory else {
+                throw FileServiceError(.unsupported, operation: "tree-source-kind", path: sourcePath)
+            }
+            var target = target
+            var rootDecision = conflict
+            var rootAbsent = false
+            if conflict == .fail, policy.acceptsTechnicalLimits, let resolve = hooks.resolveConflict {
+                do {
+                    let existing = try await destination.lstat(target, token: token)
+                    rootDecision = try await resolve(TransferConflict(source: sourcePath, destination: target, existing: existing, sourceKind: .directory))
+                    try token.check()
+                } catch let error as FileServiceError where error.kind == .notFound { rootAbsent = true }
+            }
+            // Reserve a new root even when it originally appeared absent. A racing mkdir
+            // must go through conflict policy, never turn into an unrequested merge.
+            if rootAbsent && policy.acceptsTechnicalLimits {
+                try await TransferChecks.inspect(destination, path: target, includeLeaf: false, token: token)
+                do { try await destination.mkdir(target, token: token) }
+                catch let error as FileServiceError where error.kind == .conflict {
+                    let existing = try await destination.lstat(target, token: token)
+                    if let resolve = hooks.resolveConflict {
+                        rootDecision = try await resolve(TransferConflict(source: sourcePath, destination: target, existing: existing, sourceKind: .directory))
+                    } else { throw error }
+                }
+            }
+            if rootDecision == .skip {
+                return TransferReport(items: [TransferItemResult(source: sourcePath, destination: target, state: .skipped, retainedTemporary: nil)])
+            }
+            if rootDecision == .autoRename {
+                guard let name = target.name else { throw FileServiceError(.invalidPath, operation: "automatic-name-root") }
+                var reserved = false
+                for index in 1...1000 {
+                    try token.check()
+                    let candidate = try target.parent.appending(Self.automaticName(name, index: index))
+                    try await TransferChecks.inspect(destination, path: candidate, includeLeaf: false, token: token)
+                    do { try await destination.mkdir(candidate, token: token); target = candidate; reserved = true; break }
+                    catch let error as FileServiceError where error.kind == .conflict { continue }
+                }
+                guard reserved else { throw FileServiceError(.conflict, operation: "automatic-name-limit", path: target) }
+            }
+            if case .renameTo = rootDecision {
+                target = try conflictDestination(target, rootDecision)
                 if destination.capabilities.traversal == .remoteComponentLstat {
                     try await policy.require(.remotePathChecksAreNotAtomic(path: target))
                 }
@@ -335,7 +483,10 @@ public struct SafeTransferEngine: Sendable {
                 }
             }
             var results: [TransferItemResult] = []
-            await self.walk(source, sourcePath, destination, target, action, token, policy, hooks, 0, &results, manifest: sourceManifest)
+            // Carry the chosen overwrite into the root check; do not ask the same
+            // directory/type conflict again. Alternate names are root-only.
+            let walkAction: ConflictDecision = rootDecision == .overwrite ? .overwrite : action
+            await self.walk(source, sourcePath, destination, target, walkAction, token, policy, hooks, 0, &results, manifest: sourceManifest)
             return TransferReport(items: results)
         }
     }
@@ -369,7 +520,7 @@ public struct SafeTransferEngine: Sendable {
                 if existing.kind != .directory {
                     let decision: ConflictDecision
                     if conflict == .fail, let resolveConflict = hooks.resolveConflict {
-                        decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing))
+                        decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing, sourceKind: attr.kind))
                         try token.check()
                         try await manifest?.validateSource(source, path: sourcePath, token: token)
                     } else { decision = conflict }

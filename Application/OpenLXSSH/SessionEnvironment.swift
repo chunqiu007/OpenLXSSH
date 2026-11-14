@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import OpenLXSSHCore
+import OpenLXSSHFiles
 import OpenLXSSHTransport
 import OpenLXSSHTrust
 
@@ -100,5 +101,51 @@ actor SessionEnvironment {
         let session = DirectSSHSession(sessionID: sessionID, trustStore: resources.trust, sessionDirectory: resources.directory,
                                        helper: resources.helper, scanner: scanner)
         return ReadySession(host: host, configuration: configuration, driver: DirectSessionDriver(session))
+    }
+}
+
+/// Production factory shared by ordinary opens and prepared once-password opens.
+/// Independent injection seams remain available for logical legacy-boundary tests.
+@MainActor struct AppSessionBuilders {
+    let ordinary: any SessionBuilding
+    let prepared: any SessionBuilding
+    init(repository: any AppRepositoryProtocol, security: SecurityCoordinator, environment: SessionEnvironment,
+         ordinary: (any SessionBuilding)? = nil, prepared: (any SessionBuilding)? = nil) {
+        let unified = NativeSessionBuilder(repository: repository, security: security, environment: environment)
+        self.ordinary = ordinary ?? unified
+        self.prepared = prepared ?? unified
+    }
+}
+
+/// Typed primary authentication and manual server challenges use one native session owner.
+@MainActor final class NativeSessionBuilder: SessionBuilding {
+    let repository: any AppRepositoryProtocol
+    let security: SecurityCoordinator
+    let environment: SessionEnvironment
+    private let connector: (any NativeSessionConnecting)?
+    init(repository: any AppRepositoryProtocol, security: SecurityCoordinator, environment: SessionEnvironment,
+         connector: (any NativeSessionConnecting)? = nil) {
+        self.repository = repository; self.security = security; self.environment = environment; self.connector = connector
+    }
+    func configuration(hostID: UUID) async throws -> (HostConfiguration, SSHSessionConfiguration) {
+        let metadata = try await repository.securityMetadata()
+        try Task.checkCancellation()
+        guard let host = metadata.hosts.first(where: { $0.id == hostID }) else { throw RepositoryError.notFound }
+        let keyPath: String?
+        if host.authentication.needsKey {
+            guard let id = host.keyRef, metadata.keys.contains(where: { $0.id == id }) else { throw TransportError.invalidConfiguration }
+            keyPath = try await security.validatedPrivateKeyPath(id)
+        } else { keyPath = nil }
+        let configuration = try SessionEnvironment.configuration(host: host, keyPath: keyPath)
+        return (host, configuration)
+    }
+    func prepare(hostID: UUID, sessionID: UUID) async throws -> ReadySession {
+        let (host, configuration) = try await configuration(hostID: hostID)
+        let native: any NativeSessionConnecting
+        if let connector { native = connector }
+        else { native = NativeLibraryConnector(store: try await environment.sharedTrustStore()) }
+        try Task.checkCancellation()
+        let driver = try NativeSessionDriver(sessionID: sessionID, host: host, repository: repository, security: security, connector: native)
+        return ReadySession(host: host, configuration: configuration, driver: driver)
     }
 }

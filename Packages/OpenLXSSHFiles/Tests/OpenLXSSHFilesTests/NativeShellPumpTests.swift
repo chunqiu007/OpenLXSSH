@@ -18,7 +18,7 @@ private final class PumpCompletions: @unchecked Sendable {
     var total: Int { lock.withLock { counts.values.reduce(0, +) } }
     var exactlyOnce: Bool { lock.withLock { !counts.isEmpty && counts.values.allSatisfy { $0 == 1 } } }
 }
-private enum PumpCall: String, Sendable { case write, read, exit, eof, resize, sendEOF, probeOpen, probeClose, probeFree, poll }
+private enum PumpCall: String, Sendable { case write, read, exit, eof, resize, sendEOF, poll }
 private enum PumpAnswer: Sendable {
     case code(Int32, directions: Int32 = 0), writeAll, bytes(Data), exit(Int32)
     static func again(_ directions: Int32) -> Self { .code(Int32(LIBSSH2_ERROR_EAGAIN), directions: directions) }
@@ -105,10 +105,7 @@ private final class PumpScript: @unchecked Sendable {
                 return code
             }, eof: { self.invoke(.eof, connection: $0, cancellation: $1).0 },
             resize: { self.invoke(.resize, connection: $0, cancellation: $3, columns: $1, rows: $2).0 },
-            sendEOF: { self.invoke(.sendEOF, connection: $0, cancellation: $1).0 },
-            probeOpen: { self.invoke(.probeOpen, connection: $0, cancellation: $1).0 },
-            probeClose: { self.invoke(.probeClose, connection: $0, cancellation: $1).0 },
-            probeFree: { self.invoke(.probeFree, connection: $0, cancellation: $1).0 })
+            sendEOF: { self.invoke(.sendEOF, connection: $0, cancellation: $1).0 })
     }
 }
 private final class PumpFixture: @unchecked Sendable {
@@ -117,12 +114,12 @@ private final class PumpFixture: @unchecked Sendable {
     let clock = PumpClock()
     let done = PumpCompletions()
     private var descriptors: [Int32] = [-1, -1]
-    init(script: PumpScript, policy: NativeShellLivenessCandidate?, timeout: Double = 10) throws {
+    init(script: PumpScript, policy: NativeTCPKeepalivePolicy?, timeout: Double = 10) throws {
         self.script = script
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { throw NativeShellError(.transport, operation: "pump-socketpair") }
         do {
             session = try LibSSH2ShellSession(offlinePumpSocket: descriptors[0],
-                options: NativeShellOptions(size: NativeShellSize(columns: 80, rows: 24), operationTimeout: timeout, liveness: policy),
+                options: NativeShellOptions(size: NativeShellSize(columns: 80, rows: 24), operationTimeout: timeout, keepalive: policy),
                 steps: script.steps(clock: clock))
         } catch { descriptors.forEach { Darwin.close($0) }; throw error }
     }
@@ -161,7 +158,7 @@ private final class PumpFixture: @unchecked Sendable {
 /// No SSH handshake, authenticated channel, network endpoint, credentials or interoperability claim.
 final class NativeShellPumpTests: XCTestCase, @unchecked Sendable {
     private let inbound = Int32(RF_SHELL_POLL_INBOUND), outbound = Int32(RF_SHELL_POLL_OUTBOUND)
-    private func fixture(_ script: PumpScript, policy: NativeShellLivenessCandidate? = nil, timeout: Double = 10) throws -> PumpFixture {
+    private func fixture(_ script: PumpScript, policy: NativeTCPKeepalivePolicy? = nil, timeout: Double = 10) throws -> PumpFixture {
         let f = try PumpFixture(script: script, policy: policy, timeout: timeout)
         addTeardownBlock { await f.close() }; return f
     }
@@ -252,8 +249,8 @@ final class NativeShellPumpTests: XCTestCase, @unchecked Sendable {
         for (eof, directions) in [(false, inbound), (false, outbound), (true, inbound), (true, outbound)] {
             let call: PumpCall = eof ? .sendEOF : .resize, script = PumpScript()
             script.install(call, repeating: .again(directions)); script.install(.read, [.bytes(Data([6]))])
-            script.install(.write, [.writeAll]); script.install(.probeOpen, [.code(Int32(RF_SHELL_PROBE_REJECTED))])
-            let f = try fixture(script, policy: NativeShellLivenessCandidate(interval: 0.05, maxUnresponsivePeriods: 2))
+            script.install(.write, [.writeAll])
+            let f = try fixture(script, policy: NativeTCPKeepalivePolicy(interval: 1, failedProbes: 2))
             let control = f.control(eof: eof); try await wait { script.count(call) >= 3 }
             let read = f.read(), write = eof ? nil : f.write(Data([2])), start = script.trace.count, count = script.count(call)
             f.clock.set(0.05)
@@ -274,47 +271,46 @@ final class NativeShellPumpTests: XCTestCase, @unchecked Sendable {
             XCTAssertTrue(timed.done.exactlyOnce)
         }
     }
-    func testPendingProbeOutputCannotExtendDeadline() async throws {
-        let script = PumpScript(); script.install(.read, repeating: .again(inbound)); script.install(.probeOpen, repeating: .again(outbound))
-        let f = try fixture(script, policy: NativeShellLivenessCandidate(interval: 3600, maxUnresponsivePeriods: 10))
-        let initial = f.read(id: "idle"); try await wait { script.count(.read) > 0 }; f.clock.set(3600)
-        try await wait { script.count(.probeOpen) >= 3 && f.done.total == 1 }
-        let idle = try await initial.value; XCTAssertEqual(idle, .wouldBlock)
-        script.install(.read, repeating: .bytes(Data([7])))
-        let read = f.read(id: "pending-output"), start = script.trace.count, attempts = script.count(.probeOpen)
-        try await wait { let s = await f.session.pumpSnapshot(); return s.hasReader && script.count(.probeOpen) >= attempts + 3 }
-        XCTAssertTrue(script.trace.dropFirst(start).allSatisfy { $0.call == .probeOpen || $0.call == .poll })
-        script.install(.probeOpen, repeating: .again(inbound))
-        try await wait { f.done.total == 2 }; let value = try await read.value; XCTAssertEqual(value, .bytes(Data([7])))
-        for (index, time) in [7200.0, 35999, 39599.9].enumerated() {
-            f.clock.set(time); let output = f.read(id: "output-\(index)")
-            try await wait { f.done.total == index + 3 }; _ = try await output.value
-            let snapshot = await f.session.pumpSnapshot(), facts = await f.session.livenessSnapshot()
-            XCTAssertEqual(snapshot.probeDeadline, f.clock.origin.advanced(by: .seconds(39600)))
-            XCTAssertEqual(facts?.probesStarted, 1); XCTAssertEqual(facts?.confirmations, 0); XCTAssertEqual(facts?.pending, true)
+    func testQuietReadsBeyondFormerProbeAndOperationWindowsDoNotFail() async throws {
+        for policy in [nil, try NativeTCPKeepalivePolicy(interval: 30, failedProbes: 3)] {
+            let script = PumpScript(); script.install(.read, repeating: .again(inbound))
+            script.install(.write, repeating: .writeAll)
+            let f = try fixture(script, policy: policy, timeout: 1)
+            for (index, time) in [0.5, 31.0, 121, 180, 36000].enumerated() {
+                let read = f.read(wait: 0.25, id: "quiet-\(index)")
+                try await wait { let snapshot = await f.session.pumpSnapshot(); return snapshot.hasReader }
+                f.clock.set(time)
+                let result = try await read.value; XCTAssertEqual(result, .wouldBlock)
+                let snapshot = await f.session.pumpSnapshot()
+                XCTAssertNil(snapshot.failure); XCTAssertTrue(snapshot.nativePresent)
+                XCTAssertFalse(snapshot.pendingOutbound); XCTAssertEqual(snapshot.nativeDisposals, 0)
+                XCTAssertNil(f.session.tcpKeepalive, "An offline pump must not fabricate getsockopt proof")
+            }
+            let payload = Data("explicit user bytes after quiet interval".utf8)
+            try await f.write(payload).value
+            XCTAssertEqual(script.written, payload); XCTAssertTrue(f.done.exactlyOnce)
+            XCTAssertTrue(script.trace.allSatisfy { [.read, .write, .poll].contains($0.call) }, "No auxiliary channel/command APIs exist in the production pump")
+            await f.close()
         }
-        f.clock.set(39600)
-        try await wait { let s = await f.session.pumpSnapshot(); return !s.nativePresent }
-        let s = await f.session.pumpSnapshot(); XCTAssertEqual(s.failure?.kind, .timeout); XCTAssertEqual(s.failure?.operation, "ssh-round-trip")
-        XCTAssertEqual(script.count(.probeClose), 0); XCTAssertEqual(script.count(.probeFree), 0); XCTAssertTrue(f.done.exactlyOnce)
     }
-    func testFiniteMixedLoadMakesProgressAndSettlesHelper() async throws {
-        let script = PumpScript(); script.install(.read, repeating: .again(inbound)); script.install(.probeOpen, repeating: .again(inbound))
+    func testFiniteMixedLoadProgressWithoutAuxiliaryChannels() async throws {
+        let script = PumpScript(); script.install(.read, repeating: .again(inbound))
         script.install(.write, [.again(inbound), .code(17)], repeating: .writeAll)
         script.install(.resize, [.again(inbound), .code(0)], repeating: .code(0))
-        let f = try fixture(script, policy: NativeShellLivenessCandidate(interval: 0.05, maxUnresponsivePeriods: 10))
+        let f = try fixture(script, policy: NativeTCPKeepalivePolicy(interval: 1, failedProbes: 10))
         let chunk = Data((0..<65536).map { UInt8(truncatingIfNeeded: $0) })
         let reader = Task { () throws -> [Data] in
             defer { f.done.finish("mixed-reader") }
             var result: [Data] = []
             for _ in 0..<6 {
-                guard case .bytes(let data) = try await f.session.receive(token: CancellationToken()) else { throw NativeShellError(.protocolFailure, operation: "mixed-output") }
+                guard case .bytes(let data) = try await f.session.receive(token: CancellationToken()) else {
+                    throw NativeShellError(.protocolFailure, operation: "mixed-output")
+                }
                 result.append(data)
             }
             return result
         }
-        try await wait { script.count(.read) > 0 }; f.clock.set(0.05)
-        try await wait { script.count(.probeOpen) > 0 }
+        try await wait { script.count(.read) > 0 }
         let writers = (0..<4).map { f.write(chunk, id: "mixed-write-\($0)") }
         let controls = Task {
             defer { f.done.finish("mixed-controls") }
@@ -322,33 +318,28 @@ final class NativeShellPumpTests: XCTestCase, @unchecked Sendable {
         }
         script.install(.read, repeating: .bytes(chunk))
         try await wait { script.count(.write) >= 3 && script.count(.read) >= 4 && script.count(.resize) >= 3 }
-        script.install(.probeClose, [.again(outbound), .code(0)]); script.install(.probeFree, [.again(inbound), .code(0)])
-        script.install(.probeOpen, [.code(Int32(RF_SHELL_PROBE_CONFIRMED)), .code(Int32(RF_SHELL_PROBE_REJECTED))])
-        try await wait { let facts = await f.session.livenessSnapshot(); return f.done.total == 6 && facts?.helpersFreed == 1 }
         for task in writers { try await task.value }; try await controls.value
         let output = try await reader.value; XCTAssertEqual(output, Array(repeating: chunk, count: 6))
         XCTAssertEqual(script.written, chunk + chunk + chunk + chunk)
-        let first = await f.session.livenessSnapshot(); XCTAssertEqual(first?.probesStarted, 1); XCTAssertEqual(first?.pending, false)
-        f.clock.set(0.1)
-        try await wait { let facts = await f.session.livenessSnapshot(); return facts?.remoteRejections == 1 }
-        let facts = await f.session.livenessSnapshot()
-        XCTAssertEqual(facts?.probesStarted, 2); XCTAssertEqual(facts?.confirmations, 1); XCTAssertEqual(facts?.helpersFreed, 1)
-        XCTAssertEqual(facts?.helperChannels, 0); XCTAssertEqual(facts?.pending, false)
-        XCTAssertEqual(script.count(.probeClose), 2); XCTAssertEqual(script.count(.probeFree), 2); XCTAssertTrue(f.done.exactlyOnce)
+        XCTAssertEqual(f.done.total, 6); XCTAssertTrue(f.done.exactlyOnce)
+        XCTAssertTrue(script.trace.allSatisfy { [.read, .write, .resize, .poll].contains($0.call) })
         await f.close()
-        let cleanupScript = PumpScript(); cleanupScript.install(.read, repeating: .again(inbound))
-        cleanupScript.install(.probeOpen, [.code(Int32(RF_SHELL_PROBE_CONFIRMED))])
-        cleanupScript.install(.probeClose, repeating: .again(outbound))
-        let cleanup = try fixture(cleanupScript, policy: NativeShellLivenessCandidate(interval: 0.05, maxUnresponsivePeriods: 10), timeout: 1)
-        let pendingRead = cleanup.read(); try await wait { cleanupScript.count(.read) > 0 }; cleanup.clock.set(0.05)
-        try await wait { cleanupScript.count(.probeClose) >= 3 }
-        let pending = await cleanup.session.livenessSnapshot(); XCTAssertEqual(pending?.confirmations, 1); XCTAssertEqual(pending?.helperChannels, 1)
-        cleanup.clock.set(1.05)
-        try await wait { let s = await cleanup.session.pumpSnapshot(); return s.failure != nil }
-        await failed(pendingRead, kind: .timeout)
-        let snapshot = await cleanup.session.pumpSnapshot(); XCTAssertEqual(snapshot.failure?.operation, "ssh-probe-cleanup")
-        let disposed = await cleanup.session.livenessSnapshot(); XCTAssertEqual(disposed?.helperChannels, 0); XCTAssertEqual(disposed?.pending, false)
-        XCTAssertEqual(snapshot.nativeDisposals, 1); XCTAssertTrue(cleanup.done.exactlyOnce)
+    }
+    func testFatalReadOnlyClosesItsOwnSessionAndPreservesOtherOwner() async throws {
+        let script = PumpScript(); script.install(.read, [.code(Int32(LIBSSH2_ERROR_SOCKET_RECV))])
+        let f = try fixture(script, policy: NativeTCPKeepalivePolicy(interval: 1, failedProbes: 2))
+        let otherScript = PumpScript(); otherScript.install(.read, [.bytes(Data([7, 8]))])
+        otherScript.install(.write, repeating: .writeAll)
+        let other = try fixture(otherScript, policy: NativeTCPKeepalivePolicy(interval: 1, failedProbes: 2))
+        await failed(f.read(), kind: .transport)
+        let failedSnapshot = await f.session.pumpSnapshot()
+        XCTAssertEqual(failedSnapshot.failure?.operation, "read"); XCTAssertEqual(failedSnapshot.failure?.code, Int32(LIBSSH2_ERROR_SOCKET_RECV))
+        XCTAssertFalse(failedSnapshot.nativePresent); XCTAssertEqual(failedSnapshot.nativeDisposals, 1)
+        let received = try await other.read().value; XCTAssertEqual(received, .bytes(Data([7, 8])))
+        try await other.write(Data([9])).value
+        let healthy = await other.session.pumpSnapshot(); XCTAssertTrue(healthy.nativePresent); XCTAssertNil(healthy.failure)
+        XCTAssertEqual(otherScript.written, Data([9])); XCTAssertTrue(f.done.exactlyOnce); XCTAssertTrue(other.done.exactlyOnce)
+        await f.close(); await other.close()
     }
     func testSaturatedCancellationCompletesOnceAndReleasesOwner() async throws {
         let script = PumpScript(); script.install(.write, repeating: .again(outbound))

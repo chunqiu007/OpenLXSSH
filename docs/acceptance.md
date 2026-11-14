@@ -1,10 +1,14 @@
 # OpenLXSSH V1.0 — 验收总表
 
+2026-11-05最新产品决定：普通传输/目录/批量仍无清单审核或独立技术风险确认；只有真正同名时默认显示“取消／替换／都保留”。都保留直接安全改名，取消与迟到回答绑定精确任务/代次，替换和批次选择仍保类型、原件、连接归属保护。设置可记住总是都保留/替换/跳过；v6仅把旧v5的autoRename一次迁为ask，保其他设置与主机/凭据引用，后续显式选择不反复重置。本条覆盖此前同名默认自动改名要求。删除仍只一次目标确认，mkdir/rename输入后执行；strict底层边界与历史失败保留。当前验收由ENGINEERING_STATE及最新实测报告记录，不以源码变更冒充通过。
+
 ## 当前UX候选验收（2026-10-30，进行中，未UX_READY_FOR_USER）
 
 最新Goal是完整Termius桌面体验本地候选，覆盖全部116条DX R、UX-01～14、操作位置/状态表及新发现细项。权威逐项表为 `docs/ux/termius-parity-matrix.csv`，子项见 `docs/ux/termius-parity-subitems.csv`，证据门见 `docs/ux/verification-plan.md`，官方与未知/范围差异见 `docs/ux/u0-reference-and-differences.md`。下文旧V1 AC与历史证据仍保留，不因新UX代码编译或部分单元通过整体改绿。
 
-当前：U1六项修复门已主管独立通过，详细正常/异常覆盖与明确未覆盖范围见 `docs/ux/u1-workspace-review.md`。工程师最终Debug build/HostProbe build均0、Debug175 tests/0fail、原生workspace34/34/App0；主管另独立正式min26关键四组69/0、最终原生workspace34/34/App0。证据 `DerivedData/UXVerification/U1-R5` 和 `U1-Primary`。SFTP完整身份链、原生隐藏/焦点、逐会话搜索、CmdF消费者、任务入口、菜单模态路由及最新Core配置切页回归已具备本地/原生证据；网络仍为明确逻辑替身，不冒真实SSH/SFTP。六图已有Codex文字依据可实施，但当前主模型未见新版像素，视觉门保留；116父R尚无全部VERIFIED，不宣称整体完成或百分比。下一项U2A兼容数据/主机组织，后串行Vault UI。
+当前：U1六项修复门已主管独立通过；接续RELIABILITY-R1补统一元数据失效、Core同事务陈旧编辑拒绝、保存owner/只读重读恢复、本地首读重试及隐藏SFTP短期输入清理。工程师正式Debug/min26定向119/0，主管独立关键32/0加准确导航消费者1/0；Core双方各3/0并本地提交5e73f7c。见`docs/ux/reliability-app-review.md`与`reliability-core-review.md`。这些只覆盖本地事务/模型消费者，不等原生控件/网络。NativeProbe新R1/R2实际均exit1在host.address唯一性，root owner过拒已修，仍无字段匹配，R3正在按AX-hidden容器/role新假设取证；原失败不改绿。全部116父R仍INVESTIGATED，子项有窄门通过但不是整体完成率。
+
+此前U1范围与明确未覆盖见 `docs/ux/u1-workspace-review.md`。工程师最终Debug build/HostProbe build均0、Debug175 tests/0fail、原生workspace34/34/App0；主管另独立正式min26关键四组69/0、最终原生workspace34/34/App0。证据 `DerivedData/UXVerification/U1-R5` 和 `U1-Primary`。SFTP完整身份链、原生隐藏/焦点、逐会话搜索、CmdF消费者、任务入口、菜单模态路由及最新Core配置切页回归已有分项证据；网络仍为明确逻辑替身，不冒真实SSH/SFTP。六图文字依据有效，新版像素门仍未通过。NativeShell候选尚未替换生产App默认后端，本次密码、两主方式MFA、三按钮与GUI/设置等继续，不重做已验Core/仓储。
 
 体验确认前不新Apple上传/时间戳/最终分发包；旧build3及原失败证据保持。人工IME/实体键盘与不可替代外部条件必须分别记已测/待测，不能由单元断言替代。
 

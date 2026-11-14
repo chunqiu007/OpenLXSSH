@@ -14,6 +14,7 @@
     <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>LSArchitecturePriority</key><array><string>arm64</string></array>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>连接你选择的局域网 SSH 或 SFTP 服务器，以使用终端和传输文件。</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>

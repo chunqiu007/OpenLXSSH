@@ -2,6 +2,8 @@
 import AppKit
 import Darwin
 import Foundation
+import ObjectiveC
+import SwiftUI
 import OpenLXSSHCore
 import OpenLXSSHSecurity
 import OpenLXSSHTransport
@@ -21,7 +23,7 @@ import OpenLXSSHFiles
                 return nil
             }
             guard arguments.count == 4, arguments[0] == "--self-test-data-dir", arguments[2] == "--self-test-phase",
-                  ["workspace", "exercise", "reopen", "sessions", "sessions-exit", "sessions-pressure", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["native-discovery", "desktop-cua", "native-dismiss", "terminal-desktop-cua", "terminal-desktop", "workspace", "exercise", "reopen", "sessions", "sessions-exit", "sessions-pressure", "files-local", "files-transfers", "files-transfer-exit", "transport-config", "security-sheets", "security", "security-read", "security-cleanup"].contains(arguments[3]) else { throw Failure.invalidArguments }
             directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
             phase = arguments[3]
             _ = try AppDataLocation.isolated(directory).databaseDirectory()
@@ -43,6 +45,7 @@ import OpenLXSSHFiles
         let actions: [String]
         let failureCode: String?
         let productRuntimeVerified: Bool
+        let scope: String?
     }
     let delegate: AppDelegate
     let options: Options
@@ -50,14 +53,30 @@ import OpenLXSSHFiles
     private var checks: [Check] = []
     private var actions: [String] = []
     private var transferPromptTimer: Timer?
+    private var cuaDeadline: ContinuousClock.Instant?
+    private var cuaWindow: NSWindow?
+    private var cuaDriver: ProbeSessionDriver?
+    private var cuaOwnsPasteboard = false
+    private var desktopCUACleanupTask: Task<Void, Error>?
+    private var desktopCUACleanupFinished = false
+    private var controlDiagnosticSequence = 0
+    private var ownedWindowKeySamples: [[String: Any]] = []
+    private var terminationEvents: [[String: Any]] = []
+    private var terminationObserver: (any NSObjectProtocol)?
     init(delegate: AppDelegate, options: Options) { self.delegate = delegate; self.options = options }
 
     func run() async {
         do {
             try await wait("initial-load") { self.model.didLoad && !self.model.isLoading }
-            try check("native-main-window", delegate.mainWindow?.isVisible == true)
-            try check("startup-no-session", model.connectionNotice == nil)
-            if options.phase == "workspace" { try await workspaceExercise() }
+            if options.phase != "desktop-cua" {
+                try check("native-main-window", delegate.mainWindow?.isVisible == true)
+                try check("startup-no-session", model.connectionNotice == nil)
+            }
+            if options.phase == "native-discovery" { try await nativeDiscoveryExercise() }
+            else if options.phase == "desktop-cua" { try await desktopCUAHold() }
+            else if options.phase == "native-dismiss" { try await nativeDismissExercise() }
+            else if options.phase == "terminal-desktop" || options.phase == "terminal-desktop-cua" { try await terminalDesktopExercise() }
+            else if options.phase == "workspace" { try await workspaceExercise() }
             else if options.phase == "exercise" { try await exercise() }
             else if options.phase == "reopen" { try await verifyRelaunch() }
             else if options.phase == "security-sheets" { try await securitySheets() }
@@ -67,30 +86,570 @@ import OpenLXSSHFiles
             else if options.phase == "files-local" { try await filesLocalExercise() }
             else if options.phase == "files-transfers" || options.phase == "files-transfer-exit" { try await filesTransferExercise() }
             else { try await securityExercise() }
+            if options.phase == "terminal-desktop-cua" { await cleanupCUAResources() }
             try finish(success: true, failure: nil)
-            // Leave this Swift MainActor job before AppKit enters its termination loop.
-            // This mirrors a normal menu action rather than nesting terminate inside a task.
-            RunLoop.main.perform {
-                MainActor.assumeIsolated { NSApp.terminate(nil) }
-            }
+            scheduleAppKitTermination()
         } catch {
             // Only static scenario labels are emitted. Never serialize arbitrary Error descriptions.
-            let code: String
+            var code: String
             switch error {
             case Failure.timeout(let label): code = "timeout." + label
             case Failure.check(let label): code = "check." + label
             case Failure.missing(let label): code = "missing." + label
             default: code = "smoke.failed"
             }
+            if options.phase == "terminal-desktop-cua" { await cleanupCUAResources() }
+            if options.phase == "desktop-cua", let window = delegate.mainWindow {
+                try? writeCUAReady(window: window, step: "incomplete-desktop-cua")
+            }
+            if options.phase == "desktop-cua" {
+                if desktopCUACleanupTask == nil {
+                    do { try await cleanupDesktopCUAResources() }
+                    catch { code = "incomplete.desktop-cua-cleanup" }
+                }
+            }
             try? finish(success: false, failure: code)
             exit(1)
         }
     }
 
+    /// Audit scheduling without treating a written smoke report as process-exit proof.
+    /// Keep AppDelegate's real terminateLater / stores-close / reply path intact.
+    private func scheduleAppKitTermination() {
+        terminationObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: NSApp, queue: .main) { [self] _ in
+            MainActor.assumeIsolated { recordTermination("will-terminate") }
+        }
+        recordTermination("scheduled")
+        // Deliberately retain the existing run-loop scheduling while diagnosing R0.
+        // The external verifier must still observe an actual, natural process exit.
+        RunLoop.main.perform { [self] in
+            MainActor.assumeIsolated {
+                recordTermination("dispatched")
+                NSApp.terminate(nil)
+                recordTermination("returned-from-terminate")
+            }
+        }
+    }
+    private func recordTermination(_ event: String) {
+        guard terminationEvents.count < 8 else { return }
+        let mode: String
+        switch RunLoop.main.currentMode {
+        case .some(.default): mode = "default"
+        case .some(.eventTracking): mode = "eventTracking"
+        case .some(.modalPanel): mode = "modalPanel"
+        case .none: mode = "none"
+        default: mode = "other"
+        }
+        terminationEvents.append(["event": event, "uptime": ProcessInfo.processInfo.systemUptime,
+            "runLoopMode": mode, "modelTerminating": model.lifecycle.terminating,
+            "mainWindowVisible": delegate.mainWindow?.isVisible == true,
+            "desktopCleanupStarted": desktopCUACleanupTask != nil, "desktopCleanupFinished": desktopCUACleanupFinished])
+        guard let data = try? JSONSerialization.data(withJSONObject: ["events": terminationEvents], options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: options.directory.appendingPathComponent("termination-audit.json"), options: .atomic)
+    }
+    /// Fixed public AppKit state only; no AX traversal expansion, text or field values.
+    private func recordOwnedWindowKey(stage: String, owner: NSWindow, root: NSView) {
+        guard ownedWindowKeySamples.count < 8,
+              ["before-activation", "after-activation-call", "activation-wait-timeout", "after-activation-yield"].contains(stage) else { return }
+        let parent = owner.sheetParent
+        func state(_ window: NSWindow?) -> [String: Any] {
+            guard let window else { return ["present": false] }
+            let mask = window.styleMask
+            return ["present": true, "canBecomeKey": window.canBecomeKey, "canBecomeMain": window.canBecomeMain,
+                "isKey": window.isKeyWindow, "isMain": window.isMainWindow, "isVisible": window.isVisible,
+                "isMiniaturized": window.isMiniaturized, "frameSize": [window.frame.width, window.frame.height],
+                "style": ["borderless": mask.isEmpty, "titled": mask.contains(.titled), "closable": mask.contains(.closable),
+                    "miniaturizable": mask.contains(.miniaturizable), "resizable": mask.contains(.resizable),
+                    "docModalWindow": mask.contains(.docModalWindow), "nonactivatingPanel": mask.contains(.nonactivatingPanel),
+                    "fullSizeContentView": mask.contains(.fullSizeContentView)]]
+        }
+        let mode: String
+        switch RunLoop.main.currentMode {
+        case .some(.default): mode = "default"
+        case .some(.eventTracking): mode = "eventTracking"
+        case .some(.modalPanel): mode = "modalPanel"
+        case .none: mode = "none"
+        default: mode = "other"
+        }
+        let policy: String
+        switch NSApp.activationPolicy() {
+        case .regular: policy = "regular"
+        case .accessory: policy = "accessory"
+        case .prohibited: policy = "prohibited"
+        default: policy = "other"
+        }
+        let exactRoot = owner.contentView === root && root.window === owner
+        let fields = exactRoot ? controlTree(in: owner).nodes.compactMap { $0.object as? NSTextField } : []
+        let editors = fields.compactMap { $0.currentEditor() as? NSTextView }.filter(\.isFieldEditor)
+        ownedWindowKeySamples.append(["stage": stage, "isMainThread": Thread.isMainThread, "runLoopMode": mode,
+            "activationPolicy": policy, "appIsActive": NSApp.isActive, "owner": state(owner), "sheetParent": state(parent),
+            "currentOwnerExact": interactiveWindow() === owner, "exactRoot": exactRoot,
+            "sheetParentIsMainWindow": parent != nil && parent === delegate.mainWindow,
+            "parentAttachedSheetExact": parent?.attachedSheet === owner,
+            "nativeParentIsSheetParent": parent != nil && owner.parent === parent,
+            "keyWindowPresent": NSApp.keyWindow != nil, "keyWindowIsOwner": NSApp.keyWindow === owner,
+            "keyWindowIsSheetParent": parent != nil && NSApp.keyWindow === parent,
+            "keyWindowIsChildOfOwner": NSApp.keyWindow?.parent === owner,
+            "mainWindowIsOwner": NSApp.mainWindow === owner, "mainWindowIsSheetParent": parent != nil && NSApp.mainWindow === parent,
+            "actualFieldEditorPresent": !editors.isEmpty, "actualFieldEditorWindowIsOwner": editors.contains { $0.window === owner },
+            "actualFieldEditorWindowIsChildOfOwner": editors.contains { $0.window?.parent === owner },
+            "actualFieldEditorWindowIsAppKey": editors.contains { $0.window != nil && $0.window === NSApp.keyWindow },
+            "actualFieldEditorIsOwnerFirstResponder": editors.contains { owner.firstResponder === $0 },
+            "arbitraryTextSerialized": false, "fieldValuesInspected": false])
+        guard let data = try? JSONSerialization.data(withJSONObject: ["samples": ownedWindowKeySamples], options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: options.directory.appendingPathComponent("owned-window-key-diagnostics.json"), options: .atomic)
+    }
+    private func nativeDiscoveryExercise() async throws {
+        try check("discovery-fresh-isolated-store", try await model.repository.securityMetadata().hosts.isEmpty)
+        try await menuAction("newHost")
+        try await wait("discovery-editor-sheet") { self.delegate.mainWindow?.attachedSheet is NativeOwnedSheetWindow }
+        try await pause()
+        let owner = try require(interactiveWindow(), "discovery-interactive-window")
+        let root = try require(owner.contentView, "discovery-content-root")
+        guard owner is NativeOwnedSheetWindow, root.window === owner else { throw Failure.check("discovery-owned-root") }
+        writeControlDiagnostics(stage: "editor-presented", window: owner) // A: unchanged public candidates.
+        recordOwnedWindowKey(stage: "before-activation", owner: owner, root: root)
+        owner.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        recordOwnedWindowKey(stage: "after-activation-call", owner: owner, root: root)
+        do {
+            try await wait("discovery-owned-window-key") {
+                self.interactiveWindow() === owner && owner.contentView === root && root.window === owner &&
+                    owner.isKeyWindow && NSApp.keyWindow === owner
+            }
+        } catch {
+            recordOwnedWindowKey(stage: "activation-wait-timeout", owner: owner, root: root)
+            throw error
+        }
+        try await pause() // Yield to the real App event loop before rereading the same root.
+        recordOwnedWindowKey(stage: "after-activation-yield", owner: owner, root: root)
+        guard interactiveWindow() === owner, owner.contentView === root, root.window === owner,
+              owner.isKeyWindow, NSApp.keyWindow === owner else { throw Failure.check("discovery-owned-root") }
+        writeControlDiagnostics(stage: "editor-after-owned-activation", window: owner) // B: activation only.
+        for id in ["host.address", "host.name", "host.username"] {
+            try check("discovery-unique-" + id, controlMatches(id, in: owner).count == 1)
+        }
+        try check("discovery-unique-save", buttonMatches(title: "保存", in: owner).count == 1)
+        try await menuKey("w")
+        try await wait("discovery-new-editor-close-confirmation") { owner.attachedSheet is NativeOwnedSheetWindow }
+        let prompt = try require(owner.attachedSheet, "discovery-close-confirmation-owner")
+        try await pressVisibleButton("放弃更改", owner: prompt)
+        try await wait("discovery-editor-closed") { self.delegate.mainWindow?.attachedSheet == nil }
+        try check("discovery-did-not-write", try await model.repository.securityMetadata().hosts.isEmpty)
+    }
+
+    private func terminalDesktopExercise() async throws {
+        _ = try await createEditorFixture(name: "Terminal desktop fixture", waitLabel: "terminal-fixture-host")
+        try await selectFirstHost(); try await doubleClickFirstHost()
+        try await wait("terminal-fixture-driver") { self.model.sessions.selectedTab?.driver != nil }
+        let tab = try require(model.sessions.selectedTab, "terminal-tab")
+        let driver = try require(tab.driver as? ProbeSessionDriver, "terminal-logic-driver"), terminal = driver.terminal
+        let token = driver.token, parent = terminal.superview
+        // A synthetic control event exercises the connected layout; no SSH or PTY.
+        driver.onState?(token, .connected)
+        try await pause()
+        try check("connected-layout-no-permanent-buttons", find("terminal.copy", as: NSButton.self) == nil && find("terminal.paste", as: NSButton.self) == nil && find("terminal.disconnect", as: NSButton.self) == nil && find("terminal.search", as: NSTextField.self) == nil)
+        let window = try require(delegate.mainWindow, "terminal-window")
+        terminal.feed(text: "\u{1b}[2J\u{1b}[Hfixture@desktop % printf 'color sample'\r\nerror stderr stays ordinary text\r\n\u{1b}[31mANSI-red\u{1b}[0m \u{1b}[38;5;196m256-red\u{1b}[0m \u{1b}[38;2;80;190;220mtruecolor\u{1b}[0m \u{1b}[1mbold\u{1b}[0m \u{1b}[7mreverse\u{1b}[0m\r\n中文 🙂 e\u{301} · real SwiftTerm renderer\r\n")
+        for size in [NSSize(width: 1000, height: 650), NSSize(width: 1280, height: 800), NSSize(width: 1440, height: 900)] {
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); try await pause()
+            try check("terminal-fills-page-\(Int(size.width))", terminal.bounds.height >= size.height - DesktopStyle.barHeight - 18 && terminal.bounds.width >= size.width - 18)
+            try capture("terminal-desktop-\(Int(size.width))x\(Int(size.height)).png")
+        }
+        let snapshot = try require(terminal.terminalContentSnapshot(region: .viewport), "renderer-color-snapshot")
+        let ordinary = try require(snapshot.rows.first { $0.text.contains("error stderr") }, "ordinary-text-row")
+        try check("ordinary-error-has-default-style", ordinary.cells.prefix(12).allSatisfy { $0.attribute.fg == .defaultColor })
+        let colored = try require(snapshot.rows.first { $0.text.contains("ANSI-red") }, "ANSI-row")
+        try check("actual-ANSI-256-truecolor-bold-reverse", colored.cells.contains { $0.attribute.fg == .ansi256(code: 1) } && colored.cells.contains { $0.attribute.fg == .ansi256(code: 196) } && colored.cells.contains { $0.attribute.fg == .trueColor(red: 80, green: 190, blue: 220) } && colored.cells.contains { $0.attribute.style.contains(.bold) } && colored.cells.contains { $0.attribute.style.contains(.inverse) })
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            terminal.appearance = NSAppearance(named: appearance); terminal.viewDidChangeEffectiveAppearance()
+            try check("default-stays-dark-" + appearance.rawValue, terminal.nativeBackgroundColor.usingColorSpace(.deviceRGB) == NativeTerminalView.desktopBackground.usingColorSpace(.deviceRGB))
+        }
+        let isCUA = options.phase == "terminal-desktop-cua"
+        let payload = isCUA ? "OpenLXSSH CUA exact paste 中文 🙂 e\u{301}\nsecond line\n" : "printf '中文🙂 e\u{301}'\nsecond\r\n\t\u{03}"
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents(); pasteboard.setString(payload, forType: .string)
+        terminal.selectNone(); window.makeFirstResponder(terminal)
+        terminal.copy(NSNull())
+        try check("empty-copy-keeps-pasteboard", pasteboard.string(forType: .string) == payload)
+        let inputStart = driver.terminalMetrics.input.count
+        if isCUA {
+            cuaWindow = window; cuaDriver = driver; cuaOwnsPasteboard = true
+            cuaDeadline = ContinuousClock.now.advanced(by: .seconds(120))
+            try await waitForCUAPaste(driver: driver, window: window, inputStart: inputStart,
+                                      expected: Data(payload.utf8), step: "activate-terminal-and-press-Cmd-V-plain")
+        } else {
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            try await wait("terminal-window-key-for-native-edit-menu") { window.isKeyWindow && NSApp.keyWindow === window }
+            try await editMenuKey("v")
+        }
+        let pastedBytes = Data(driver.terminalMetrics.input.dropFirst(inputStart))
+        if pastedBytes != Data(payload.utf8) {
+            let diagnostics: [String: Any] = ["keyWindow": NSApp.keyWindow === window, "mainWindow": NSApp.mainWindow === window,
+                "windowKey": window.isKeyWindow, "firstResponder": String(describing: window.firstResponder.map { Swift.type(of: $0) }),
+                "expectedBytes": Array(payload.utf8), "actualBytes": Array(pastedBytes), "pasteboardMatches": pasteboard.string(forType: .string) == payload]
+            try JSONSerialization.data(withJSONObject: diagnostics, options: [.prettyPrinted, .sortedKeys]).write(to: options.directory.appendingPathComponent("paste-routing-diagnostics.json"))
+        }
+        try check("Cmd-V-exact-UTF8-multiline", pastedBytes == Data(payload.utf8))
+        terminal.feed(text: "\u{1b}[?2004h")
+        let bracketedStart = driver.terminalMetrics.input.count
+        if isCUA {
+            try await waitForCUAPaste(driver: driver, window: window, inputStart: bracketedStart,
+                expected: Data("\u{1b}[200~".utf8) + Data(payload.utf8) + Data("\u{1b}[201~".utf8),
+                step: "press-Cmd-V-bracketed")
+        } else { try await editMenuKey("v") }
+        try check("Cmd-V-exact-bracketed-UTF8", Data(driver.terminalMetrics.input.dropFirst(bracketedStart)) == Data("\u{1b}[200~".utf8) + Data(payload.utf8) + Data("\u{1b}[201~".utf8))
+        if isCUA {
+            try check("CUA-paste-retains-native-owner", tab.driver === driver && driver.terminal === terminal && driver.token == token && terminal.superview === parent)
+            actions.append("CUA.real-plain-and-bracketed-paste-observed")
+            return // This opt-in phase does not impersonate the later automated IME/menu steps.
+        }
+        terminal.feed(text: "\u{1b}[?2004l")
+        let countBeforeOversize = driver.terminalMetrics.input.count
+        try check("oversize-paste-rejected-before-queue", !terminal.pasteUserText(String(repeating: "x", count: TerminalSettings.maximumInputBytes + 1)) && driver.terminalMetrics.input.count == countBeforeOversize)
+        let controlStart = driver.terminalMetrics.input.count
+        terminal.keyDown(with: try require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.control], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "\u{03}", charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8), "Ctrl-C"))
+        try check("Ctrl-C-remains-terminal-interrupt", Data(driver.terminalMetrics.input.dropFirst(controlStart)) == Data([3]))
+        try await editMenuKey("a"); try await editMenuKey("c")
+        try check("Cmd-A-C-selects-native-buffer", pasteboard.string(forType: .string)?.contains("error stderr") == true)
+        terminal.selectNone()
+        let compositionStart = driver.terminalMetrics.input.count
+        terminal.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        try check("composition-preedit-does-not-send", terminal.hasMarkedText() && driver.terminalMetrics.input.count == compositionStart)
+        terminal.insertText("中文🙂 e\u{301}", replacementRange: NSRange(location: NSNotFound, length: 0)); terminal.unmarkText()
+        try check("composition-commit-exact-UTF8", Data(driver.terminalMetrics.input.dropFirst(compositionStart)) == Data("中文🙂 e\u{301}".utf8))
+        let font = terminal.font, columns = terminal.columns
+        try await terminalMenu(.increaseFont)
+        try check("menu-font-actually-changes-renderer", terminal.font.pointSize == font.pointSize + 1 && terminal.font.fontName == font.fontName && terminal.columns < columns)
+        try await terminalMenu(.decreaseFont); try await terminalMenu(.resetFont)
+        try check("font-reset-uses-explicit-settings", terminal.font.pointSize == model.settings.fontSize)
+        window.makeFirstResponder(terminal); try await menuKey("f")
+        try await type("terminal.search", "error")
+        try await click("terminal.search.next")
+        try check("search-shows-real-match-summary", tab.searchMatchCount == 1 && tab.searchMatchIndex == 1)
+        let search = try require(find("terminal.search", as: NSTextField.self), "desktop-search")
+        window.makeFirstResponder(search)
+        let textEditor = try require(search.currentEditor() as? NSTextView, "desktop-field-editor")
+        textEditor.selectAll(nil); textEditor.insertText("editing-only", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let editingInput = driver.terminalMetrics.input.count
+        try await editMenuKey("a"); try await editMenuKey("c")
+        try check("input-field-editing-does-not-route-to-terminal", pasteboard.string(forType: .string) == "editing-only" && driver.terminalMetrics.input.count == editingInput)
+        textEditor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        try await wait("desktop-Escape-focus") { !tab.searchVisible && window.firstResponder === terminal }
+        for index in 0..<100 { try driver.feedPressure(Data("LOCAL-OUTPUT-\(index)\r\n".utf8)) }
+        terminal.scrollTo(row: 2)
+        let viewport = terminal.terminalStateSnapshot().viewportRow
+        try driver.feedPressure(Data("OUTPUT-WHILE-SCROLLED\r\n".utf8))
+        try check("new-output-does-not-jump-scrolled-viewport", terminal.terminalStateSnapshot().viewportRow == viewport)
+        try await terminalMenu(.scrollToBottom)
+        try check("back-to-live-action-scrolls", terminal.terminalStateSnapshot().viewportRow > viewport)
+        let live = terminal.terminalContentSnapshot(region: .viewport)?.rows.map(\.text), clearStart = driver.terminalMetrics.input.count
+        try await terminalMenu(.clearHistory)
+        try check("clear-history-local-only-keeps-current-screen", terminal.terminalContentSnapshot(region: .viewport)?.rows.map(\.text) == live && driver.terminalMetrics.input.count == clearStart && !terminal.search("LOCAL-OUTPUT-0"))
+        let menu = try require(terminal.menu(for: try keyEvent("")), "native-context-menu")
+        let pasteItem = try require(menu.items.first { $0.representedObject as? String == TerminalDesktopAction.paste.rawValue }, "native-context-paste")
+        pasteboard.clearContents(); pasteboard.setString("context-paste", forType: .string)
+        let contextStart = driver.terminalMetrics.input.count
+        try check("right-click-action-has-current-target", pasteItem.isEnabled && pasteItem.target === terminal)
+        if let action = pasteItem.action { NSApp.sendAction(action, to: pasteItem.target, from: pasteItem) }
+        try check("right-click-same-paste-path", Data(driver.terminalMetrics.input.dropFirst(contextStart)) == Data("context-paste".utf8))
+        for _ in 0..<3 { try await menuAction("showVault"); model.showWorkspace(.session(tab.id)); try await pause() }
+        try check("desktop-owner-view-token-parent-retained", tab.driver === driver && terminal.superview === parent && driver.token == token)
+        try await menuAction("disconnectSession")
+        let disconnectedInput = driver.terminalMetrics.input.count
+        terminal.insertText("blocked", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try check("disconnected-input-blocked-history-retained", !terminal.inputEnabled && driver.terminalMetrics.input.count == disconnectedInput && terminal.text.contains("OUTPUT-WHILE-SCROLLED"))
+        try await menuAction("reconnectSession")
+        try await wait("desktop-manual-reconnect") { driver.token?.generation == (token?.generation ?? 0) + 1 }
+        try check("manual-reconnect-keeps-native-renderer", tab.driver === driver && driver.terminal === terminal && terminal.superview === parent)
+        pasteboard.clearContents()
+    }
+
+    private struct CUAReady: Encodable {
+        let pid: Int32
+        let windowNumber: Int
+        let expectedStep: String
+    }
+    private func writeCUAReady(window: NSWindow, step: String) throws {
+        let ready = CUAReady(pid: ProcessInfo.processInfo.processIdentifier, windowNumber: window.windowNumber, expectedStep: step)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(ready).write(to: options.directory.appendingPathComponent("Ready.json"), options: .atomic)
+    }
+    /// Manual inspection only: no menu actions, seeded hosts, input or connections.
+    /// ProbeSessionBuilder/LocalFilesProbeConnector remain explicit network substitutes.
+    private func desktopCUAHold() async throws {
+        let directory = open(options.directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard directory >= 0 else { throw Failure.check("desktop-cua-owned-directory") }
+        defer { Darwin.close(directory) }
+        guard try !desktopCUAFinishExists(in: directory) else { throw Failure.check("desktop-cua-stale-finish-signal") }
+        let window = try require(delegate.mainWindow, "desktop-cua-window")
+        try check("desktop-cua-ready", window.isVisible)
+        try writeCUAReady(window: window, step: "inspect-desktop")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(600))
+        while true {
+            try Task.checkCancellation()
+            guard delegate.mainWindow === window, window.isVisible, !model.lifecycle.terminating else {
+                throw Failure.check("desktop-cua-ended-before-finish")
+            }
+            guard ContinuousClock.now < deadline else { throw Failure.timeout("desktop-cua-incomplete-no-finish") }
+            if try desktopCUAFinishExists(in: directory) { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try await cleanupDesktopCUAResources()
+        try writeCUAReady(window: window, step: "finished-desktop-cua")
+        try check("desktop-cua-finish-signal", true)
+    }
+    private func desktopCUAFinishExists(in directory: Int32) throws -> Bool {
+        var value = stat()
+        guard fstatat(directory, ".desktop-cua-finish", &value, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return false }
+            throw Failure.check("desktop-cua-finish-signal-unreadable")
+        }
+        // Presence alone ends the hold. Never read bytes or follow a symlink.
+        guard value.st_mode & S_IFMT == S_IFREG, value.st_uid == getuid(), value.st_nlink == 1, value.st_size == 0 else {
+            throw Failure.check("desktop-cua-finish-signal-invalid")
+        }
+        return true
+    }
+    private func cleanupDesktopCUAResources() async throws {
+        if desktopCUACleanupTask == nil {
+            model.lifecycle.beginTermination()
+            model.windowClosed()
+            desktopCUACleanupTask = Task { @MainActor [self] in
+                defer { desktopCUACleanupFinished = true }
+                guard await model.lifecycle.closeConnections(cancelTransfers: true, retainAdmissionFreeze: true) else {
+                    throw Failure.check("desktop-cua-cleanup-incomplete")
+                }
+                try await model.security.close()
+                try await model.repository.close()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while !desktopCUACleanupFinished {
+            guard ContinuousClock.now < deadline else { throw Failure.timeout("desktop-cua-cleanup-incomplete") }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        guard let cleanup = desktopCUACleanupTask else { throw Failure.check("desktop-cua-cleanup-not-started") }
+        try await cleanup.value
+    }
+    private func waitForCUAPaste(driver: ProbeSessionDriver, window: NSWindow, inputStart: Int, expected: Data, step: String) async throws {
+        guard expected.count <= TerminalSettings.maximumInputBytes, let deadline = cuaDeadline else { throw Failure.check("CUA-invalid-paste-bounds") }
+        try writeCUAReady(window: window, step: step)
+        while true {
+            try Task.checkCancellation()
+            guard window.isVisible, model.sessions.tabs.contains(where: { $0.driver === driver }), driver.state != .closed else { throw Failure.check("CUA-window-or-session-closed") }
+            let bytes = Data(driver.terminalMetrics.input.dropFirst(inputStart))
+            guard bytes.count <= expected.count, expected.starts(with: bytes) else { throw Failure.check("CUA-input-not-exact-payload") }
+            if bytes == expected {
+                try check("CUA-actual-input-" + step, window.isKeyWindow && window.firstResponder === driver.terminal)
+                try writeCUAReady(window: window, step: "completed-" + step)
+                actions.append("CUA.received-" + step)
+                return
+            }
+            guard ContinuousClock.now < deadline else { throw Failure.timeout("CUA-real-paste") }
+            // Yield to the actual AppKit event loop. No synthetic menu/key action
+            // or direct driver input can satisfy this opt-in handshake.
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+    private func cleanupCUAResources() async {
+        if let cuaWindow { try? writeCUAReady(window: cuaWindow, step: "finished-or-cancelled") }
+        if cuaOwnsPasteboard { NSPasteboard.general.clearContents(); cuaOwnsPasteboard = false }
+        await model.sessions.closeAll()
+        await model.files.closeForWindow()
+        try? await model.security.close()
+        try? await model.repository.close()
+        if let cuaWindow { cuaWindow.orderOut(nil) }
+        cuaDriver = nil; cuaWindow = nil
+    }
+
+    /// Fixture data is entered only through the presented editor, then independently
+    /// read from the repository. No AppModel/editor draft mutation can satisfy this.
+    private func createEditorFixture(name: String, waitLabel: String) async throws -> HostConfiguration {
+        try check("fixture-fresh-isolated-store", try await model.repository.securityMetadata().hosts.isEmpty)
+        try await menuAction("newHost")
+        try await type("host.name", name)
+        try await type("host.address", "never-connected.invalid")
+        try await type("host.username", "fixture")
+        let editor = try require(interactiveWindow(), "fixture-editor-owner")
+        try check("fixture-not-written-before-save", try await model.repository.securityMetadata().hosts.isEmpty)
+        try await pressVisibleButton("保存", owner: editor)
+        try await wait(waitLabel) { self.model.hosts.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
+        let stored = try await model.repository.securityMetadata().hosts
+        try check("fixture-real-editor-persisted", stored.count == 1 && stored[0].name == name &&
+            stored[0].address == "never-connected.invalid" && stored[0].username == "fixture" &&
+            stored[0].credentialRef == nil && !stored[0].savePasswordAuthorized)
+        return try require(stored.first, "fixture-persisted-host")
+    }
+    private func nativeDismissExercise() async throws {
+        let fixtureHost = try await createEditorFixture(name: "Dismiss logic fixture", waitLabel: "dismiss-fixture-host")
+        try await selectFirstHost(); try await doubleClickFirstHost()
+        try await wait("dismiss-logic-driver") { self.model.sessions.selectedTab?.driver != nil }
+        let tab = try require(model.sessions.selectedTab, "dismiss-tab")
+        let driver = try require(tab.driver as? ProbeSessionDriver, "dismiss-driver")
+        let parent = try require(delegate.mainWindow, "dismiss-parent")
+        try await actualEditorDismissExercise(host: fixtureHost, tab: tab, driver: driver, parent: parent)
+        let fixture = DismissSmokeState()
+        let anchor = NSHostingView(rootView: DismissSmokeAnchor(state: fixture))
+        anchor.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        parent.contentView?.addSubview(anchor)
+        defer { anchor.removeFromSuperview() }
+        fixture.presentation = DismissSmokePresentation()
+        try await wait("dismiss-hook-sheet") { parent.attachedSheet is NativeOwnedSheetWindow }
+        try await type("dismiss.fixture.draft", "unsaved fixture draft")
+        let owned = try require(parent.attachedSheet as? NativeOwnedSheetWindow, "dismiss-owned-sheet")
+        try await menuKey("w")
+        try check("native-sheet-Cmd-W-hook-denies-and-keeps-draft", fixture.attempts == 1 && fixture.draft == "unsaved fixture draft" && fixture.presentation != nil && parent.attachedSheet === owned)
+        owned.cancelOperation(nil)
+        try await pause()
+        try check("native-sheet-Escape-hook-denies-and-keeps-draft", fixture.attempts == 2 && fixture.draft == "unsaved fixture draft" && parent.attachedSheet === owned)
+        fixture.allowsDismiss = true
+        try await menuKey("w")
+        try await wait("dismiss-hook-accepts") { fixture.presentation == nil && parent.attachedSheet == nil }
+        try check("native-sheet-accept-closes-only-owned-editor", fixture.attempts == 3 && model.sessions.selectedTab === tab && driver.state != .closed)
+        driver.showAuthentication()
+        try await click("terminal.authenticate")
+        try await wait("dismiss-default-auth") { self.find("authentication.answer", as: NSSecureTextField.self) != nil }
+        try await type("authentication.answer", "public fixture answer")
+        try await menuKey("w")
+        try await wait("dismiss-default-auth-closed") { parent.attachedSheet == nil }
+        try check("default-auth-Cmd-W-keeps-tab-without-answer", model.sessions.selectedTab === tab && driver.responseCount == 0)
+        try await click("terminal.authenticate")
+        try await wait("dismiss-fresh-auth") { self.find("authentication.answer", as: NSSecureTextField.self) != nil }
+        try check("default-auth-dismiss-never-revives-answer", find("authentication.answer", as: NSSecureTextField.self)?.stringValue.isEmpty == true)
+        try await menuKey("w")
+        try await wait("dismiss-fresh-auth-closed") { parent.attachedSheet == nil }
+        let unknown = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        unknown.isReleasedWhenClosed = false
+        parent.beginSheet(unknown, completionHandler: nil)
+        try await pause()
+        try await menuKey("w")
+        try check("unknown-sheet-Cmd-W-is-not-ended", parent.attachedSheet === unknown && unknown.sheetParent === parent)
+        parent.endSheet(unknown); unknown.orderOut(nil) // Exact synthetic fixture cleanup, not product routing.
+        try await wait("unknown-fixture-cleanup") { parent.attachedSheet == nil }
+        let alert = NSAlert(); alert.messageText = "Synthetic app-owned alert"; alert.addButton(withTitle: "关闭")
+        NativeSheetCloseRouting.register(alert)
+        parent.beginSheet(alert.window, completionHandler: nil)
+        try await pause()
+        try await menuKey("w")
+        try await wait("registered-alert-dismissed") { parent.attachedSheet == nil }
+        try check("registered-owned-alert-Cmd-W-cancels", alert.window.sheetParent == nil && model.sessions.selectedTab === tab)
+    }
+
+    private func actualEditorDismissExercise(host: HostConfiguration, tab: SessionTab, driver: ProbeSessionDriver, parent: NSWindow) async throws {
+        let token = driver.token
+        let storedBefore = try await model.repository.securityMetadata().hosts
+        func sessionUnchanged() -> Bool {
+            delegate.mainWindow === parent && parent.isVisible && model.sessions.tabs.contains { $0 === tab } &&
+                model.sessions.selectedTab === tab && tab.driver === driver && driver.token == token && driver.state != .closed
+        }
+        func confirmation(for editor: NSWindow) -> NSWindow? {
+            guard let current = interactiveWindow(), current !== editor, editor.attachedSheet === current,
+                  current.sheetParent === editor, current is NativeOwnedSheetWindow else { return nil }
+            return current
+        }
+        func fieldEquals(_ id: String, _ expected: String, in owner: NSWindow) -> Bool {
+            let matches = controlMatches(id, in: owner)
+            guard matches.count == 1 else { return false }
+            if let field = matches[0].object as? NSTextField { return field.stringValue == expected }
+            return (matches[0].element?.accessibilityValue() as? String) == expected
+        }
+
+        // Reopen the saved record using the native row context-menu target/action.
+        try await menuAction("showVault")
+        try await selectFirstHost(); try await hostContextCommand("编辑…")
+        try await wait("actual-editor-reopened") { parent.attachedSheet is NativeOwnedSheetWindow }
+        let editor = try require(parent.attachedSheet as? NativeOwnedSheetWindow, "actual-editor-owner")
+        writeControlDiagnostics(stage: "actual-editor-reopened", window: editor)
+        try check("actual-editor-loads-persisted-record", fieldEquals("host.name", host.name, in: editor))
+        try await type("host.name", "Draft retained after Cancel")
+        try check("actual-editor-dirty-not-yet-written", try await model.repository.securityMetadata().hosts == storedBefore)
+        try await menuKey("w")
+        try await wait("actual-editor-Cmd-W-confirmation") { confirmation(for: editor) != nil }
+        let firstPrompt = try require(confirmation(for: editor), "actual-editor-close-confirmation")
+        writeControlDiagnostics(stage: "dirty-close-confirmation", window: firstPrompt)
+        try check("actual-editor-Cmd-W-only-opens-owned-confirmation", parent.attachedSheet === editor && sessionUnchanged())
+        try await pressVisibleButton("取消", owner: firstPrompt)
+        try await wait("actual-editor-cancel-keeps-draft") { self.interactiveWindow() === editor && editor.attachedSheet == nil }
+        try check("actual-editor-Cancel-preserves-draft-and-owner", fieldEquals("host.name", "Draft retained after Cancel", in: editor) && sessionUnchanged())
+        try check("actual-editor-Cancel-does-not-write", try await model.repository.securityMetadata().hosts == storedBefore)
+
+        // Escape reaches the current editor, then closes only its nested confirmation.
+        editor.cancelOperation(nil); try await pause()
+        try await wait("actual-editor-Escape-confirmation") { confirmation(for: editor) != nil }
+        let escapePrompt = try require(confirmation(for: editor) as? NativeOwnedSheetWindow, "actual-editor-Escape-owner")
+        escapePrompt.cancelOperation(nil); try await pause()
+        try await wait("actual-editor-Escape-cancels-only-confirmation") { self.interactiveWindow() === editor && editor.attachedSheet == nil }
+        try check("actual-editor-Escape-preserves-draft-and-session", fieldEquals("host.name", "Draft retained after Cancel", in: editor) && sessionUnchanged())
+        try check("actual-editor-Escape-does-not-write", try await model.repository.securityMetadata().hosts == storedBefore)
+
+        editor.cancelOperation(nil); try await pause()
+        try await wait("actual-editor-discard-confirmation") { confirmation(for: editor) != nil }
+        try await pressVisibleButton("放弃更改", owner: try require(confirmation(for: editor), "actual-editor-discard-owner"))
+        try await wait("actual-editor-discard-closed") { parent.attachedSheet == nil }
+        try check("actual-editor-Discard-does-not-write", try await model.repository.securityMetadata().hosts == storedBefore)
+        try check("actual-editor-Discard-preserves-session", sessionUnchanged())
+
+        try await selectFirstHost(); try await hostContextCommand("编辑…")
+        try await wait("actual-editor-reopened-after-discard") { parent.attachedSheet is NativeOwnedSheetWindow }
+        let savedEditor = try require(parent.attachedSheet as? NativeOwnedSheetWindow, "actual-editor-save-owner")
+        try check("actual-editor-discarded-draft-not-revived", fieldEquals("host.name", host.name, in: savedEditor))
+        try await type("host.name", "Persisted by dirty close Save")
+        try await menuKey("w")
+        try await wait("actual-editor-save-confirmation") { confirmation(for: savedEditor) != nil }
+        try await pressVisibleButton("保存", owner: try require(confirmation(for: savedEditor), "actual-editor-save-confirmation-owner"))
+        try await wait("actual-editor-save-closed") { parent.attachedSheet == nil && self.model.hosts.first?.name == "Persisted by dirty close Save" }
+        let storedAfter = try await model.repository.securityMetadata().hosts
+        var expected = host; expected.name = "Persisted by dirty close Save"
+        try check("actual-editor-dirty-Save-persists-exact-record", storedAfter == [expected])
+        try check("actual-editor-dirty-Save-preserves-session", sessionUnchanged())
+
+        // A clean editor closes immediately by Escape, without affecting the retained tab.
+        try await selectFirstHost(); try await hostContextCommand("编辑…")
+        try await wait("actual-editor-reopened-after-save") { parent.attachedSheet is NativeOwnedSheetWindow }
+        let cleanEditor = try require(parent.attachedSheet as? NativeOwnedSheetWindow, "actual-editor-clean-owner")
+        try check("actual-editor-reopen-reads-saved-value", fieldEquals("host.name", expected.name, in: cleanEditor))
+        cleanEditor.cancelOperation(nil); try await pause()
+        try await wait("actual-editor-clean-Escape-closes") { parent.attachedSheet == nil }
+        try check("actual-editor-clean-Escape-keeps-session", sessionUnchanged())
+        try await selectSession(tab.id)
+    }
+
+    private func selectSession(_ id: UUID) async throws {
+        // Top-level tabs are SwiftUI buttons, not NativeButton NSButton controls.
+        // Traverse the actual AppKit navigation menu until that visible tab wins.
+        guard model.sessions.tabs.contains(where: { $0.id == id }) else { throw Failure.missing("session-tab") }
+        for _ in 0..<(model.sessions.tabs.count + 2) {
+            if model.workspacePage == .session(id) { actions.append("menu.select-session"); return }
+            try await menuAction("nextWorkspace")
+        }
+        throw Failure.timeout("menu-select-session")
+    }
+    private func terminalMenu(_ action: TerminalDesktopAction) async throws {
+        func visit(_ menu: NSMenu) -> NSMenuItem? {
+            for item in menu.items {
+                if item.identifier?.rawValue == "terminal." + action.rawValue { return item }
+                if let submenu = item.submenu, let found = visit(submenu) { return found }
+            }
+            return nil
+        }
+        let item = try require(NSApp.mainMenu.flatMap(visit), "terminal-menu-" + action.rawValue)
+        guard delegate.validateMenuItem(item), let selector = item.action, NSApp.sendAction(selector, to: item.target, from: item) else { throw Failure.check("terminal-menu-" + action.rawValue) }
+        actions.append("terminal-menu." + action.rawValue); try await pause()
+    }
+    private func editMenuKey(_ key: String) async throws {
+        guard let window = delegate.mainWindow, let responder = window.firstResponder else { throw Failure.missing("edit-first-responder") }
+        let selector: Selector
+        switch key { case "a": selector = #selector(NSResponder.selectAll(_:)); case "c": selector = #selector(NativeTerminalView.copy(_:)); default: selector = #selector(NativeTerminalView.paste(_:)) }
+        // Force the real responder-chain target in an in-process NSMenu test;
+        // no hidden control or direct tab-model mutation stands in for editing.
+        guard responder.responds(to: selector) else { throw Failure.missing("edit-responder") }
+        try await menuKey(key)
+    }
+
     /// U1 routing/focus only: real AppKit menus/fields, synthetic terminal driver,
     /// local file fixture. No SSH, Keychain operation or pixel-parity claim.
     private func workspaceExercise() async throws {
-        try await click("host.add")
+        try await menuAction("newHost")
         try await type("host.name", "Workspace fixture")
         try await type("host.address", "never-connected.invalid")
         try await type("host.username", "fixture")
@@ -138,27 +697,32 @@ import OpenLXSSHFiles
         try await menuAction("showVault")
         delegate.mainWindow?.makeFirstResponder(nil)
         try await menuKey("f")
-        try await wait("host-search-focused") { self.find("hosts.search", as: NSTextField.self)?.currentEditor() === self.delegate.mainWindow?.firstResponder }
-        let hostSearch = try require(find("hosts.search", as: NSTextField.self), "hosts.search")
+        try await wait("host-search-focused") { self.find("vault.hosts.search", as: NSTextField.self)?.currentEditor() === self.delegate.mainWindow?.firstResponder }
+        let hostSearch = try require(find("vault.hosts.search", as: NSTextField.self), "hosts.search")
         try await menuAction("showSFTP")
         try check("hidden-vault-native-field-editor-resigned", hostSearch.currentEditor() == nil && hostSearch.isHiddenOrHasHiddenAncestor)
         try check("SFTP-find-explicitly-disabled", !delegate.validateMenuItem(try workspaceMenu("findInWorkspace")))
         let sftpPage = try require(workspacePage("workspace.page.sftp"), "page-sftp")
         let vaultPage = try require(workspacePage("workspace.page.vault"), "page-vault")
         try check("hidden-page-not-hittable", vaultPage.isHidden && vaultPage.hitTest(NSPoint(x: 40, y: 40)) == nil && !sftpPage.isHidden)
-        try await type("files.initial.secret", UUID().uuidString)
+        try await wait("files-local-ready") { self.model.files.localBrowser.path != nil && !self.model.files.localBrowser.loading }
+        let localTable = try require(find("files.local.entries", as: NSTableView.self), "local-files-table")
+        try check("current-SFTP-native-table-editable", delegate.mainWindow?.makeFirstResponder(localTable) == true)
+        try await type("files.initial.secret", "public metadata fixture")
         let secretField = try require(find("files.initial.secret", as: NSSecureTextField.self), "files.initial.secret")
         let secretBeforeMetadata = secretField.stringValue
         var metadataOnly = try require(model.files.selectedHost, "sftp-selected-host")
         metadataOnly.name = "Workspace renamed"; metadataOnly.isFavorite.toggle(); metadataOnly.lastConnectedAt = Date()
         model.files.show(host: metadataOnly)
         try await pause()
+        try check("SFTP-metadata-keeps-native-browser-owner", find("files.local.entries", as: NSTableView.self) === localTable)
         try check("SFTP-metadata-keeps-unsent-input", secretField.stringValue == secretBeforeMetadata)
-        try await click("files.hide")
+        model.returnToVaultFromFiles()
         try check("SFTP-return-visible-without-owner-reset", model.workspacePage == .vault && model.files === files && model.files.manager === manager)
         for visible in [false, true] {
             model.files.tasksVisible = visible
-            try await click("transfers.open")
+            try await menuAction("showSFTP")
+            try await pressVisibleButton("传输 0")
             try check("queue-entry-always-expands-" + String(visible), model.workspacePage == .sftp && model.files.tasksVisible)
             try await menuAction("showVault")
         }
@@ -253,7 +817,7 @@ import OpenLXSSHFiles
         try await wait("folder-created") { self.model.folders.count == 1 && self.delegate.mainWindow?.attachedSheet == nil }
         let folder = model.folders[0]
         try await click("folder." + folder.id.uuidString)
-        try await click("host.add")
+        try await menuAction("newHost")
         try await click("host.save")
         try await wait("invalid-host-visible") { self.model.issue?.code == "validation.invalid" }
         try check("invalid-host-no-write", model.hosts.isEmpty)
@@ -291,6 +855,7 @@ import OpenLXSSHFiles
         try await wait("double-click-route") { self.model.connectionNotice != nil }
         if case .opened(let request, _) = model.connectionNotice { try check("reuse-route", request.mode == .reuse && request.hostID == model.hosts[0].id) }
         else { throw Failure.check("reuse-route") }
+        try await menuAction("showVault")
         try await click("session.new")
         if case .opened(let request, _) = model.connectionNotice { try check("new-route", request.mode == .newSession) }
         else { throw Failure.check("new-route") }
@@ -342,7 +907,7 @@ import OpenLXSSHFiles
         try check("relaunch-metadata", model.hosts.count == 2 && model.folders.count == 1 && model.hosts.allSatisfy { $0.lastConnectedAt == nil })
         try check("relaunch-settings", model.settings.historyLines == 50_000 && model.settings.fontName == "Menlo-Regular" && model.settings.theme == .dark && model.settings.keepaliveCountMax == 4)
         try check("relaunch-no-restore", model.selectedHostID == nil && model.connectionNotice == nil && model.selection == .all)
-        try await click("host.add")
+        try await menuAction("newHost")
         try await wait("default-keepalive") { self.find("host.interval", as: NSTextField.self)?.stringValue == "60" }
         for kind in ["privateKey", "privateKeyWithMFA"] {
             try await popup("host.authentication", value: kind)
@@ -362,7 +927,7 @@ import OpenLXSSHFiles
     }
 
     private func sessionExercise() async throws {
-        try await click("host.add")
+        try await menuAction("newHost")
         try await type("host.name", "Session logic fixture")
         try await type("host.address", "never-scanned.invalid")
         try await type("host.username", "fixture")
@@ -376,12 +941,16 @@ import OpenLXSSHFiles
         let first = model.sessions.tabs[0]
         guard let driver = first.driver as? ProbeSessionDriver else { throw Failure.check("logic-substitute-required") }
         let view = driver.terminal
+        try await menuAction("showVault")
         try await doubleClickFirstHost()
         try check("double-click-reuses-valid-tab", model.sessions.tabs.count == 1 && model.sessions.selectedTabID == first.id)
+        try await menuAction("showVault")
         try await click("session.new")
         try await wait("independent-session-tab") { self.model.sessions.tabs.count == 2 && self.model.sessions.tabs[1].driver != nil }
-        try await click("tab.select." + first.id.uuidString)
+        try await selectSession(first.id)
         try check("terminal-instance-retained", first.driver?.terminal === view && !view.isHidden)
+        delegate.mainWindow?.makeFirstResponder(view)
+        try await menuKey("f")
         try await type("terminal.search", "logic substitute")
         try await click("terminal.search.next")
         try check("native-terminal-history-search", view.search("logic substitute"))
@@ -411,8 +980,8 @@ import OpenLXSSHFiles
         try await click("authentication.decline")
         try await wait("confirmation-modal-closed") { self.delegate.mainWindow?.attachedSheet == nil }
         let generation = driver.token?.generation
-        try await click("terminal.disconnect")
-        try await click("terminal.reconnect")
+        try await menuAction("disconnectSession")
+        try await menuAction("reconnectSession")
         try await wait("manual-new-generation") { driver.token?.generation == (generation ?? 0) + 1 }
         try check("reconnect-retains-terminal", driver.terminal === view)
         try check("no-auth-event-no-history", try await model.repository.securityMetadata().hosts.allSatisfy { $0.lastConnectedAt == nil })
@@ -420,7 +989,8 @@ import OpenLXSSHFiles
         try await click("terminal.authenticate")
         try await click("authentication.cancel")
         try await wait("cancel-invalidates-request") { self.delegate.mainWindow?.attachedSheet == nil && first.state == .disconnected(nil) }
-        try await click("tab.close." + first.id.uuidString)
+        try await selectSession(first.id)
+        try await menuKey("w")
         try await wait("tab-closed") { !self.model.sessions.tabs.contains { $0.id == first.id } }
         try check("tab-close-releases-driver", driver.state == .closed)
         if options.phase == "sessions-exit" {
@@ -516,6 +1086,8 @@ import OpenLXSSHFiles
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw Failure.timeout("pressure-interactions") }
             let index = interactions % ids.count
             try await click("tab.select." + ids[index].uuidString)
+            delegate.mainWindow?.makeFirstResponder(model.sessions.selectedTab?.driver?.terminal)
+            try await menuKey("f")
             try await type("terminal.search", "V\(index)-B")
             try await click("terminal.search.next")
             guard let driver = model.sessions.selectedTab?.driver as? ProbeSessionDriver else { throw Failure.missing("pressure-selected") }
@@ -550,7 +1122,8 @@ import OpenLXSSHFiles
             try check("pressure-final-search-\(view)", driver.terminal.search(marker))
             let input = "P7-INPUT-\(view)-中文"
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(input, forType: .string)
-            try await click("terminal.paste")
+            delegate.mainWindow?.makeFirstResponder(driver.terminal)
+            try await editMenuKey("v")
             try check("pressure-real-paste-input-\(view)", metrics[view].input == Data(input.utf8))
             try check("pressure-scrollback-bounded-\(view)", driver.terminal.retainedRowCount <= ProbeOutputLoad.historyLines + driver.terminal.rows)
             viewReports.append(["view":view,"expectedBytes":expected,"fedBytes":metrics[view].fedBytes,"batches":metrics[view].fedBatches,"hiddenBatches":metrics[view].hiddenBatches,"markerFound":true,"searchFound":true,"inputBytes":metrics[view].input.count,"resizeEvents":metrics[view].resizeEvents,"columns":driver.terminal.columns,"rows":driver.terminal.rows,"retainedRows":driver.terminal.retainedRowCount])
@@ -558,6 +1131,7 @@ import OpenLXSSHFiles
         NSPasteboard.general.clearContents()
         heartbeat.invalidate()
         try check("pressure-heartbeat-under-500ms", heartbeatCount > 20 && heartbeatMaximum <= 0.5)
+        try await menuAction("showVault")
         try await click("hosts.refresh")
         try await wait("pressure-ui-restored") { !self.model.isLoading }
         samples.append(try pressureSample(stage: "stopped-before-close"))
@@ -598,7 +1172,7 @@ import OpenLXSSHFiles
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: root.appendingPathComponent("target"))
         let startupCount = await connector.count
         try check("files-startup-hidden-no-connect", !model.files.visible && startupCount == 0)
-        try await click("host.add")
+        try await menuAction("newHost")
         try await type("host.name", "真实 Local fixture（不是 SFTP）")
         try await type("host.address", "never-scanned.invalid")
         try await type("host.username", "fixture")
@@ -842,7 +1416,7 @@ import OpenLXSSHFiles
         try await wait("sheet-manager-closed-after-create") { self.delegate.mainWindow?.attachedSheet == nil }
         try check("sheet-manager-closed-after-create", true)
         let key = try await model.repository.securityMetadata().keys[0]
-        try await click("host.add")
+        try await menuAction("newHost")
         try await type("host.name", "Sheet lifecycle fixture")
         try await type("host.address", "sheet.invalid")
         try await type("host.username", "fixture")
@@ -889,7 +1463,7 @@ import OpenLXSSHFiles
             try await click("security.done")
             try await wait("security-manager-dismissed-after-key") { self.delegate.mainWindow?.attachedSheet == nil }
             try check("security-manager-dismissed-after-key", true)
-            try await click("host.add")
+            try await menuAction("newHost")
             try await type("host.name", "Security GUI host")
             try await type("host.address", "security-gui.invalid")
             try await type("host.username", "fixture")
@@ -934,7 +1508,7 @@ import OpenLXSSHFiles
             try check("signed-app-keychain-read", true)
             try check("security-no-connection", model.connectionNotice == nil && metadata.hosts.allSatisfy { $0.lastConnectedAt == nil })
             let key = metadata.keys[0]
-            try await click("host.add")
+            try await menuAction("newHost")
             try await type("host.name", "Shared key host")
             try await type("host.address", "shared-key.invalid")
             try await type("host.username", "fixture")
@@ -1002,23 +1576,469 @@ import OpenLXSSHFiles
         }
     }
 
-    private func interactiveWindow() -> NSWindow? {
-        guard var window = delegate.mainWindow else { return nil }
-        while let sheet = window.attachedSheet { window = sheet }
-        return window
+    private struct ControlNode {
+        let object: NSObject
+        let element: (any NSAccessibilityProtocol)?
+        var reachedNatively: Bool
+        var reachedByAccessibility: Bool
     }
-    private func find<T: NSView>(_ id: String, as type: T.Type) -> T? {
-        func visit(_ view: NSView) -> T? {
-            guard !view.isHiddenOrHasHiddenAncestor else { return nil }
-            if view.identifier?.rawValue == id, let value = view as? T { return value }
-            for child in view.subviews { if let value = visit(child) { return value } }
-            return nil
+    private struct ControlTree {
+        var nodes: [ControlNode] = []
+        var visitedNodes = 0
+        var truncated = false
+        var rejectedHidden = 0
+        var rejectedForeignOwner = 0
+        var rejectedApplicationOrMenu = 0
+        var rootNativeWindowMatches = false
+        var rootAXWindowIsParent = false
+        var rootAXTopLevelIsParent = false
+    }
+    private static let publicFieldIdentities: [(id: String, caption: String)] = [
+        ("host.address", "服务器地址"), ("host.name", "名称"), ("host.username", "用户名"),
+        ("host.port", "端口"), ("host.password", "本次密码"),
+        ("host.interval", "保活间隔（秒）"), ("host.count", "保活失败次数")
+    ]
+    private static let diagnosticFieldIDs = publicFieldIdentities.map(\.id)
+    private static let diagnosticButtonTitles = ["保存", "关闭主机编辑", "关闭", "放弃更改", "取消"]
+    private func interactiveWindow() -> NSWindow? {
+        guard var window = delegate.mainWindow, window.isVisible else { return nil }
+        var visited = Set<ObjectIdentifier>([ObjectIdentifier(window)])
+        for _ in 0..<8 {
+            guard let sheet = window.attachedSheet else { return window }
+            guard sheet.isVisible, sheet.sheetParent === window,
+                  visited.insert(ObjectIdentifier(sheet)).inserted else { return nil }
+            window = sheet
         }
-        if id.hasPrefix("lifecycle.transfers."), let panel = NSApp.windows.first(where: { $0.isVisible && $0 is NSPanel }), let view = panel.contentView { return visit(view) }
-        if let view = interactiveWindow()?.contentView { return visit(view) }
         return nil
     }
+    /// AX may report a sheet's containing document window as its top-level owner.
+    /// Validate that relationship from AppKit's real, bidirectional sheet chain;
+    /// these ancestors are metadata only, never additional traversal roots.
+    private func verifiedSheetParents(of window: NSWindow) -> [NSWindow]? {
+        var current = window, parents: [NSWindow] = [], visited = Set<ObjectIdentifier>([ObjectIdentifier(window)])
+        for _ in 0..<8 {
+            guard let parent = current.sheetParent else { return parents }
+            guard current.isVisible, parent.isVisible, parent.attachedSheet === current,
+                  visited.insert(ObjectIdentifier(parent)).inserted else { return nil }
+            parents.append(parent); current = parent
+        }
+        return current.sheetParent == nil ? parents : nil
+    }
+    /// Start at the exact content owner, never NSApplication or its menus. Native
+    /// subviews and public AX children are complementary on SwiftUI editors.
+    private func controlTree(in window: NSWindow) -> ControlTree {
+        var result = ControlTree(), visited = Set<ObjectIdentifier>(), accepted: [ObjectIdentifier: Int] = [:]
+        guard window.isVisible, let root = window.contentView else { return result }
+        result.rootNativeWindowMatches = root.window === window
+        guard let sheetParents = verifiedSheetParents(of: window) else { result.rejectedForeignOwner = 1; return result }
+        let rootElement = root as any NSAccessibilityProtocol
+        if let owner = rootElement.accessibilityWindow() as? NSWindow {
+            result.rootAXWindowIsParent = sheetParents.contains { $0 === owner }
+        }
+        if let owner = rootElement.accessibilityTopLevelUIElement() as? NSWindow {
+            result.rootAXTopLevelIsParent = sheetParents.contains { $0 === owner }
+        }
+        func ownerMetadataAllowed(_ owner: NSWindow) -> Bool {
+            owner === window || sheetParents.contains { $0 === owner }
+        }
+        let maximumNodes = 1024, maximumDepth = 36, maximumChildren = 128
+        func visit(_ value: Any, depth: Int, native: Bool) {
+            guard let object = value as? NSObject else { return }
+            let identity = ObjectIdentifier(object)
+            if visited.contains(identity) {
+                if let index = accepted[identity] {
+                    if native { result.nodes[index].reachedNatively = true }
+                    else { result.nodes[index].reachedByAccessibility = true }
+                }
+                return
+            }
+            guard depth <= maximumDepth, visited.count < maximumNodes else { result.truncated = true; return }
+            visited.insert(identity); result.visitedNodes = visited.count
+            let element = object as? any NSAccessibilityProtocol
+            let role = element?.accessibilityRole()
+            if object is NSApplication || object is NSMenu || object is NSMenuItem ||
+                role == .application || role == .menu || role == .menuBar || role == .menuBarItem || role == .menuItem {
+                result.rejectedApplicationOrMenu += 1; return
+            }
+            // A window is never a content descendant. Even verified sheet parents
+            // are forbidden as nodes, so their content cannot leak into this owner.
+            if object is NSWindow {
+                result.rejectedForeignOwner += 1; return
+            }
+            if let view = object as? NSView {
+                guard view.window === window, view === root || view.isDescendant(of: root) else {
+                    result.rejectedForeignOwner += 1; return
+                }
+                guard !view.isHiddenOrHasHiddenAncestor else { result.rejectedHidden += 1; return }
+            }
+            if let element {
+                guard !element.isAccessibilityHidden() else { result.rejectedHidden += 1; return }
+                // NSView.window / exact content ancestry remains the native authority.
+                // AX window/topLevel can legitimately name a verified sheet ancestor.
+                if let owner = element.accessibilityWindow() as? NSWindow, !ownerMetadataAllowed(owner) {
+                    result.rejectedForeignOwner += 1; return
+                }
+                if let owner = element.accessibilityTopLevelUIElement() as? NSWindow, !ownerMetadataAllowed(owner) {
+                    result.rejectedForeignOwner += 1; return
+                }
+            }
+            accepted[identity] = result.nodes.count
+            result.nodes.append(ControlNode(object: object, element: element, reachedNatively: native, reachedByAccessibility: !native))
+            if let view = object as? NSView {
+                let children = view.subviews
+                if children.count > maximumChildren { result.truncated = true }
+                for child in children.prefix(maximumChildren) { visit(child, depth: depth + 1, native: true) }
+            }
+            if let element {
+                let children = element.accessibilityChildren() ?? []
+                if children.count > maximumChildren { result.truncated = true }
+                for child in children.prefix(maximumChildren) { visit(child, depth: depth + 1, native: false) }
+            }
+        }
+        visit(root, depth: 0, native: true)
+        return result
+    }
+    /// Diagnostic categories are constants, never reflected class descriptions.
+    /// Walk public superclass metadata only to recognize the generic NSHostingView.
+    private func diagnosticClassCategory(_ object: NSObject) -> String {
+        var kind: AnyClass? = object_getClass(object)
+        for _ in 0..<16 {
+            guard let current = kind else { break }
+            let name = NSStringFromClass(current)
+            if name == "SwiftUI.NSHostingView" || name.hasPrefix("SwiftUI.NSHostingView<") { return "NSHostingView" }
+            kind = class_getSuperclass(current)
+        }
+        if object is NSSecureTextField { return "NSSecureTextField" }
+        if object is NSTextField { return "NSTextField" }
+        if object is NSScrollView { return "NSScrollView" }
+        if object is NSClipView { return "NSClipView" }
+        if object is NSStackView { return "NSStackView" }
+        if object is NSSplitView { return "NSSplitView" }
+        if object is NSButton { return "NSButton" }
+        if object is NSTextView { return "NSTextView" }
+        if object is NSAccessibilityElement { return "NSAccessibilityElement" }
+        if object is NativeWorkspacePageView { return "NativeWorkspacePageView" }
+        if Swift.type(of: object) == NSView.self { return "NSView" }
+        if Swift.type(of: object) == NSObject.self { return "NSObject" }
+        return "other"
+    }
+    private func diagnosticRoleCategory(_ role: NSAccessibility.Role?) -> String {
+        switch role {
+        case .some(.textField): return "AXTextField"
+        case .some(.textArea): return "AXTextArea"
+        case .some(.button): return "AXButton"
+        case .some(.group): return "AXGroup"
+        case .some(.scrollArea): return "AXScrollArea"
+        case .some(.layoutArea): return "AXLayoutArea"
+        case .some(.splitGroup): return "AXSplitGroup"
+        case .some(.staticText): return "AXStaticText"
+        case .some(.checkBox): return "AXCheckBox"
+        case .some(.popUpButton): return "AXPopUpButton"
+        case .some(.image): return "AXImage"
+        case .some(.unknown): return "AXUnknown"
+        case .none: return "none"
+        default: return "other"
+        }
+    }
+    /// Compare only immutable design captions. Never serialize a returned public
+    /// placeholder/title/label (or inspect any field value) to establish identity.
+    private func publicFieldIdentityMatches(_ object: NSObject) -> [[String: Any]] {
+        let field = object as? NSTextField, element = object as? any NSAccessibilityProtocol
+        guard field != nil || element?.accessibilityRole() == .textField || element?.accessibilityRole() == .textArea else { return [] }
+        var matches: [[String: Any]] = []
+        for identity in Self.publicFieldIdentities {
+            let nativePlaceholder = field?.placeholderString == identity.caption
+            let AXPlaceholder = element?.accessibilityPlaceholderValue() == identity.caption
+            let AXTitle = element?.accessibilityTitle() == identity.caption
+            let AXLabel = element?.accessibilityLabel() == identity.caption
+            if nativePlaceholder || AXPlaceholder || AXTitle || AXLabel {
+                matches.append(["fieldIdentity": identity.id, "nativePlaceholderMatches": nativePlaceholder,
+                    "AXPlaceholderMatches": AXPlaceholder, "AXTitleMatches": AXTitle, "AXLabelMatches": AXLabel])
+            }
+        }
+        return matches
+    }
+    /// A read-only census independent of controlTree's acceptance policy. No node
+    /// discovered here can satisfy find/type/click or any editor assertion.
+    private func controlDiagnosticCensus(in window: NSWindow) -> [String: Any] {
+        var counts: [String: Int] = [:], classes: [String: Int] = [:], roles: [String: Int] = [:]
+        var nativeClassCounts: [String: Int] = [:], AXClassCounts: [String: Int] = [:]
+        var nativeRoleCounts: [String: Int] = [:], AXRoleCounts: [String: Int] = [:]
+        var bridgeRecords: [[String: Any]] = [], hiddenRecords: [[String: Any]] = [], candidates: [[String: Any]] = []
+        var buttonCandidates: [[String: Any]] = []
+        var visited = Set<ObjectIdentifier>(), visitedCount = 0, attempts = 0, truncated = false
+        let maximumNodes = 1024, maximumDepth = 36, maximumChildren = 128, maximumAttempts = 4096
+        guard window.isVisible, let root = window.contentView, root.window === window,
+              let sheetParents = verifiedSheetParents(of: window) else { return ["exactRootAvailable": false] }
+        let minimumProtocol = NSProtocolFromString("NSAccessibilityElement")
+        func bump(_ name: String) { counts[name, default: 0] += 1 }
+        func sameOwner(_ owner: NSWindow) -> Bool { owner === window || sheetParents.contains { $0 === owner } }
+        func fixedIdentifier(_ object: NSObject) -> String? {
+            let view = object as? NSView
+            let element = object as? any NSAccessibilityProtocol
+            return Self.diagnosticFieldIDs.first { view?.identifier?.rawValue == $0 || element?.accessibilityIdentifier() == $0 }
+        }
+        func visit(_ value: Any, depth: Int, source: String, parentRole: String, parentClass: String,
+                   parentFieldID: String?, behindAXHiddenContainer: Bool) {
+            guard attempts < maximumAttempts else { truncated = true; return }
+            attempts += 1
+            if source == "AX" {
+                bump("AXReturnedEdgesInspected")
+                if value is NSAccessibilityElement { bump("AXReturnedNSAccessibilityElement") }
+                if value is any NSAccessibilityProtocol { bump("AXReturnedFullAXProtocol") }
+            }
+            guard let object = value as? NSObject else {
+                bump("notNSObject")
+                if source == "AX" { bump("AXReturnedNotNSObject") }
+                if bridgeRecords.count < 24 {
+                    bridgeRecords.append(["depth": depth, "classCategory": "other", "role": "uninspected",
+                        "isNSObject": false, "isNativeView": false, "isNSAccessibilityElement": false,
+                        "fullAXProtocolCast": value is any NSAccessibilityProtocol,
+                        "minimalAXElementProtocol": false, "minimalProtocolCheckAvailable": false,
+                        "publicGettersInspected": false])
+                }
+                return
+            }
+            if source == "AX" { bump("AXReturnedNSObject") }
+            let identity = ObjectIdentifier(object)
+            guard !visited.contains(identity) else { bump("duplicateEdges"); return }
+            guard depth <= maximumDepth, visited.count < maximumNodes else { truncated = true; return }
+            visited.insert(identity); visitedCount = visited.count
+            // Establish native visibility before reading any AX metadata. A hidden
+            // native view is an unconditional leaf, even for this read-only census.
+            if let view = object as? NSView {
+                guard view.window === window, view === root || view.isDescendant(of: root) else { bump("foreignNativeOwnerRejected"); return }
+                if view.isHiddenOrHasHiddenAncestor {
+                    bump("nativeHiddenRejected")
+                    if hiddenRecords.count < 16 {
+                        hiddenRecords.append(["reason": "native-hidden", "depth": depth, "source": source,
+                            "classCategory": diagnosticClassCategory(object), "role": "uninspected",
+                            "parentClassCategory": parentClass, "parentRole": parentRole,
+                            "nativeIsHidden": view.isHidden, "nativeIsHiddenOrHasHiddenAncestor": true,
+                            "nativeWindowMatches": true, "AXMetadataInspected": false, "childrenInspected": false])
+                    }
+                    return
+                }
+            }
+            let element = object as? any NSAccessibilityProtocol
+            let role = element?.accessibilityRole(), roleCategory = diagnosticRoleCategory(role)
+            let category = diagnosticClassCategory(object), view = object as? NSView
+            bump(source == "native" ? "nativeEdges" : "AXEdges")
+            if object is NSApplication || object is NSMenu || object is NSMenuItem ||
+                role == .application || role == .menu || role == .menuBar || role == .menuBarItem || role == .menuItem {
+                bump("applicationOrMenuRejected"); return
+            }
+            if object is NSWindow { bump("windowNodeRejected"); return }
+            if let element {
+                if let owner = element.accessibilityWindow() as? NSWindow, !sameOwner(owner) { bump("foreignAXOwnerRejected"); return }
+                if let owner = element.accessibilityTopLevelUIElement() as? NSWindow, !sameOwner(owner) { bump("foreignAXTopLevelRejected"); return }
+            }
+            classes[category, default: 0] += 1; roles[roleCategory, default: 0] += 1
+            if source == "native" {
+                nativeClassCounts[category, default: 0] += 1; nativeRoleCounts[roleCategory, default: 0] += 1
+            } else {
+                AXClassCounts[category, default: 0] += 1; AXRoleCounts[roleCategory, default: 0] += 1
+            }
+            if view != nil { bump("nativeView") }
+            if element != nil { bump("fullAXProtocol") }
+            if object is NSAccessibilityElement { bump("NSAccessibilityElement") }
+            let minimal = minimumProtocol.map { object.conforms(to: $0) } ?? false
+            if minimal { bump("minimalAXElementProtocol") }
+            let roleGetter = object.responds(to: #selector(NSAccessibilityProtocol.accessibilityRole))
+            let childrenGetter = object.responds(to: #selector(NSAccessibilityProtocol.accessibilityChildren))
+            let identifierGetter = object.responds(to: #selector(NSAccessibilityProtocol.accessibilityIdentifier))
+            if element == nil {
+                bump("fullAXProtocolCastFailed")
+                if roleGetter { bump("castFailedWithRoleGetter") }
+                if childrenGetter { bump("castFailedWithChildrenGetter") }
+            }
+            if source == "AX", bridgeRecords.count < 24 {
+                bridgeRecords.append(["depth": depth, "classCategory": category, "role": roleCategory,
+                    "isNSObject": true, "isNativeView": view != nil, "isNSAccessibilityElement": object is NSAccessibilityElement,
+                    "fullAXProtocolCast": element != nil, "minimalAXElementProtocol": minimal,
+                    "minimalProtocolCheckAvailable": minimumProtocol != nil,
+                    "publicRoleGetter": roleGetter, "publicChildrenGetter": childrenGetter,
+                    "publicIdentifierGetter": identifierGetter])
+            }
+            let nativeChildren = view?.subviews ?? []
+            let fixedButton = Self.diagnosticButtonTitles.first { title in
+                (object as? NSButton)?.title == title || element?.accessibilityLabel() == title || element?.accessibilityTitle() == title
+            }
+            if (fixedButton != nil || object is NSButton || role == .button), buttonCandidates.count < 24 {
+                buttonCandidates.append(["buttonIdentity": fixedButton ?? "none", "depth": depth, "source": source,
+                    "classCategory": category, "role": roleCategory, "parentClassCategory": parentClass,
+                    "nativeTitleMatches": fixedButton != nil && (object as? NSButton)?.title == fixedButton,
+                    "AXLabelMatches": fixedButton != nil && element?.accessibilityLabel() == fixedButton,
+                    "AXTitleMatches": fixedButton != nil && element?.accessibilityTitle() == fixedButton,
+                    "AXIsElement": element?.isAccessibilityElement() == true, "AXHidden": element?.isAccessibilityHidden() == true,
+                    "AXPressAllowed": element?.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.accessibilityPerformPress)) == true,
+                    "nativeVisibleBoundsIntersectionNonempty": view.map { !$0.visibleRect.intersection($0.bounds).isEmpty } ?? false])
+            }
+            let nativeVisibleChildren = nativeChildren.filter {
+                $0.window === window && ($0 === root || $0.isDescendant(of: root)) && !$0.isHiddenOrHasHiddenAncestor
+            }
+            let fieldID = fixedIdentifier(object)
+            let isField = object is NSTextField || role == .textField || role == .textArea
+            if isField { bump("fieldRoleOrNativeField") }
+            if object is NSTextField { bump("nativeTextField") }
+            if fieldID != nil { bump("allowlistedIdentifier") }
+            if fieldID != nil && !isField { bump("allowlistedIdentifierOnNonField") }
+            if behindAXHiddenContainer { bump("nativeVisibleNodeBehindAXHiddenContainer") }
+            if isField && fieldID == nil && parentFieldID != nil { bump("fieldWithAllowlistedParent") }
+            if (fieldID != nil || isField), candidates.count < 48 {
+                candidates.append(["depth": depth, "source": source, "classCategory": category, "role": roleCategory,
+                    "fieldIdentity": fieldID ?? "none", "parentFieldIdentity": parentFieldID ?? "none",
+                    "parentClassCategory": parentClass, "parentRole": parentRole,
+                    "nativeIdentifierMatches": fieldID != nil && view?.identifier?.rawValue == fieldID,
+                    "AXIdentifierMatches": fieldID != nil && element?.accessibilityIdentifier() == fieldID,
+                    "nativeWindowMatches": view?.window === window,
+                    "nativeIsHidden": view?.isHidden == true, "nativeIsHiddenOrHasHiddenAncestor": view?.isHiddenOrHasHiddenAncestor == true,
+                    "nativeVisibleRectNonempty": view.map { !$0.visibleRect.isEmpty } ?? false,
+                    "nativeVisibleBoundsIntersectionNonempty": view.map { !$0.visibleRect.intersection($0.bounds).isEmpty } ?? false,
+                    "nativeFrame": view.map { [$0.frame.origin.x, $0.frame.origin.y, $0.frame.width, $0.frame.height] } ?? [],
+                    "nativeBounds": view.map { [$0.bounds.width, $0.bounds.height] } ?? [],
+                    "nativeVisibleRect": view.map { [$0.visibleRect.origin.x, $0.visibleRect.origin.y, $0.visibleRect.width, $0.visibleRect.height] } ?? [],
+                    "parentBounds": view?.superview.map { [$0.bounds.width, $0.bounds.height] } ?? [],
+                    "AXFrame": element.map { [$0.accessibilityFrame().origin.x, $0.accessibilityFrame().origin.y, $0.accessibilityFrame().width, $0.accessibilityFrame().height] } ?? [],
+                    "publicIdentityMatches": publicFieldIdentityMatches(object),
+                    "AXHidden": element?.isAccessibilityHidden() == true,
+                    "AXIsElement": element?.isAccessibilityElement() == true,
+                    "isFieldRoleOrNativeField": isField, "behindAXHiddenNonElementContainer": behindAXHiddenContainer])
+            }
+            if let element, element.isAccessibilityHidden() {
+                bump("AXHiddenRejectedByControlTree")
+                let canInspectNativeChildren = view != nil && !element.isAccessibilityElement()
+                if hiddenRecords.count < 16 {
+                    hiddenRecords.append(["reason": "AX-hidden", "depth": depth, "source": source,
+                        "classCategory": category, "role": roleCategory, "parentClassCategory": parentClass,
+                        "parentRole": parentRole, "nativeIsHidden": view?.isHidden == true,
+                        "nativeIsHiddenOrHasHiddenAncestor": view?.isHiddenOrHasHiddenAncestor == true,
+                        "nativeWindowMatches": view?.window === window, "AXHidden": true,
+                        "AXIsElement": element.isAccessibilityElement(), "nativeChildCount": nativeChildren.count,
+                        "nativeVisibleChildCount": nativeVisibleChildren.count,
+                        "nativeChildrenInspectedForDiagnosticsOnly": canInspectNativeChildren,
+                        "AXChildrenInspected": false])
+                }
+                // Observation only: non-element AX containers may wrap visible native controls.
+                // Do not inspect their AX children, and never add these descendants to controlTree.
+                guard canInspectNativeChildren else { return }
+                if nativeChildren.count > maximumChildren { truncated = true }
+                for child in nativeChildren.prefix(maximumChildren) {
+                    visit(child, depth: depth + 1, source: "native", parentRole: roleCategory, parentClass: category,
+                          parentFieldID: fieldID ?? parentFieldID, behindAXHiddenContainer: true)
+                }
+                return
+            }
+            if nativeChildren.count > maximumChildren { truncated = true }
+            for child in nativeChildren.prefix(maximumChildren) {
+                visit(child, depth: depth + 1, source: "native", parentRole: roleCategory, parentClass: category,
+                      parentFieldID: fieldID ?? parentFieldID, behindAXHiddenContainer: behindAXHiddenContainer)
+            }
+            if let element, !behindAXHiddenContainer {
+                let children = element.accessibilityChildren() ?? []
+                bump("AXChildrenGetterInvoked")
+                counts["AXReturnedChildCount", default: 0] += children.count
+                if children.count > maximumChildren { truncated = true }
+                for child in children.prefix(maximumChildren) {
+                    visit(child, depth: depth + 1, source: "AX", parentRole: roleCategory, parentClass: category,
+                          parentFieldID: fieldID ?? parentFieldID, behindAXHiddenContainer: behindAXHiddenContainer)
+                }
+                // Read-only alternate public, untyped AX hierarchies. Do not call
+                // accessibilityChildrenInNavigationOrder: R4 proved its typed Swift
+                // bridge traps on NSAccessibilitySegment. No census node is actionable.
+                let alternatives: [(String, [Any])] = [
+                    ("AXVisible", element.accessibilityVisibleChildren() ?? []),
+                    ("AXContents", element.accessibilityContents() ?? []),
+                    ("AXUnignored", NSAccessibility.unignoredChildrenForOnlyChild(from: object))
+                ]
+                for (route, nodes) in alternatives {
+                    counts[route + "ReturnedChildCount", default: 0] += nodes.count
+                    if nodes.count > maximumChildren { truncated = true }
+                    for child in nodes.prefix(maximumChildren) {
+                        visit(child, depth: depth + 1, source: route, parentRole: roleCategory, parentClass: category,
+                              parentFieldID: fieldID ?? parentFieldID, behindAXHiddenContainer: false)
+                    }
+                }
+            }
+        }
+        visit(root, depth: 0, source: "native", parentRole: "none", parentClass: "none", parentFieldID: nil, behindAXHiddenContainer: false)
+        return ["exactRootAvailable": true, "visitedNodes": visitedCount, "edgeAttempts": attempts,
+            "nodeLimit": maximumNodes, "depthLimit": maximumDepth, "childLimit": maximumChildren, "edgeAttemptLimit": maximumAttempts,
+            "truncated": truncated, "counts": counts, "classCounts": classes, "roleCounts": roles,
+            "nativeClassCounts": nativeClassCounts, "AXClassCounts": AXClassCounts,
+            "nativeRoleCounts": nativeRoleCounts, "AXRoleCounts": AXRoleCounts,
+            "minimalAXElementProtocolLookupAvailable": minimumProtocol != nil,
+            "hiddenRejections": hiddenRecords, "AXBridgeSamples": bridgeRecords, "fieldCandidates": candidates,
+            "buttonCandidates": buttonCandidates,
+            "diagnosticOnly": true, "changesControlAcceptance": false, "fieldContentsInspected": false,
+            "arbitraryTextSerialized": false, "AXHiddenContainerChildrenAreNativeOnly": true]
+    }
+
+    private func hasIdentifier(_ node: ControlNode, _ id: String) -> Bool {
+        (node.object as? NSView)?.identifier?.rawValue == id || node.element?.accessibilityIdentifier() == id
+    }
+    private func isVisibleControl(_ node: ControlNode, in window: NSWindow) -> Bool {
+        if let view = node.object as? NSView {
+            return view.window === window && !view.isHiddenOrHasHiddenAncestor && !view.visibleRect.intersection(view.bounds).isEmpty
+        }
+        guard let element = node.element, !element.isAccessibilityHidden() else { return false }
+        let frame = element.accessibilityFrame()
+        return !frame.isEmpty && frame.intersects(window.frame)
+    }
+    private func fieldCandidates(_ id: String, in tree: ControlTree) -> [ControlNode] {
+        guard !tree.truncated else { return [] }
+        let fields = tree.nodes.filter { node in
+            node.object is NSTextField || node.element?.accessibilityRole() == .textField || node.element?.accessibilityRole() == .textArea
+        }
+        let identified = fields.filter { hasIdentifier($0, id) }
+        if !identified.isEmpty {
+            let native = identified.filter { $0.object is NSTextField }
+            return native.isEmpty ? identified : native
+        }
+        guard let caption = Self.publicFieldIdentities.first(where: { $0.id == id })?.caption else { return [] }
+        // R4 runtime evidence confirmed these exact native placeholders. Never use
+        // virtual+native duplicates, positional order or arbitrary displayed text.
+        let fallback = fields.filter { ($0.object as? NSTextField)?.placeholderString == caption }
+        return fallback.count == 1 ? fallback : []
+    }
+    private func controlMatches(_ id: String, in window: NSWindow) -> [ControlNode] {
+        fieldCandidates(id, in: controlTree(in: window)).filter { isVisibleControl($0, in: window) }
+    }
+    private func revealFieldIfNeeded(_ id: String, in window: NSWindow) async throws {
+        guard controlMatches(id, in: window).isEmpty else { return }
+        let candidates = fieldCandidates(id, in: controlTree(in: window))
+        guard candidates.count == 1, let field = candidates[0].object as? NSTextField,
+              field.window === window, !field.isHiddenOrHasHiddenAncestor,
+              let scroll = field.enclosingScrollView, scroll.window === window,
+              !scroll.isHiddenOrHasHiddenAncestor, let document = scroll.documentView,
+              field === document || field.isDescendant(of: document),
+              let root = window.contentView, document === root || document.isDescendant(of: root),
+              !scroll.visibleRect.intersection(scroll.bounds).isEmpty else { return }
+        // Move the public viewport, not the field value/focus while it is offscreen.
+        let target = field.convert(field.bounds, to: document)
+        _ = document.scrollToVisible(target.insetBy(dx: -8, dy: -8))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await pause()
+        try check("input-scroll-reveals-" + id, interactiveWindow() === window && controlMatches(id, in: window).count == 1)
+        actions.append("scroll.public-field-into-viewport." + id)
+    }
+    private func find<T: NSView>(_ id: String, as type: T.Type) -> T? {
+        let window: NSWindow?
+        if id.hasPrefix("lifecycle.transfers.") {
+            let panels = NSApp.windows.filter { $0.isVisible && $0 is NSPanel }
+            window = panels.count == 1 ? panels[0] : nil
+        } else { window = interactiveWindow() }
+        guard let window else { return nil }
+        let tree = controlTree(in: window)
+        guard !tree.truncated else { return nil }
+        let matches = tree.nodes.filter { hasIdentifier($0, id) && isVisibleControl($0, in: window) }.compactMap { $0.object as? T }
+        return matches.count == 1 ? matches[0] : nil
+    }
     private func click(_ id: String) async throws {
+        if id == "host.save" { try await pressVisibleButton("保存"); return }
+        if id == "host.edit" { try await hostContextCommand("编辑…"); return }
+        if id == "session.new" { try await hostContextCommand("在新会话打开"); return }
         try await wait(id) { self.find(id, as: NSButton.self)?.isEnabled == true }
         guard let button = find(id, as: NSButton.self) else { throw Failure.missing(id) }
         button.performClick(nil)
@@ -1026,15 +2046,102 @@ import OpenLXSSHFiles
         try await pause()
     }
     private func type(_ id: String, _ text: String) async throws {
-        try await wait(id) { self.find(id, as: NSTextField.self) != nil }
-        guard let field = find(id, as: NSTextField.self), let window = field.window else { throw Failure.missing(id) }
-        window.makeFirstResponder(field)
-        guard let editor = window.fieldEditor(true, for: field) as? NSTextView else { throw Failure.missing(id) }
-        editor.selectAll(nil); editor.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
-        window.makeFirstResponder(nil)
-        field.sendAction(field.action, to: field.target)
+        if Self.diagnosticFieldIDs.contains(id) {
+            try await wait("host-editor-owner") { self.delegate.mainWindow?.attachedSheet is NativeOwnedSheetWindow }
+            writeControlDiagnostics(stage: "before-input")
+        }
+        let owner = try require(interactiveWindow(), "input-owner")
+        try await revealFieldIfNeeded(id, in: owner)
+        try await wait(id) { self.interactiveWindow() === owner && self.controlMatches(id, in: owner).count == 1 }
+        guard interactiveWindow() === owner, let node = controlMatches(id, in: owner).first else { throw Failure.missing(id) }
+        if let field = node.object as? NSTextField {
+            guard field.isEditable, field.isEnabled, field.window === owner, owner.makeFirstResponder(field) else { throw Failure.check("input-native-focus") }
+            // currentEditor, not fieldEditor(true,...), proves AppKit actually began editing this field.
+            try await wait("input-native-field-editor") { field.currentEditor() is NSTextView && owner.firstResponder === field.currentEditor() }
+            guard let editor = field.currentEditor() as? NSTextView, owner.firstResponder === editor else { throw Failure.missing("input-field-editor") }
+            editor.selectAll(nil); editor.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            guard owner.makeFirstResponder(nil) else { throw Failure.check("input-native-commit") }
+            // Do not send a SwiftUI TextField action: its public onSubmit can save the form.
+            // Ending its real field editor commits through the control's normal input binding.
+            try await pause()
+            try await wait("input-keeps-committed-field") {
+                self.controlMatches(id, in: owner).first.map { committed in
+                    if id == "host.password" || committed.object is NSSecureTextField { return true }
+                    return (committed.object as? NSTextField)?.stringValue == text
+                } == true
+            }
+            if id != "host.password" && !(field is NSSecureTextField) {
+                let committed = controlMatches(id, in: owner)
+                try check("input-committed-" + id, committed.count == 1 &&
+                    (committed.first?.object as? NSTextField)?.stringValue == text)
+            }
+            actions.append("type.native-field-editor." + id)
+        } else {
+            guard let element = node.element, element.isAccessibilityEnabled() else { throw Failure.check("input-AX-disabled") }
+            let canSetValue = element.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.setAccessibilityValue(_:)))
+            let canFocus = element.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.setAccessibilityFocused(_:)))
+            if canFocus { element.setAccessibilityFocused(true); try await pause() }
+            guard interactiveWindow() === owner else { throw Failure.check("input-AX-owner-changed") }
+            if canFocus, element.isAccessibilityFocused(), let editor = owner.firstResponder as? NSTextView, editor.isFieldEditor {
+                editor.selectAll(nil); editor.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+                actions.append("type.AX-focused-field-editor." + id)
+            } else {
+                guard canSetValue else { throw Failure.check("input-AX-value-not-settable") }
+                element.setAccessibilityValue(text)
+                actions.append("type.AX-set-value." + id)
+            }
+            guard owner.makeFirstResponder(nil) else { throw Failure.check("input-AX-commit") }
+            try await pause()
+            if id != "host.password" {
+                let committed = controlMatches(id, in: owner)
+                try check("input-committed-" + id, committed.count == 1 && (committed[0].element?.accessibilityValue() as? String) == text)
+            }
+        }
+        try check("input-keeps-current-owner-" + id, interactiveWindow() === owner)
         actions.append("type." + id)
-        try await pause()
+    }
+    private func buttonMatches(title: String, in window: NSWindow) -> [ControlNode] {
+        let tree = controlTree(in: window)
+        guard !tree.truncated else { return [] }
+        let native = tree.nodes.filter { node in
+            (node.object as? NSButton)?.title == title && isVisibleControl(node, in: window)
+        }
+        if !native.isEmpty { return native }
+        return tree.nodes.filter { node in
+            guard isVisibleControl(node, in: window), let element = node.element, element.accessibilityRole() == .button else { return false }
+            // Read only button identity, never a text/body node. Only the exact fixed
+            // requested title is matched; duplicate buttons are a failure, not first-wins.
+            return element.accessibilityLabel() == title || element.accessibilityTitle() == title
+        }
+    }
+    private func pressVisibleButton(_ title: String, owner expectedOwner: NSWindow? = nil) async throws {
+        let owner = try require(expectedOwner ?? interactiveWindow(), "button-owner")
+        if Self.diagnosticButtonTitles.contains(title) { writeControlDiagnostics(stage: "before-button", window: owner) }
+        try await wait("visible-button-" + title) {
+            guard self.interactiveWindow() === owner else { return false }
+            let matches = self.buttonMatches(title: title, in: owner)
+            return matches.count == 1 && ((matches[0].object as? NSButton)?.isEnabled == true || matches[0].element?.isAccessibilityEnabled() == true)
+        }
+        guard interactiveWindow() === owner, let node = buttonMatches(title: title, in: owner).first else { throw Failure.missing("visible-button-" + title) }
+        if let button = node.object as? NSButton {
+            guard button.isEnabled else { throw Failure.check("button-native-disabled") }
+            button.performClick(nil)
+        } else {
+            guard let element = node.element, element.isAccessibilityEnabled(),
+                  element.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.accessibilityPerformPress)),
+                  element.accessibilityPerformPress() else { throw Failure.check("button-AX-press-not-supported") }
+        }
+        actions.append("press-visible." + title); try await pause()
+    }
+    private func hostContextCommand(_ title: String) async throws {
+        let table = try await nativeHostTable()
+        guard let window = table.window else { throw Failure.missing("vault-table-window") }
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let point = table.convert(NSPoint(x: 60, y: table.rect(ofRow: 0).midY), to: nil)
+        let event = try require(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1), "vault-context-event")
+        guard let menu = table.menu(for: event), let item = menu.items.first(where: { $0.title == title }), let action = item.action,
+              NSApp.sendAction(action, to: item.target, from: item) else { throw Failure.missing("vault-context-" + title) }
+        actions.append("vault-context." + title); try await pause()
     }
     private func popup(_ id: String, value: String) async throws {
         try await wait(id) { self.find(id, as: NSPopUpButton.self) != nil }
@@ -1044,14 +2151,14 @@ import OpenLXSSHFiles
         try await pause()
     }
     private func selectFirstHost() async throws {
-        try await wait("hosts.table") { self.find("hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
+        try await wait("hosts.table") { self.find("vault.hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
         let table = try await nativeHostTable()
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try await pause()
     }
     private func nativeHostTable() async throws -> NSTableView {
-        try await wait("hosts.table") { self.find("hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
-        guard let candidate = find("hosts.table", as: NSTableView.self), let content = candidate.window?.contentView else { throw Failure.missing("hosts.table") }
+        try await wait("hosts.table") { self.find("vault.hosts.table", as: NSTableView.self)?.numberOfRows ?? 0 > 0 }
+        guard let candidate = find("vault.hosts.table", as: NSTableView.self), let content = candidate.window?.contentView else { throw Failure.missing("hosts.table") }
         let row = candidate.rowView(atRow: 0, makeIfNecessary: true)
         // NSView.hitTest receives coordinates in its superview, not its own
         // flipped coordinates. A terminal below the table made the old check hit
@@ -1090,9 +2197,87 @@ import OpenLXSSHFiles
     private func wait(_ name: String, predicate: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + 8
         while !predicate() {
-            guard ProcessInfo.processInfo.systemUptime < deadline else { throw Failure.timeout(name) }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                writeWaitDiagnostics(for: name)
+                throw Failure.timeout(name)
+            }
             try await Task.sleep(for: .milliseconds(25))
         }
+    }
+    private func writeWaitDiagnostics(for identifier: String) {
+        if Self.diagnosticFieldIDs.contains(identifier) || identifier.hasPrefix("visible-button-") {
+            writeControlDiagnostics(stage: "wait-timeout")
+        }
+    }
+    private func writeControlDiagnostics(stage: String, window supplied: NSWindow? = nil) {
+        // This is not an AX dump. No value, placeholder, body, arbitrary label,
+        // title, identifier, class name or description is ever serialized.
+        guard controlDiagnosticSequence < 48 else { return }
+        controlDiagnosticSequence += 1
+        let window = supplied ?? interactiveWindow()
+        let tree = window.map { controlTree(in: $0) } ?? ControlTree()
+        let census = window.map { controlDiagnosticCensus(in: $0) } ?? ["exactRootAvailable": false]
+        var records: [[String: Any]] = []
+        for node in tree.nodes {
+            let field = Self.diagnosticFieldIDs.first { hasIdentifier(node, $0) }
+            var button: String?
+            button = Self.diagnosticButtonTitles.first { title in
+                (node.object as? NSButton)?.title == title ||
+                    (node.element?.accessibilityRole() == .button &&
+                     (node.element?.accessibilityLabel() == title || node.element?.accessibilityTitle() == title))
+            }
+            guard let identity = field ?? button else { continue }
+            let role: String
+            switch node.element?.accessibilityRole() {
+            case .some(.textField): role = "AXTextField"
+            case .some(.textArea): role = "AXTextArea"
+            case .some(.button): role = "AXButton"
+            case .some(.group): role = "AXGroup"
+            case .none: role = "none"
+            default: role = "other"
+            }
+            let fieldControl = node.object as? NSTextField
+            let element = node.element
+            records.append(["identity": identity, "matchKind": field != nil ? "identifier" : "fixed-button-title",
+                "nativeButtonTitleMatches": button != nil && (node.object as? NSButton)?.title == button,
+                "nativeButtonEnabled": (node.object as? NSButton)?.isEnabled == true,
+                "nativeIdentifierMatches": (node.object as? NSView)?.identifier?.rawValue == field && field != nil,
+                "accessibilityIdentifierMatches": element?.accessibilityIdentifier() == field && field != nil,
+                "role": role, "nativeTextField": fieldControl != nil, "nativeSecureField": node.object is NSSecureTextField,
+                "reachedNatively": node.reachedNatively, "reachedByAccessibility": node.reachedByAccessibility,
+                "visible": window.map { isVisibleControl(node, in: $0) } ?? false,
+                "enabled": element?.isAccessibilityEnabled() == true,
+                "nativeEditable": fieldControl?.isEditable == true,
+                "nativeFieldEditorActive": fieldControl?.currentEditor() != nil,
+                "valueSettable": element?.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.setAccessibilityValue(_:))) == true,
+                "focusSettable": element?.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.setAccessibilityFocused(_:))) == true,
+                "pressAllowed": element?.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.accessibilityPerformPress)) == true])
+        }
+        let result: [String: Any] = ["stage": stage, "sequence": controlDiagnosticSequence,
+            "mainWindowVisible": delegate.mainWindow?.isVisible == true,
+            "hasAttachedSheet": delegate.mainWindow?.attachedSheet != nil,
+            "interactiveWindowVisible": window?.isVisible == true,
+            "interactiveWindowIsKey": window?.isKeyWindow == true,
+            "interactiveMatchesAppKeyWindow": window != nil && NSApp.keyWindow === window,
+            "interactiveIsMainWindow": window != nil && window === delegate.mainWindow,
+            "interactiveIsOwnedSheet": window is NativeOwnedSheetWindow,
+            "interactiveHasAttachedSheet": window?.attachedSheet != nil,
+            "interactiveWindowIsCurrentOwner": window != nil && window === interactiveWindow(),
+            "windowNumber": window?.windowNumber ?? 0,
+            "windowFrameSize": window.map { [$0.frame.width, $0.frame.height] } ?? [],
+            "contentFrameSize": window?.contentView.map { [$0.frame.width, $0.frame.height] } ?? [],
+            "contentBoundsSize": window?.contentView.map { [$0.bounds.width, $0.bounds.height] } ?? [],
+            "rootNativeWindowMatches": tree.rootNativeWindowMatches,
+            "rootAXWindowIsParent": tree.rootAXWindowIsParent,
+            "rootAXTopLevelIsParent": tree.rootAXTopLevelIsParent,
+            "traversedNodes": tree.visitedNodes, "acceptedNodes": tree.nodes.count, "nodeLimit": 1024, "depthLimit": 36, "childLimit": 128,
+            "truncated": tree.truncated, "rejectedHidden": tree.rejectedHidden,
+            "rejectedForeignOwner": tree.rejectedForeignOwner, "rejectedApplicationOrMenu": tree.rejectedApplicationOrMenu,
+            "fieldContentsInspected": false, "arbitraryTextSerialized": false, "controls": records,
+            "discoveryCensus": census]
+        guard let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) else { return }
+        let filename = String(format: "control-diagnostics-%02d.json", controlDiagnosticSequence)
+        try? data.write(to: options.directory.appendingPathComponent(filename), options: .atomic)
     }
     private func pause() async throws { try await Task.sleep(for: .milliseconds(100)) }
     private func check(_ name: String, _ condition: Bool) throws {
@@ -1108,11 +2293,33 @@ import OpenLXSSHFiles
         try data.write(to: options.directory.appendingPathComponent(name), options: .atomic)
     }
     private func finish(success: Bool, failure: String?) throws {
-        let report = Report(kind: "HostProbe-native-GUI", phase: options.phase, passed: success, checks: checks, actions: actions, failureCode: failure, productRuntimeVerified: false)
+        let report = Report(kind: "HostProbe-native-GUI", phase: options.phase, passed: success, checks: checks, actions: actions, failureCode: failure, productRuntimeVerified: false,
+            scope: options.phase == "desktop-cua" ? "Isolated desktop ready/finish lifecycle only; interactions not asserted; SSH/SFTP use network substitutes." : nil)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(report)
         try data.write(to: options.directory.appendingPathComponent("smoke-" + options.phase + ".json"), options: .atomic)
         FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+}
+
+@MainActor private struct DismissSmokePresentation: Identifiable { let id = UUID() }
+@MainActor private final class DismissSmokeState: ObservableObject {
+    @Published var presentation: DismissSmokePresentation?
+    @Published var draft = ""
+    @Published var allowsDismiss = false
+    @Published var attempts = 0
+    func attemptDismiss() -> Bool { attempts += 1; return allowsDismiss }
+}
+private struct DismissSmokeAnchor: View {
+    @ObservedObject var state: DismissSmokeState
+    var body: some View {
+        Color.clear.nativeSheet(item: $state.presentation, onAttemptDismiss: { state.attemptDismiss() }) { _ in
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Synthetic unsaved editor").font(.headline)
+                NativeField(placeholder: "Public fixture draft", id: "dismiss.fixture.draft", text: $state.draft).frame(width: 320, height: 26)
+                Text("Cmd+W / Escape uses the close hook; no host configuration is changed.").font(.caption)
+            }.padding(24)
+        }
     }
 }
 

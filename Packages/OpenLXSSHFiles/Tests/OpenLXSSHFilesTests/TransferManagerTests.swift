@@ -124,6 +124,111 @@ final class TransferManagerTests: XCTestCase, @unchecked Sendable {
             destination: TransferLocation(serviceID: services.1, path: try RemotePath(destination)), kind: kind)
     }
 
+    func testDefaultDirectConflictCancellationIsRequestBoundAndPreservesOriginal() async throws {
+        let f = try ManagerFixture(); try f.put("file", bytes: payload(44))
+        let original = Data("original".utf8); try f.put("out", bytes: original, destination: true)
+        let manager = TransferManager(idleTimeout: nil, executionMode: .direct)
+        let services = try await locations(manager, f)
+        let id = try await manager.enqueue(request(services))
+        let decision = try await pending(manager, id)
+        let stale = TransferDecisionRequest(id: decision.id, jobID: decision.jobID, generation: UUID(), question: decision.question)
+        let refused = await manager.cancelPendingDecision(stale); XCTAssertFalse(refused)
+        let cancelled = await manager.cancelPendingDecision(decision); XCTAssertTrue(cancelled)
+        let final = try await terminal(manager, id)
+        XCTAssertEqual(final.state, .cancelled); XCTAssertTrue(final.retainedTemporaryPaths.isEmpty)
+        let lateAnswer = await manager.resolve(decision, answer: .conflict(.overwrite, applyToBatch: true)); XCTAssertFalse(lateAnswer)
+        let next = try await manager.enqueue(request(services))
+        let nextDecision = try await pending(manager, next)
+        let lateCancel = await manager.cancelPendingDecision(decision); XCTAssertFalse(lateCancel)
+        let preserved = try await job(manager, next, matching: { $0.state == .waitingConflict })
+        XCTAssertEqual(preserved.pendingDecision, nextDecision)
+        let kept = await manager.resolve(nextDecision, answer: .conflict(.autoRename, applyToBatch: false)); XCTAssertTrue(kept)
+        let done = try await terminal(manager, next); XCTAssertEqual(done.state, .succeeded)
+        XCTAssertEqual(done.items.first?.destination, try RemotePath("/out (1)"))
+        XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent("out")), original)
+        XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent("out (1)")), payload(44))
+        await manager.cancelAllAndWait(); await f.cleanup()
+    }
+
+    func testKeepBothBatchAppliesPerItemWithoutCrossingHostOrBatch() async throws {
+        let f = try ManagerFixture(), g = try ManagerFixture()
+        try f.put("file", bytes: payload(44)); try g.put("file", bytes: payload(55))
+        for name in ["out", "second", "later"] { try f.put(name, bytes: Data(name.utf8), destination: true) }
+        try g.put("out", bytes: Data("host B".utf8), destination: true)
+        let manager = TransferManager(idleTimeout: nil, executionMode: .direct), batch = UUID()
+        let a = (try await manager.registerService(f.source), try await manager.registerService(f.destination, hostID: "A"))
+        let b = (try await manager.registerService(g.source), try await manager.registerService(g.destination, hostID: "B"))
+        let first = try await manager.enqueueBatch([request(a, host: "A", batch: batch), request(a, host: "A", destination: "/second", batch: batch)])
+        let other = try await manager.enqueue(request(b, host: "B", batch: batch))
+        let question = try await pending(manager, first[0]), otherQuestion = try await pending(manager, other)
+        let namedBatch = await manager.resolve(question, answer: .conflict(.renameTo(try FileName("fixed-name")), applyToBatch: true))
+        XCTAssertFalse(namedBatch, "A concrete name is never broadcast to every item")
+        let accepted = await manager.resolve(question, answer: .conflict(.autoRename, applyToBatch: true)); XCTAssertTrue(accepted)
+        for id in first {
+            let result = try await terminal(manager, id); XCTAssertEqual(result.state, .succeeded)
+            XCTAssertNil(result.pendingDecision); XCTAssertTrue(result.retainedTemporaryPaths.isEmpty)
+        }
+        let waiting = try await job(manager, other, matching: { $0.state == .waitingConflict })
+        XCTAssertEqual(waiting.pendingDecision, otherQuestion)
+        let cancelOther = await manager.cancelPendingDecision(otherQuestion); XCTAssertTrue(cancelOther)
+        _ = try await terminal(manager, other)
+        let later = try await manager.enqueue(request(a, host: "A", destination: "/later", batch: UUID()))
+        let laterQuestion = try await pending(manager, later)
+        let cancelLater = await manager.cancelPendingDecision(laterQuestion); XCTAssertTrue(cancelLater)
+        _ = try await terminal(manager, later)
+        for name in ["out", "second", "later"] { XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent(name)), Data(name.utf8)) }
+        for name in ["out (1)", "second (1)"] { XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent(name)), payload(44)) }
+        XCTAssertEqual(try Data(contentsOf: g.destinationURL.appendingPathComponent("out")), Data("host B".utf8))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: g.destinationURL.path), ["out"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.destinationURL.appendingPathComponent("later (1)").path))
+        await manager.cancelAllAndWait(); await f.cleanup(); await g.cleanup()
+    }
+
+    func testUserSessionLeaseSurvivesIdleAndObservationButRetiredAndUnownedServicesClose() async throws {
+        let f = try ManagerFixture(), closed = ManagerFlag()
+        let service = ManagedLocalProbe(f.source, beforeClose: { await closed.set() })
+        let manager = TransferManager(idleTimeout: .milliseconds(30))
+        let first = try await manager.registerSessionServiceWithSnapshot(service, hostID: "fixture")
+        let second = try await manager.registerSessionServiceWithSnapshot(service, hostID: "fixture")
+        var observer: Task<Void, Never>? = Task { guard let updates = try? await manager.updates() else { return }; for await _ in updates { } }
+        observer?.cancel(); await observer?.value; observer = nil
+        try await Task.sleep(for: .milliseconds(100))
+        await manager.closeIdleServices()
+        let closedWhileHeld = await closed.value, heldSnapshot = await manager.snapshot()
+        XCTAssertFalse(closedWhileHeld)
+        XCTAssertEqual(heldSnapshot.services.map(\.id), [first.id])
+        await manager.releaseSessionService(first.lease); await manager.releaseSessionService(first.lease)
+        try await Task.sleep(for: .milliseconds(50)); let firstReleaseClosed = await closed.value; XCTAssertFalse(firstReleaseClosed)
+        let stranger = TransferManager(idleTimeout: nil)
+        await stranger.releaseSessionService(second.lease)
+        let wrongManagerClosed = await closed.value; XCTAssertFalse(wrongManagerClosed)
+        await manager.releaseSessionService(second.lease)
+        let lastReleaseClosed = await closed.value, released = await manager.snapshot()
+        XCTAssertTrue(lastReleaseClosed); XCTAssertTrue(released.services.isEmpty)
+        let newer = try await manager.registerSessionServiceWithSnapshot(f.destination, hostID: "fixture")
+        await manager.releaseSessionService(second.lease)
+        let current = await manager.snapshot(); XCTAssertEqual(current.services.map(\.id), [newer.id])
+        await manager.cancelAllAndWait(); let final = await manager.snapshot(); XCTAssertTrue(final.services.isEmpty)
+        await stranger.cancelAllAndWait(); await f.cleanup()
+    }
+    func testRetiringUserSessionWhileOperationRunsWaitsForItsActualLeaseThenCloses() async throws {
+        let f = try ManagerFixture(), gate = ManagerBarrier(), closed = ManagerFlag()
+        let service = ManagedLocalProbe(f.source, beforeRead: { try await gate.block($0) }, beforeClose: { await closed.set() })
+        try f.put("file", bytes: payload(16))
+        let manager = TransferManager(idleTimeout: .milliseconds(25))
+        let session = try await manager.registerSessionServiceWithSnapshot(service, hostID: "fixture")
+        let id = try await manager.registerService(f.destination)
+        let jobID = try await manager.enqueue(request((session.id, id)))
+        try await waitUntil { await gate.arrived }
+        await manager.releaseSessionService(session.lease)
+        try await Task.sleep(for: .milliseconds(70)); let closedDuringJob = await closed.value; XCTAssertFalse(closedDuringJob)
+        await gate.release()
+        let result = try await terminal(manager, jobID); XCTAssertEqual(result.state, .succeeded)
+        try await waitUntil { await closed.value }
+        let final = await manager.snapshot(); XCTAssertFalse(final.services.contains { $0.id == session.id })
+        XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent("out")), payload(16))
+        await manager.cancelAllAndWait(); await f.cleanup()
+    }
     func testBoundedQueueFIFOAndByteProgressThroughMetadataStream() async throws {
         let f = try ManagerFixture(); let bytes = payload(); try f.put("file", bytes: bytes)
         let gate = ManagerBarrier(), progress = ProgressRecorder()
@@ -578,7 +683,7 @@ final class TransferManagerTests: XCTestCase, @unchecked Sendable {
         await manager.cancelAllAndWait(); await f.cleanup()
     }
 
-    func testUnknownServerCapabilitiesNeverAcquireInventedConfirmation() async throws {
+    func testMismatchedEvidenceRejectsButUploadCanVerifyCurrentServerAutomatically() async throws {
         let f = try ManagerFixture(); try f.put("file", bytes: payload(66))
         let remotePolicyOnly = ManagedLocalProbe(f.destination, remotePolicy: true)
         let manager = TransferManager(idleTimeout: nil)
@@ -592,8 +697,9 @@ final class TransferManagerTests: XCTestCase, @unchecked Sendable {
         let risk = try await pending(manager, id, state: .waitingRisk)
         let accepted = await manager.resolve(risk, answer: .risk(accepted: true)); XCTAssertTrue(accepted)
         let result = try await terminal(manager, id)
-        XCTAssertEqual(result.state, .failed); XCTAssertEqual(result.error?.kind, .needsCapabilityConfirmation)
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.destinationURL.path).isEmpty)
+        XCTAssertEqual(result.state, .succeeded); XCTAssertNil(result.error)
+        XCTAssertEqual(try Data(contentsOf: f.destinationURL.appendingPathComponent("out")), payload(66))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: f.destinationURL.path), ["out"])
         await manager.cancelAllAndWait(); await f.cleanup()
     }
 

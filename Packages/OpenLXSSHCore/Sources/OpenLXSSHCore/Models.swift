@@ -205,6 +205,7 @@ public enum TerminalTheme: String, Codable, Sendable, DatabaseValueConvertible {
 public enum TerminalCursorShape: String, Codable, Sendable, DatabaseValueConvertible { case block, underline, bar }
 /// Management navigation only. No option may restore an SSH session or answer authentication.
 public enum StartupManagementPage: String, Codable, Sendable, DatabaseValueConvertible { case vault, sftp, lastManagement }
+public enum FileConflictPreference: String, Codable, CaseIterable, Sendable, DatabaseValueConvertible { case autoRename, overwrite, skip, ask }
 public struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "settings"
     public static let maximumHistoryLines = 100_000
@@ -221,6 +222,7 @@ public struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, Persis
     public var cursorShape: TerminalCursorShape = .block
     public var cursorBlink: Bool = true
     public var startupPage: StartupManagementPage = .vault
+    public var fileConflictPolicy: FileConflictPreference = .ask
     public init() {}
 
     /// Old metadata omits new preferences. Missing values use safe defaults; present,
@@ -240,6 +242,7 @@ public struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, Persis
         cursorShape = try values.decodeIfPresent(TerminalCursorShape.self, forKey: .cursorShape) ?? .block
         cursorBlink = try values.decodeIfPresent(Bool.self, forKey: .cursorBlink) ?? true
         startupPage = try values.decodeIfPresent(StartupManagementPage.self, forKey: .startupPage) ?? .vault
+        fileConflictPolicy = try values.decodeIfPresent(FileConflictPreference.self, forKey: .fileConflictPolicy) ?? .ask
         try validate()
     }
 

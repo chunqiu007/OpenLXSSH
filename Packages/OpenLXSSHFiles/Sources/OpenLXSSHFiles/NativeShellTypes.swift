@@ -19,11 +19,11 @@ public struct NativeShellOptions: Sendable {
     public let operationTimeout: TimeInterval
     public let interactionTimeout: TimeInterval
     public let authenticationTimeout: TimeInterval
-    /// Explicit experimental round-trip policy. Nil preserves the existing disabled default.
-    public let liveness: NativeShellLivenessCandidate?
+    /// OS TCP path/peer detection. Nil disables it; never opens an auxiliary SSH channel.
+    public let keepalive: NativeTCPKeepalivePolicy?
     public init(size: NativeShellSize, operationTimeout: TimeInterval = 10,
                 interactionTimeout: TimeInterval? = nil, authenticationTimeout: TimeInterval? = nil,
-                liveness: NativeShellLivenessCandidate? = nil) throws {
+                keepalive: NativeTCPKeepalivePolicy? = nil) throws {
         let interaction = interactionTimeout ?? min(operationTimeout, 120)
         let authentication = authenticationTimeout ?? operationTimeout
         guard operationTimeout.isFinite, operationTimeout > 0, operationTimeout <= 300,
@@ -33,23 +33,44 @@ public struct NativeShellOptions: Sendable {
         }
         self.size = size; self.operationTimeout = operationTimeout
         self.interactionTimeout = interaction; self.authenticationTimeout = authentication
-        self.liveness = liveness
+        self.keepalive = keepalive
     }
 }
-/// Not OpenSSH's N independent ServerAlive requests: one pending auxiliary session-channel open
-/// has a continuous interval * maxUnresponsivePeriods deadline. Uses a remote MaxSessions slot
-/// briefly, may be audited/rate-limited, and never requests a PTY, shell, command or subsystem.
-public struct NativeShellLivenessCandidate: Equatable, Sendable {
-    public let interval: TimeInterval
-    public let maxUnresponsivePeriods: Int
-    public var responseTimeout: TimeInterval { interval * Double(maxUnresponsivePeriods) }
-    public init(interval: TimeInterval, maxUnresponsivePeriods: Int) throws {
-        guard interval.isFinite, interval >= 0.05, interval <= 3600,
-              (1...100).contains(maxUnresponsivePeriods),
-              interval * Double(maxUnresponsivePeriods) <= 36000 else {
-            throw NativeShellError(.invalidConfiguration, operation: "liveness-candidate")
+/// macOS TCP keepalive controls, not an authenticated SSH application reply guarantee.
+/// Values are exact integer seconds from the host; fractional experimental values reject.
+public struct NativeTCPKeepalivePolicy: Equatable, Sendable {
+    public let interval: Int
+    public let failedProbes: Int
+    public init(interval: Int, failedProbes: Int) throws {
+        guard (1...3600).contains(interval), (1...10).contains(failedProbes) else {
+            throw NativeShellError(.invalidConfiguration, operation: "tcp-keepalive-policy")
         }
-        self.interval = interval; self.maxUnresponsivePeriods = maxUnresponsivePeriods
+        self.interval = interval; self.failedProbes = failedProbes
+    }
+    /// Source-compatible legacy constructor validates exact integers and never clamps.
+    public init(interval: TimeInterval, maxUnresponsivePeriods: Int) throws {
+        guard interval.isFinite, interval.rounded(.towardZero) == interval,
+              interval >= 1, interval <= 3600 else {
+            throw NativeShellError(.invalidConfiguration, operation: "tcp-keepalive-policy")
+        }
+        try self.init(interval: Int(interval), failedProbes: maxUnresponsivePeriods)
+    }
+}
+@available(*, deprecated, renamed: "NativeTCPKeepalivePolicy")
+public typealias NativeShellLivenessCandidate = NativeTCPKeepalivePolicy
+/// An immutable getsockopt receipt. Disabled values are zero; no synthetic probe counters.
+public struct NativeTCPKeepaliveSnapshot: Equatable, Sendable {
+    public let enabled: Bool
+    public let idleSeconds: Int
+    public let retrySeconds: Int
+    public let failedProbes: Int
+    init(enabled: Bool, idleSeconds: Int, retrySeconds: Int, failedProbes: Int) {
+        self.enabled = enabled; self.idleSeconds = idleSeconds
+        self.retrySeconds = retrySeconds; self.failedProbes = failedProbes
+    }
+    init(_ actual: rf_tcp_keepalive) {
+        enabled = actual.enabled != 0; idleSeconds = Int(actual.idle_seconds)
+        retrySeconds = Int(actual.retry_seconds); failedProbes = Int(actual.failed_probes)
     }
 }
 public enum NativeShellPrimaryMethod: String, Equatable, Sendable { case password, publicKey }
@@ -97,14 +118,6 @@ public final class NativeShellDrainHandle: Equatable, Sendable {
     }
     public func removeCompletionObserver(_ id: UUID) { tasks.removeCompletionObserver(id) }
 }
-public struct NativeShellLivenessSnapshot: Equatable, Sendable {
-    public internal(set) var probesStarted = 0
-    public internal(set) var confirmations = 0
-    public internal(set) var remoteRejections = 0
-    public internal(set) var helpersFreed = 0
-    public internal(set) var pending = false
-    public internal(set) var helperChannels = 0
-}
 /// Facts from public libssh2 APIs only. In particular, -18/-19 never means "primary accepted".
 public enum NativeShellAuthenticationStage: Equatable, Sendable {
     case advertised(password: Bool, publicKey: Bool, keyboardInteractive: Bool)
@@ -151,53 +164,6 @@ public enum NativeShellReceive: Equatable, Sendable {
     case eof
     /// Channel closure, separate from EOF. Native/socket cleanup has completed before delivery.
     case exit(NativeShellExit)
-}
-
-enum NativeShellProbePhase: Equatable { case idle, opening, closing, freeing }
-/// Pure queue-owned scheduling policy. Only the bridge's actual matching open result advances
-/// to confirmed/rejected. Ordinary output may delay an idle probe, never settle a pending one.
-struct NativeShellLivenessState {
-    let policy: NativeShellLivenessCandidate
-    private(set) var phase: NativeShellProbePhase = .idle
-    private(set) var nextProbe: ContinuousClock.Instant
-    private(set) var deadline: ContinuousClock.Instant?
-    private(set) var facts = NativeShellLivenessSnapshot()
-    init(policy: NativeShellLivenessCandidate, now: ContinuousClock.Instant = .now) {
-        self.policy = policy; nextProbe = now.advanced(by: .seconds(policy.interval))
-    }
-    mutating func applicationRead(now: ContinuousClock.Instant = .now) {
-        if phase == .idle { nextProbe = now.advanced(by: .seconds(policy.interval)) }
-    }
-    mutating func beginIfDue(now: ContinuousClock.Instant = .now) -> Bool {
-        guard phase == .idle, now >= nextProbe else { return false }
-        phase = .opening; deadline = now.advanced(by: .seconds(policy.responseTimeout))
-        facts.probesStarted += 1; facts.pending = true
-        return true
-    }
-    func checkDeadline(now: ContinuousClock.Instant = .now) throws {
-        if let deadline, now >= deadline {
-            throw NativeShellError(.timeout, operation: phase == .opening ? "ssh-round-trip" : "ssh-probe-cleanup")
-        }
-    }
-    mutating func confirmed(cleanupTimeout: TimeInterval, now: ContinuousClock.Instant = .now) {
-        precondition(phase == .opening)
-        phase = .closing; deadline = now.advanced(by: .seconds(cleanupTimeout))
-        facts.confirmations += 1; facts.helperChannels = 1
-    }
-    mutating func rejected(now: ContinuousClock.Instant = .now) {
-        precondition(phase == .opening)
-        facts.remoteRejections += 1; settle(now: now)
-    }
-    mutating func closed() { precondition(phase == .closing); phase = .freeing }
-    mutating func freed(now: ContinuousClock.Instant = .now) {
-        precondition(phase == .freeing)
-        facts.helpersFreed += 1; facts.helperChannels = 0; settle(now: now)
-    }
-    mutating func disposed() { facts.helperChannels = 0; facts.pending = false; deadline = nil }
-    private mutating func settle(now: ContinuousClock.Instant) {
-        phase = .idle; deadline = nil; facts.pending = false
-        nextProbe = now.advanced(by: .seconds(policy.interval))
-    }
 }
 
 /// Bounds BEFORE dispatching closures, including concurrent callers. No unbounded input backlog.

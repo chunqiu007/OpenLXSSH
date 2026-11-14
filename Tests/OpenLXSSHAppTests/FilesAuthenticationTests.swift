@@ -71,6 +71,23 @@ import OpenLXSSHSecurity
         XCTAssertEqual(reads, 0)
         try await security.close(); try await repo.close()
     }
+    func testPlainPasswordAndPlainKeyAlsoInstallSeparateManualKeyboardMethod() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
+        let connector = LibSSH2FilesConnector(repository: repo, security: security, environment: SessionEnvironment(location: .isolated(root)))
+        let key = try await security.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        for kind in [AuthenticationKind.password, .privateKey] {
+            var host = host(); host.authentication = kind; host.keyRef = kind.needsKey ? key : nil
+            try await repo.apply([.insertHost(host)])
+            let prepared = try await plan(connector, host: host, input: .init(primary: .manual(.init(utf8: kind.needsKey ? "" : UUID().uuidString))))
+            XCTAssertEqual(prepared.methods.count, 2)
+            if case .keyboardInteractive = prepared.methods[1] {} else { XCTFail("Plain primary must retain manual KI capability") }
+            let metadata = try await repo.securityMetadata()
+            XCTAssertEqual(metadata.hosts.first { $0.id == host.id }?.authentication, kind, "Runtime policy must not migrate stored enums")
+        }
+        let reads = await credentials.readCount; XCTAssertEqual(reads, 0)
+        try await security.close(); try await repo.close()
+    }
     func testMetadataOnlyHostRefreshKeepsRequestAndPreparedPasswordAuthorized() async throws {
         let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
         let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
