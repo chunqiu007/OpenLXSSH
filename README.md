@@ -1,30 +1,30 @@
 # OpenLXSSH
 
-**English** · [简体中文](README.zh-CN.md)
+**简体中文** · [English](README.en.md)
 
-OpenLXSSH is a lightweight, native **SSH and SFTP client for Apple Silicon Macs**. It runs on M-series chips with **macOS 26 or later**. The desktop app uses SwiftUI and AppKit, with no Electron runtime or cloud account required.
+OpenLXSSH 是一款为 **Apple Silicon（M 系列芯片）Mac** 打造的轻量原生 **SSH 和 SFTP 客户端**，支持 **macOS 26 及以上版本**。应用使用 SwiftUI 和 AppKit 开发，无需 Electron 运行环境或云端账号。
 
-## Download the trial
+## 下载试用版
 
-[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v1.0.0-trial.2026110501/OpenLXSSH-Trial-1.0.0-2026110501-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v1.0.0-trial.2026110501)
+[下载 Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v1.0.0-trial.2026110501/OpenLXSSH-Trial-1.0.0-2026110501-arm64.dmg) · [发布说明](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v1.0.0-trial.2026110501)
 
-Open the DMG for **1.0.0 (build 2026110501)**, drag the app into Applications, then launch it from Applications. The trial was signed offline with Developer ID. Apple notarization is still outstanding, so Gatekeeper may block it on another Mac. If that happens, include the exact macOS message in your feedback.
+打开 **1.0.0（构建号 2026110501）** 的 DMG，将应用拖到「应用程序」，然后从「应用程序」启动。试用版已使用 Developer ID 离线签名，Apple 公证尚未完成，其他 Mac 上的 Gatekeeper 可能会拦截。若遇到拦截，请在反馈中附上 macOS 提示原文。
 
-## Memory usage
+## 内存占用
 
-On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–111 MiB** of resident memory (RSS) at idle. With **five simultaneous SSH sessions**, the app and its SSH processes averaged **125.1 MiB** combined. The peak was **135.4 MiB** while producing terminal output and switching tabs. The current trial is a later build, and these measurements apply to build 3. [Measurement details](docs/reports/mac26-takeover.md)
+在 Apple Silicon Mac 上，先前的 **1.0.0 build 3** 空闲时实测驻留内存（RSS）约为 **107–111 MiB**。同时运行 **5 个 SSH 会话**时，应用和 SSH 子进程合计平均约 **125.1 MiB**。终端持续输出并切换标签时，实测峰值为 **135.4 MiB**。以上数据对应 build 3，当前试用包是后续构建。[完整测量记录](docs/reports/mac26-takeover.md)
 
-## What you can do
+## 主要功能
 
-- Organize hosts with groups, tags, and favorites, and keep independent SSH sessions open in tabs.
-- Sign in with a password or SSH key and respond to server prompts such as MFA. Save supported credentials in macOS Keychain and verify host fingerprints when connecting.
-- Browse local and remote folders side by side over SFTP, transfer files and folders, and manage progress and name conflicts.
-- Connect to a jump host and run a second `ssh` command manually in its terminal. The SFTP browser connects directly to its target server.
+- 用分组、标签和收藏管理主机，在独立的终端标签中保持多个 SSH 会话。
+- 支持密码和 SSH 密钥登录，以及服务器要求的 MFA 等交互式验证。支持将凭据保存到 macOS 钥匙串，并在连接时核对主机指纹。
+- 通过 SFTP 双栏浏览本地和远端目录，上传或下载文件和文件夹，查看传输进度并处理同名冲突。
+- 登录跳板机后，在远端终端里手动执行第二次 `ssh`。SFTP 文件浏览器直接连接目标服务器。
 
-## Help test OpenLXSSH
+## 帮忙测试
 
-1. Install and launch the trial on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
-2. Open and switch between terminal tabs. If you use a jump host, try your regular nested SSH workflow.
-3. Upload and download a small test file in SFTP. Try a same-name transfer and check that **Cancel**, **Replace**, and **Keep Both** behave as you expect.
+1. 在 M 系列 Mac 上安装并启动试用版。添加一台有权限测试的主机，核对主机指纹，再用平时的认证方式连接。
+2. 新建并切换多个终端标签。平时使用跳板机的话，可以试一下手动嵌套 SSH。
+3. 用 SFTP 上传和下载一个小测试文件，再试一次同名传输，检查「取消」「替换」「都保留」是否符合预期。
 
-When reporting an issue, include your Mac chip, macOS version, app build, reproduction steps, and expected and actual behavior. Remove passwords, private keys, one-time codes, and real host details from logs and screenshots. [Open a GitHub issue](https://github.com/chunqiu007/OpenLXSSH/issues/new)
+反馈时请附上 Mac 芯片型号、macOS 版本、应用构建号、复现步骤、预期行为和实际结果。提交日志或截图前请去除密码、私钥、一次性验证码及真实主机信息。[提交 GitHub Issue](https://github.com/chunqiu007/OpenLXSSH/issues/new)
