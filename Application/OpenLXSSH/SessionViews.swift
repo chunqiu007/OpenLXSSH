@@ -9,7 +9,30 @@ struct SessionWorkspaceView: View {
         VStack(spacing: 0) {
             IssueView(issue: controller.issue) { controller.issue = nil }.padding(.horizontal, 10)
             ZStack {
-                if controller.tabs.isEmpty { Text("选择主机并打开 SSH。不会恢复先前会话。").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                if controller.tabs.isEmpty {
+                    VStack(spacing: 12) {
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(DesktopStyle.terminalChrome)
+                            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DesktopStyle.border))
+                            .frame(width: 52, height: 52)
+                            .overlay {
+                                Image(systemName: "terminal")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        Text("暂无打开的终端会话")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("从保险箱选择主机点击连接，或通过新标签开启 SSH 终端。不会自动恢复上次关闭前的会话。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 360)
+                    }
+                    .padding(32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(DesktopStyle.terminalBackground)
+                    .environment(\.colorScheme, .dark)
+                }
                 ForEach(controller.tabs) { tab in
                     NativeWorkspacePage(id: "workspace.session." + tab.id.uuidString,
                                         isVisible: controller.workspaceVisible && controller.selectedTabID == tab.id, appearance: .darkAqua) {
@@ -39,62 +62,172 @@ private struct SessionDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if tab.state != .connected {
-                HStack(spacing: 8) {
-                    if tab.state == .preparing || tab.state == .connectionPending { ProgressView().controlSize(.small) }
-                    Text(tab.status).font(.caption).lineLimit(1)
-                    Spacer(minLength: 8)
-                    if let prompt = tab.trust.first {
-                        NativeButton(title: "核实主机身份…", id: "terminal.trust") { controller.present(.trust(prompt), tabID: tab.id) }.fixedSize()
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 10) {
+                        if tab.state == .preparing || tab.state == .connectionPending {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Circle()
+                                .fill(statusDotColor)
+                                .frame(width: 8, height: 8)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(tab.status)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                            if let endpoint = tab.host?.vaultEndpoint {
+                                Text(verbatim: endpoint)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        if let prompt = tab.trust.first {
+                            NativeButton(title: "核实主机身份…", id: "terminal.trust") { controller.present(.trust(prompt), tabID: tab.id) }.fixedSize()
+                        }
+                        if let prompt = tab.authentication {
+                            NativeButton(title: "继续认证…", id: "terminal.authenticate") { controller.present(.authentication(prompt), tabID: tab.id) }.fixedSize()
+                        }
+                        if tab.canReconnect {
+                            Button("手动重连") { controller.performTerminalAction(.reconnect, tabID: tab.id) }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            Button("查看配置") { controller.showConfiguration(tabID: tab.id) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                        if tab.isReusable {
+                            Button("取消连接") { controller.disconnect(tab.id) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                        Button { controller.performTerminalAction(.connectionInfo, tabID: tab.id) } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("连接信息")
+                        .accessibilityLabel("连接信息")
                     }
-                    if let prompt = tab.authentication {
-                        NativeButton(title: "继续认证…", id: "terminal.authenticate") { controller.present(.authentication(prompt), tabID: tab.id) }.fixedSize()
+                    if tab.state == .preparing || tab.state == .connectionPending {
+                        Text("如果 macOS 询问本地网络访问，请允许后继续；也可随时取消连接。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    if tab.canReconnect {
-                        Button("手动重连") { controller.performTerminalAction(.reconnect, tabID: tab.id) }
-                        Button("在保险箱查看此配置") { controller.showConfiguration(tabID: tab.id) }
-                    }
-                    if tab.isReusable { Button("取消连接") { controller.disconnect(tab.id) } }
-                    Button { controller.performTerminalAction(.connectionInfo, tabID: tab.id) } label: { Image(systemName: "info.circle") }
-                        .buttonStyle(.plain).help("连接信息").accessibilityLabel("连接信息")
-                }.padding(.horizontal, 12).padding(.vertical, 6).background(DesktopStyle.terminalChrome)
-                if tab.state == .preparing || tab.state == .connectionPending {
-                    Text("如果 macOS 询问本地网络访问，请允许后继续；也可取消连接。")
-                        .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 6)
-                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(DesktopStyle.terminalChrome)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(DesktopStyle.border).frame(height: 1)
                 }
             }
             if tab.searchVisible {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    NativeField(placeholder: "搜索当前标签历史", id: "terminal.search", text: $tab.searchText,
-                                focusRequest: tab.searchFocusRequest,
-                                onSubmit: { tab.searchHistory(backwards: $0) }, onCancel: { tab.closeSearch() })
-                        .frame(maxWidth: 360).frame(height: 25)
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        NativeField(placeholder: "搜索当前标签历史", id: "terminal.search", text: $tab.searchText,
+                                    focusRequest: tab.searchFocusRequest,
+                                    onSubmit: { tab.searchHistory(backwards: $0) }, onCancel: { tab.closeSearch() }, borderless: true)
+                            .frame(height: 22)
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DesktopStyle.border))
+                    .frame(maxWidth: 340)
                     NativeButton(title: "上一处", id: "terminal.search.previous", enabled: !tab.searchText.isEmpty) { tab.searchHistory(backwards: true) }.fixedSize()
                     NativeButton(title: "下一处", id: "terminal.search.next", enabled: !tab.searchText.isEmpty) { tab.searchHistory() }.fixedSize()
-                    if tab.searchFound == false { Text("无结果").font(.caption).foregroundStyle(.secondary) }
-                    else if tab.searchFound == true { Text("\(tab.searchMatchIndex) / \(tab.searchMatchCount)\(tab.searchMatchCount == 1000 ? "+" : "")").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                    if tab.searchFound == false {
+                        Text("无结果").font(.caption).foregroundStyle(.secondary)
+                    } else if tab.searchFound == true {
+                        Text("\(tab.searchMatchIndex) / \(tab.searchMatchCount)\(tab.searchMatchCount == 1000 ? "+" : "")")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer(minLength: 0)
                     NativeButton(title: "关闭搜索", id: "terminal.search.close") { tab.closeSearch() }.fixedSize()
-                }.padding(.horizontal, 10).padding(.vertical, 6).background(DesktopStyle.terminalChrome)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(DesktopStyle.terminalChrome)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(DesktopStyle.border).frame(height: 1)
+                }
             }
             if tab.issue != nil {
                 VStack(alignment: .leading, spacing: 6) {
                     IssueView(issue: tab.issue) { tab.issue = nil }
                     if let detail = tab.driver?.failureDetail {
-                        Button(showsDiagnostic ? "收起脱敏详情" : "查看脱敏详情") { showsDiagnostic.toggle() }.font(.caption)
-                        if showsDiagnostic { Text(verbatim: detail.diagnostic).font(.caption.monospaced()).textSelection(.enabled) }
+                        Button {
+                            showsDiagnostic.toggle()
+                        } label: {
+                            Label(showsDiagnostic ? "收起脱敏详情" : "查看脱敏详情",
+                                  systemImage: showsDiagnostic ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .padding(.top, 2)
+                        if showsDiagnostic {
+                            Text(verbatim: detail.diagnostic)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
+                        }
                     }
-                }.padding(8).background(DesktopStyle.terminalChrome)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(DesktopStyle.terminalChrome)
             }
             if let driver = tab.driver {
-                RetainedTerminalView(terminal: driver.terminal, focusRequest: tab.terminalFocusRequest).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 4).padding(.vertical, 2)
-            } else if tab.state == .preparing {
-                ProgressView("准备连接…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView("连接尚未启动", systemImage: "terminal", description: Text("检查配置后手动重试。"))
+                RetainedTerminalView(terminal: driver.terminal, focusRequest: tab.terminalFocusRequest)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+            } else if tab.state == .preparing {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("准备连接…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(DesktopStyle.terminalChrome)
+                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DesktopStyle.border))
+                        .frame(width: 50, height: 50)
+                        .overlay {
+                            Image(systemName: "terminal")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    Text("连接尚未启动")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("检查配置或网络连通性后可点击下方按钮重试。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    if tab.canReconnect {
+                        HStack(spacing: 8) {
+                            Button("立即重连") { controller.performTerminalAction(.reconnect, tabID: tab.id) }
+                                .buttonStyle(.borderedProminent)
+                            Button("查看配置") { controller.showConfiguration(tabID: tab.id) }
+                                .buttonStyle(.bordered)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(tab.driver.map { Color(nsColor: $0.terminal.nativeBackgroundColor) } ?? DesktopStyle.terminalBackground)
@@ -121,6 +254,14 @@ private struct SessionDetailView: View {
         case .trust(let prompt): controller.cancelTrust(prompt, tabID: tab.id)
         case .authentication(let prompt): controller.cancelChallenge(prompt, tabID: tab.id)
         case nil: break
+        }
+    }
+    private var statusDotColor: Color {
+        switch tab.state {
+        case .connected: return DesktopStyle.statusGreen
+        case .awaitingTrust, .authenticating, .preparing, .connectionPending: return DesktopStyle.statusAmber
+        case .failed: return DesktopStyle.statusRed
+        case .idle, .disconnected, .closing, .closed: return .secondary
         }
     }
 }
@@ -219,36 +360,77 @@ private struct TrustChallengeView: View {
     var dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(prompt.changed == nil ? "首次连接主机身份" : "主机密钥已变化，连接已阻止").font(.title2).bold()
-            Text(tab.title).font(.headline)
-            Text(verbatim: prompt.host.address.value + ":" + String(prompt.host.port.value)).textSelection(.enabled)
-            Text(verbatim: prompt.algorithm).font(.system(.body, design: .monospaced))
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill((prompt.changed == nil ? DesktopStyle.statusAmber : DesktopStyle.statusRed).opacity(0.14))
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        Image(systemName: prompt.changed == nil ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(prompt.changed == nil ? DesktopStyle.statusAmber : DesktopStyle.statusRed)
+                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(prompt.changed == nil ? "首次连接主机身份" : "主机密钥已变化，连接已阻止")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text(verbatim: "\(tab.title) · \(prompt.host.address.value):\(prompt.host.port.value) · \(prompt.algorithm)")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
             if let changed = prompt.changed {
-                Text("已知指纹").font(.caption).foregroundStyle(.secondary)
-                Text(verbatim: changed.expectedFingerprint).font(.body.monospaced()).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("已知指纹").font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: changed.expectedFingerprint)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
+                }
             }
-            HStack {
-                Text(prompt.changed == nil ? "服务器指纹" : "本次指纹").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button(copiedFingerprint ? "已复制指纹" : "复制指纹", systemImage: copiedFingerprint ? "checkmark" : "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    copiedFingerprint = NSPasteboard.general.setString(prompt.fingerprint, forType: .string)
-                }.buttonStyle(.borderless).accessibilityIdentifier("trust.copyFingerprint")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(prompt.changed == nil ? "服务器指纹" : "本次指纹").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(copiedFingerprint ? "已复制指纹" : "复制指纹", systemImage: copiedFingerprint ? "checkmark" : "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        copiedFingerprint = NSPasteboard.general.setString(prompt.fingerprint, forType: .string)
+                    }.buttonStyle(.borderless).accessibilityIdentifier("trust.copyFingerprint")
+                }
+                Text(verbatim: prompt.fingerprint)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
             }
-            Text(verbatim: prompt.fingerprint).font(.body.monospaced()).textSelection(.enabled)
             Text(prompt.changed == nil ? "请核对服务器指纹。仅此次继续不会保存；添加后，后续连接可使用此密钥。" : "服务器身份与保存记录不一致。请核实后在已知主机中处理，当前连接已阻止。")
-            DisclosureGroup("连接详情") { Text(verbatim: prompt.source).font(.caption).foregroundStyle(.secondary) }
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("连接详情") {
+                Text(verbatim: prompt.source).font(.caption).foregroundStyle(.secondary)
+            }.font(.caption)
             IssueView(issue: tab.issue) { tab.issue = nil }
+            Spacer(minLength: 0)
             HStack {
                 NativeButton(title: "关闭", id: "trust.cancel", enabled: !submitting) { controller.cancelTrust(prompt, tabID: tab.id); dismiss() }.fixedSize()
+                Spacer(minLength: 8)
                 if prompt.changed == nil {
                     NativeButton(title: "仅此次继续", id: "trust.once", enabled: !submitting) { accept(.once) }.fixedSize()
                     NativeButton(title: "添加并继续", id: "trust.accept", enabled: !submitting, isDefault: true) { accept(.persistent) }.fixedSize()
                 } else if controller.trustEnvironment != nil {
                     Button("打开已知主机管理…") { management = true }
+                        .buttonStyle(.borderedProminent)
                 }
             }
-        }.padding(24).frame(width: 650)
+        }
+        .padding(24)
+        .frame(width: 650)
+        .background(DesktopStyle.background)
         .sheet(isPresented: $management) {
             if let environment = controller.trustEnvironment { TrustManagementView(environment: environment) { management = false } }
         }
@@ -299,15 +481,36 @@ struct AuthenticationChallengeView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title).font(.title2).bold()
-            Text(tab.title + " · " + (tab.host?.vaultEndpoint ?? "当前会话")).font(.caption)
-            Text(explanation).font(.caption).foregroundStyle(.secondary)
-            ScrollView { fields.frame(maxWidth: .infinity, alignment: .leading) }
-                .frame(minHeight: 100, maxHeight: .infinity)
-                .accessibilityIdentifier("authentication.fields.viewport")
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(DesktopStyle.iconSurface)
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 18, weight: .semibold))
+                    Text(tab.title + " · " + (tab.host?.vaultEndpoint ?? "当前会话"))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(explanation).font(.system(size: 12)).foregroundStyle(.secondary)
+            ScrollView {
+                fields
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+            }
+            .frame(minHeight: 100, maxHeight: .infinity)
+            .accessibilityIdentifier("authentication.fields.viewport")
             IssueView(issue: tab.issue) { tab.issue = nil }
             HStack {
                 NativeButton(title: "取消本次连接", id: "authentication.cancel") { clear(); controller.cancelChallenge(prompt, tabID: tab.id); dismiss() }.fixedSize()
+                Spacer(minLength: 8)
                 if case .legacyAskpass(let kind, _) = prompt.payload, kind == .confirmation {
                     NativeButton(title: "拒绝", id: "authentication.decline") { submit(.legacy(.confirm(false))) }.fixedSize()
                     NativeButton(title: "确认", id: "authentication.confirm", isDefault: true) { submit(.legacy(.confirm(true))) }.fixedSize()
@@ -315,7 +518,10 @@ struct AuthenticationChallengeView: View {
                     NativeButton(title: answers.isEmpty ? "已阅，继续" : "继续", id: "authentication.submit", isDefault: true) { sendAnswers() }.fixedSize()
                 }
             }
-        }.padding(24).frame(width: 610, height: presentationHeight)
+        }
+        .padding(24)
+        .frame(width: 610, height: presentationHeight)
+        .background(DesktopStyle.background)
         .onAppear { focusedIndex = answers.isEmpty ? nil : 0 }
         .onDisappear { clear() }
     }

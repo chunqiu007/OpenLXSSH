@@ -1191,13 +1191,32 @@ extension AuthenticationKind {
 }
 
 enum ColorPreset: String, CaseIterable {
-    case nord = "深色终端（默认）", solarized = "Solarized", classic = "Classic", custom = "自定义"
+    case nord = "深海夜色（默认）"
+    case termiusNight = "Termius Night"
+    case macOSPro = "macOS Pro"
+    case tokyoNight = "Tokyo Night"
+    case dracula = "Dracula"
+    case oneDark = "One Dark"
+    case solarized = "Solarized"
+    case classic = "Classic"
+    case custom = "自定义"
     var colors: (String, String, String) {
         switch self {
         case .nord: ("#D6D6CC", "#101010", "#D6D6CC")
+        case .termiusNight: ("#E2E8F0", "#161B26", "#4DA3FF")
+        case .macOSPro: ("#F2F2F2", "#141414", "#9AA5B4")
+        case .tokyoNight: ("#C0CAF5", "#1A1B26", "#7AA2F7")
+        case .dracula: ("#F8F8F2", "#282A36", "#BD93F9")
+        case .oneDark: ("#ABB2BF", "#1E222A", "#528BFF")
         case .solarized: ("#839496", "#002B36", "#93A1A1")
         case .classic: ("#E5E5E5", "#000000", "#00FF00")
         case .custom: ("#D8DEE9", "#20242C", "#D8DEE9")
+        }
+    }
+    var previewColors: (foreground: String, background: String, cursor: String) {
+        switch self {
+        case .nord: ("#E2E8F0", "#141821", "#E2E8F0")
+        default: colors
         }
     }
     static func matching(_ value: AppSettings) -> ColorPreset {

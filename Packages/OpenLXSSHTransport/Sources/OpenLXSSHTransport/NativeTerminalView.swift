@@ -44,8 +44,30 @@ public enum TerminalDesktopAction: String, CaseIterable {
 @MainActor
 public final class NativeTerminalView: TerminalView {
     public private(set) var explicitColorMode: TerminalColorMode = .system
-    public static let desktopBackground = NSColor(srgbRed: 16.0 / 255, green: 16.0 / 255, blue: 16.0 / 255, alpha: 1)
-    public static let desktopForeground = NSColor(srgbRed: 214.0 / 255, green: 214.0 / 255, blue: 204.0 / 255, alpha: 1)
+    public static let desktopBackground = NSColor(srgbRed: 20.0 / 255, green: 24.0 / 255, blue: 33.0 / 255, alpha: 1)
+    public static let desktopForeground = NSColor(srgbRed: 226.0 / 255, green: 232.0 / 255, blue: 240.0 / 255, alpha: 1)
+    /// Balanced 16-color ANSI palette inspired by Termius and macOS Terminal Pro for dark surfaces.
+    public static let desktopAnsiPalette: [Color] = [
+        ansiColor(0x1E, 0x24, 0x30), // 0 black
+        ansiColor(0xF7, 0x76, 0x8E), // 1 red
+        ansiColor(0x78, 0xD6, 0x9B), // 2 green
+        ansiColor(0xE0, 0xAF, 0x68), // 3 yellow
+        ansiColor(0x7A, 0xA2, 0xF7), // 4 blue
+        ansiColor(0xBB, 0x9A, 0xF7), // 5 magenta
+        ansiColor(0x7D, 0xCF, 0xFF), // 6 cyan
+        ansiColor(0xCB, 0xD5, 0xE1), // 7 white
+        ansiColor(0x56, 0x61, 0x7A), // 8 bright black
+        ansiColor(0xFF, 0x8F, 0xA3), // 9 bright red
+        ansiColor(0x9A, 0xE6, 0xB4), // 10 bright green
+        ansiColor(0xF6, 0xC1, 0x77), // 11 bright yellow
+        ansiColor(0x89, 0xB4, 0xFA), // 12 bright blue
+        ansiColor(0xCB, 0xA6, 0xF7), // 13 bright magenta
+        ansiColor(0x89, 0xDC, 0xEB), // 14 bright cyan
+        ansiColor(0xF1, 0xF5, 0xF9), // 15 bright white
+    ]
+    private static func ansiColor(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> Color {
+        Color(red: UInt16(r) * 257, green: UInt16(g) * 257, blue: UInt16(b) * 257)
+    }
     public var inputEnabled = true { didSet { updateInputEventMonitor() } }
     private var inputEventMonitor: Any?
     public var onDesktopAction: ((TerminalDesktopAction) -> Void)?
@@ -83,6 +105,7 @@ public final class NativeTerminalView: TerminalView {
         super.init(frame: NSRect(x: 0, y: 0, width: 900, height: 520),
                    font: .monospacedSystemFont(ofSize: 14, weight: .regular), options: TerminalSettings.options)
         setAccessibilityIdentifier("OpenLXSSH.terminal")
+        installColors(Self.desktopAnsiPalette)
         applySystemColors(for: effectiveAppearance)
     }
     public required init?(coder: NSCoder) { fatalError("Use init()") }

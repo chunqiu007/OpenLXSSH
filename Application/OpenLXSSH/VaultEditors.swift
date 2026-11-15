@@ -19,6 +19,8 @@ struct VaultHostEditor: View {
     @StateObject private var closeReview: VaultHostCloseReview
     @State private var advanced = false
     @StateObject private var sheets = PresentationOwner<VaultEditorSheet.Content>()
+    @State private var showsValidationErrors = false
+    @State private var editedFields: Set<String> = []
     @FocusState private var focusedField: String?
     @Binding private var closeRequest: (@MainActor () -> Bool)?
     private let registerClose: ((@escaping @MainActor () -> Bool) -> Void)?
@@ -75,11 +77,19 @@ struct VaultHostEditor: View {
     private var issue: AppIssue? { get { editor.issue } nonmutating set { editor.issue = newValue } }
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(draft.isNew ? "新建主机" : "编辑主机").font(.title2).bold()
+            HStack(spacing: 12) {
+                Image(systemName: "server.rack")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 34, height: 34)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(draft.isNew ? "新建主机" : "编辑主机").font(.title3).bold()
+                    Text("配置 SSH 地址、认证方式与保活选项").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button { requestClose() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭主机编辑")
-            }.padding(20)
+            }.padding(.horizontal, 20).padding(.vertical, 16)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -153,14 +163,39 @@ struct VaultHostEditor: View {
                             Text("附加验证按服务器实际提示人工回答；不会把本次密码自动填入附加问题。").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    DisclosureGroup("高级", isExpanded: $advanced) {
+                    DisclosureGroup(isExpanded: $advanced) {
                         VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 6) {
+                                Text("快速预设").font(.caption).foregroundStyle(.secondary)
+                                ForEach([("高稳 15 秒", "15", "3"), ("标准 30 秒", "30", "3"), ("省电 60 秒", "60", "3"), ("关闭", "0", "3")], id: \.0) { label, iv, cnt in
+                                    let active = draftInput.interval.wrappedValue == iv && draftInput.count.wrappedValue == cnt
+                                    Button(label) {
+                                        draftInput.interval.wrappedValue = iv
+                                        draftInput.count.wrappedValue = cnt
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .tint(active ? .accentColor : .secondary)
+                                }
+                            }
                             field("TCP 保活间隔（秒）", key: "interval", text: draftInput.interval)
                             field("TCP 失败探测次数", key: "count", text: draftInput.count)
                             Text("系统使用此空闲/重试间隔及失败探测次数检测 TCP 失联，不申请额外 SSH 通道。实际时刻由系统调度；TCP 仍响应时不代表 SSH 程序正常。间隔 0 关闭；修改只影响新连接。").font(.caption).foregroundStyle(.secondary)
                             Text("TCP 保活不执行远端命令；不能保证远端任务在断线后继续。").font(.caption).foregroundStyle(.secondary)
                         }.padding(.top, 10)
-                    }.padding(16).background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 8))
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("高级 · 长连接保活")
+                            Spacer()
+                            DesktopBadge(
+                                text: draft.configuration.keepaliveInterval == 0 ? "保活已关闭" : "保活 \(draft.configuration.keepaliveInterval) 秒",
+                                color: draft.configuration.keepaliveInterval == 0 ? .secondary : DesktopStyle.statusGreen,
+                                fill: draft.configuration.keepaliveInterval == 0 ? DesktopStyle.separator : DesktopStyle.statusGreen.opacity(0.14)
+                            )
+                        }
+                    }.padding(16)
+                        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
                     if !canConnect && !app.isEngineeringPreview { Text("当前编辑器暂时无法发起连接。可先保存配置后从主机列表连接；未记住的本次输入会在关闭后清除。").font(.caption).foregroundStyle(.secondary) }
                     IssueView(issue: issue) { issue = nil }
                 }.padding(20).disabled(!editor.canEdit)
@@ -245,6 +280,7 @@ struct VaultHostEditor: View {
             issue = AppModel.engineeringPreviewUnavailableIssue; return false
         }
         guard validForSave else {
+            showsValidationErrors = true
             focusedField = ["address", "name", "port", "username", "key", "interval", "count"].first { draft.fieldErrors[$0] != nil }
             return false
         }
@@ -265,19 +301,36 @@ struct VaultHostEditor: View {
             dismiss: { closeReview.cancelPending(); dismiss() }, afterDismiss: afterDismiss)
     }
     private func section<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) { Label(title, systemImage: icon).font(.caption).foregroundStyle(.secondary); content() }
-            .padding(16).frame(maxWidth: .infinity, alignment: .leading).background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 8))
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
     }
     private func field(_ title: String, key: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            TextField(title, text: text).textFieldStyle(.roundedBorder).focused($focusedField, equals: key).accessibilityIdentifier("host." + key)
+            TextField(title, text: text)
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: key)
+                .accessibilityIdentifier("host." + key)
+                .onChange(of: text.wrappedValue) { _, _ in editedFields.insert(key) }
                 .onSubmit { Task { _ = await save(connect: false) } }
             fieldError(key)
         }
     }
     @ViewBuilder private func fieldError(_ key: String) -> some View {
-        if let error = draft.fieldErrors[key] { Text(error).font(.caption).foregroundStyle(.red) }
+        if let error = draft.fieldErrors[key] {
+            let showUrgent = !draft.isNew || showsValidationErrors || editedFields.contains(key)
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(showUrgent ? DesktopStyle.statusRed : .secondary)
+        }
     }
 }
 

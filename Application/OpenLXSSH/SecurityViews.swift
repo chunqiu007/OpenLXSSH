@@ -33,22 +33,29 @@ struct SecurityManagerView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text("密钥与凭据").font(.title2).bold()
-                Spacer()
-                Menu {
-                    Button("生成 Ed25519…") { presentCreation(.generate) }
-                    Button("导入 RSA / Ed25519…") { chooseImport() }
-                } label: { Label("添加密钥", systemImage: "plus") }.disabled(model.busy || app.isEngineeringPreview)
-                Button { Task { await model.load() } } label: { Image(systemName: "arrow.clockwise") }.help("刷新").disabled(model.busy)
-                if !embedded { Button("完成", action: dismiss).disabled(model.busy) }
-            }.padding(20)
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                NativeField(placeholder: "搜索标签、算法或公钥指纹", id: "security.search", text: $search, focusRequest: searchFocusRequest).frame(height: 28)
-                if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("清除密钥搜索") }
-                Button { descending.toggle() } label: { Label("名称", systemImage: descending ? "arrow.down" : "arrow.up") }.fixedSize()
-            }.padding(.horizontal, 20).padding(.bottom, 12)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("密钥与凭据").font(.system(size: 23, weight: .semibold))
+                        Text("\(model.metadata.keys.count) 个已管理密钥 · \(model.metadata.credentials.count) 条凭据关联")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Menu {
+                        Button("生成 Ed25519…") { presentCreation(.generate) }
+                        Button("导入 RSA / Ed25519…") { chooseImport() }
+                    } label: { Label("添加密钥", systemImage: "plus") }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.busy || app.isEngineeringPreview)
+                    Button { Task { await model.load() } } label: { Image(systemName: "arrow.clockwise") }.help("刷新").disabled(model.busy)
+                    if !embedded { Button("完成", action: dismiss).disabled(model.busy) }
+                }
+                HStack(spacing: 10) {
+                    DesktopSearchField(placeholder: "搜索标签、算法或公钥指纹", id: "security.search", text: $search, focusRequest: searchFocusRequest, clearLabel: "清除密钥搜索")
+                    Button { descending.toggle() } label: { Label("名称", systemImage: descending ? "arrow.down" : "arrow.up") }.fixedSize()
+                }
+            }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
             if app.isEngineeringPreview { Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary).padding(12) }
             if model.busy { ProgressView().controlSize(.small).padding(.bottom, 8) }
             if model.metadata.keys.isEmpty && model.metadata.credentials.isEmpty {
@@ -65,19 +72,37 @@ struct SecurityManagerView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             if model.filteredKeys(search: search).isEmpty { Text("没有匹配的密钥").foregroundStyle(.secondary).padding() }
                             ForEach(model.filteredKeys(search: search, descending: descending)) { key in
+                                let isSelected = selection.selectedKeyID == key.id
                                 Button { selection.select(key) } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "key").font(.title3).foregroundStyle(.secondary)
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "key.fill")
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                                            .frame(width: 34, height: 34)
+                                            .background(isSelected ? DesktopStyle.iconSurface : DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
                                         VStack(alignment: .leading, spacing: 4) {
-                                            Text(model.label(for: key)).fontWeight(.semibold).lineLimit(1)
-                                            Text(key.algorithm.rawValue.uppercased() + (model.publicKeyBits[key.id].map { " · \($0) 位" } ?? "") + " · \(model.hostReferences(key.id).count) 台主机")
-                                                .font(.caption).foregroundStyle(.secondary)
-                                            Text(model.fingerprints[key.id] ?? "公钥指纹不可用").font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                                            HStack(spacing: 6) {
+                                                Text(model.label(for: key))
+                                                    .font(.system(size: 13, weight: .semibold))
+                                                    .lineLimit(1)
+                                                DesktopBadge(
+                                                    text: key.algorithm.rawValue.uppercased() + (model.publicKeyBits[key.id].map { " · \($0) 位" } ?? ""),
+                                                    color: isSelected ? .accentColor : .secondary,
+                                                    fill: isSelected ? DesktopStyle.iconSurface : DesktopStyle.separator
+                                                )
+                                            }
+                                            Text(model.fingerprints[key.id] ?? "公钥指纹不可用")
+                                                .font(.caption2.monospaced())
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                         }
                                         Spacer(minLength: 4)
+                                        DesktopBadge(text: "\(model.hostReferences(key.id).count) 台主机")
                                     }.padding(12).contentShape(Rectangle())
                                 }.buttonStyle(.plain)
-                                .background(selection.selectedKeyID == key.id ? Color.accentColor.opacity(0.10) : DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 8))
+                                .background(isSelected ? DesktopStyle.selection : DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+                                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(isSelected ? Color.accentColor.opacity(0.6) : DesktopStyle.border))
                                 .contextMenu {
                                     Button("复制公钥") { _ = model.copyPublicKey(key.id) }
                                     Button("复制公钥指纹") { _ = model.copyFingerprint(key.id) }
@@ -91,7 +116,8 @@ struct SecurityManagerView: View {
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     }.frame(minWidth: 270, maxWidth: .infinity)
                     if let key = model.metadata.keys.first(where: { $0.id == selection.selectedKeyID }) {
-                        keyDetail(key).frame(minWidth: 300, idealWidth: 340, maxWidth: 380)
+                        Divider()
+                        keyDetail(key).frame(minWidth: 310, idealWidth: 350, maxWidth: 390)
                     }
                 }
             }
@@ -132,33 +158,86 @@ struct SecurityManagerView: View {
     private func keyDetail(_ key: ManagedKeyReference) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("密钥详情").font(.headline)
-                TextField("公开标签", text: Binding(get: { selection.labelDraft }, set: { selection.edit($0) }))
-                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("key.label")
-                Button("保存标签") {
-                    guard let save = selection.captureSave(), save.keyID == key.id else { return }
-                    Task {
-                        let saved = await model.updateLabel(save.keyID, label: save.label)
-                        selection.complete(save, succeeded: saved)
-                        if saved { _ = await app.reload() }
+                HStack(spacing: 10) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 36, height: 36)
+                        .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("密钥详情").font(.headline)
+                        Text(key.algorithm.rawValue.uppercased() + (model.publicKeyBits[key.id].map { " · \($0) 位" } ?? ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                }.disabled(model.busy || !selection.hasChanges || (!selection.labelDraft.isEmpty && !VaultHostDraft.validText(selection.labelDraft, limit: 256)))
-                Text(key.algorithm.rawValue.uppercased() + (model.publicKeyBits[key.id].map { " · \($0) 位" } ?? "")).foregroundStyle(.secondary)
-                Text(model.fingerprints[key.id] ?? "公钥指纹不可用").font(.caption.monospaced()).textSelection(.enabled)
-                HStack { Button("复制公钥") { _ = model.copyPublicKey(key.id) }; Button("复制指纹") { _ = model.copyFingerprint(key.id) } }
-                Button("查看公钥正文…") { _ = presentations.present(.publicKey(key.id)) }
-                Divider()
-                Text("引用主机（\(model.hostReferences(key.id).count)）").font(.headline)
-                ForEach(model.hostReferences(key.id)) { host in
-                    VStack(alignment: .leading, spacing: 3) { Text(host.name); Text(host.username + "@" + host.vaultEndpoint).font(.caption).foregroundStyle(.secondary) }
                 }
-                if !model.hostReferences(key.id).isEmpty {
-                    Button("处理并解除主机引用…") { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.unlink(key.id)) }.disabled(model.busy || app.isEngineeringPreview)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("公开标签").font(.caption).foregroundStyle(.secondary)
+                    TextField("公开标签", text: Binding(get: { selection.labelDraft }, set: { selection.edit($0) }))
+                        .textFieldStyle(.roundedBorder).accessibilityIdentifier("key.label")
+                    Button("保存标签") {
+                        guard let save = selection.captureSave(), save.keyID == key.id else { return }
+                        Task {
+                            let saved = await model.updateLabel(save.keyID, label: save.label)
+                            selection.complete(save, succeeded: saved)
+                            if saved { _ = await app.reload() }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(model.busy || !selection.hasChanges || (!selection.labelDraft.isEmpty && !VaultHostDraft.validText(selection.labelDraft, limit: 256)))
                 }
-                if key.passphraseCredentialRef != nil {
-                    Button("忘记已记住口令") { guard app.allowSensitivePreviewAction() else { return }; Task { _ = await model.forgetKeyPassphrase(key.id); _ = await app.reload() } }.disabled(model.busy || app.isEngineeringPreview)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DesktopStyle.background, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("公钥指纹").font(.caption).foregroundStyle(.secondary)
+                    Text(model.fingerprints[key.id] ?? "公钥指纹不可用")
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
+                    HStack(spacing: 8) {
+                        Button("复制公钥") { _ = model.copyPublicKey(key.id) }
+                        Button("复制指纹") { _ = model.copyFingerprint(key.id) }
+                    }
+                    Button("查看公钥正文…") { _ = presentations.present(.publicKey(key.id)) }
                 }
-                Button("删除密钥…", role: .destructive) { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.deletion(key.id)) }.disabled(model.busy || app.isEngineeringPreview)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DesktopStyle.background, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("引用主机（\(model.hostReferences(key.id).count)）").font(.headline)
+                    if model.hostReferences(key.id).isEmpty {
+                        Text("暂无主机引用此密钥").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.hostReferences(key.id)) { host in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(host.name).font(.system(size: 13, weight: .medium))
+                                Text(host.username + "@" + host.vaultEndpoint).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    if !model.hostReferences(key.id).isEmpty {
+                        Button("处理并解除主机引用…") { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.unlink(key.id)) }.disabled(model.busy || app.isEngineeringPreview)
+                    }
+                    if key.passphraseCredentialRef != nil {
+                        Button("忘记已记住口令") { guard app.allowSensitivePreviewAction() else { return }; Task { _ = await model.forgetKeyPassphrase(key.id); _ = await app.reload() } }.disabled(model.busy || app.isEngineeringPreview)
+                    }
+                    Button("删除密钥…", role: .destructive) { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.deletion(key.id)) }.disabled(model.busy || app.isEngineeringPreview)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DesktopStyle.background, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+
                 Text("标签不参与认证身份。公钥可复制；没有私钥复制或导出入口。").font(.caption).foregroundStyle(.secondary)
             }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
         }.background(DesktopStyle.panel)

@@ -50,8 +50,13 @@ struct TrustManagementView: View {
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Text("已知主机").font(.title2).bold()
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("已知主机").font(.system(size: 23, weight: .semibold))
+                    Text("\(model.records.count) 条已信任主机指纹 · App 专属信任库")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer(minLength: 8)
                 Button { Task { await model.load() } } label: { Image(systemName: "arrow.clockwise") }
                     .help("刷新已知主机").accessibilityLabel("刷新已知主机")
@@ -63,18 +68,12 @@ struct TrustManagementView: View {
             }
             Text("来源：OpenLXSSH App 专属信任库。SSH 与 SFTP 共用；不读取或修改系统 ~/.ssh/known_hosts。移除后，下次连接需要重新确认该公钥。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(20)
+        }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
     }
     private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
-            NativeField(placeholder: "搜索端点、算法或公钥指纹", id: "trust.manage.search", text: $model.search, focusRequest: searchFocusRequest)
-                .frame(height: 28).accessibilityLabel("搜索已知主机端点、算法或指纹")
-            if !model.search.isEmpty {
-                Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain).accessibilityLabel("清除已知主机搜索")
-            }
-        }.padding(.horizontal, 20).padding(.bottom, 12)
+        DesktopSearchField(placeholder: "搜索端点、算法或公钥指纹", id: "trust.manage.search", text: $model.search, focusRequest: searchFocusRequest, clearLabel: "清除已知主机搜索")
+            .accessibilityLabel("搜索已知主机端点、算法或指纹")
+            .padding(.horizontal, 20).padding(.bottom, 14)
     }
     @ViewBuilder private var readFailure: some View {
         if let issue = model.loadIssue {
@@ -104,21 +103,39 @@ struct TrustManagementView: View {
     }
     private func recordRow(_ record: TrustedHostKey) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(verbatim: TrustManagementModel.endpoint(record)).font(.headline)
-                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel("端点，" + TrustManagementModel.endpoint(record))
-            Text(verbatim: record.key.algorithm).font(.caption).foregroundStyle(.secondary)
-                .accessibilityLabel("算法，" + record.key.algorithm)
-            Text(verbatim: record.key.fingerprint).font(.caption.monospaced()).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(DesktopStyle.statusGreen)
+                    .frame(width: 32, height: 32)
+                    .background(DesktopStyle.statusGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: TrustManagementModel.endpoint(record)).font(.system(size: 14, weight: .semibold))
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("端点，" + TrustManagementModel.endpoint(record))
+                    HStack(spacing: 6) {
+                        DesktopBadge(text: record.key.algorithm, color: .accentColor, fill: DesktopStyle.iconSurface)
+                            .accessibilityLabel("算法，" + record.key.algorithm)
+                        DesktopBadge(text: "App 专属信任库")
+                    }
+                }
+            }
+            Text(verbatim: record.key.fingerprint)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10)
+                .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
                 .accessibilityLabel("完整公钥指纹，" + record.key.fingerprint)
-            Text("来源：App 专属信任库").font(.caption2).foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) { copyActions(record); managementActions(record) }
                 VStack(alignment: .leading, spacing: 10) { copyActions(record); managementActions(record) }
             }
         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius))
+            .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
     }
     private func copyActions(_ record: TrustedHostKey) -> some View {
         HStack(spacing: 12) {

@@ -4,15 +4,15 @@
 
 OpenLXSSH is a lightweight, native **SSH and SFTP client for Apple Silicon Macs**. It runs on M-series chips with **macOS 26 or later**. The desktop app uses SwiftUI and AppKit, with no Electron runtime or cloud account required.
 
-## Download the trial
+## Download Release 2.0
 
-[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v1.0.0-trial.2026110501/OpenLXSSH-Trial-1.0.0-2026110501-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v1.0.0-trial.2026110501)
+[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.0/OpenLXSSH-1.0.0-20261115-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.0)
 
-Open the DMG for **1.0.0 (build 2026110501)**, drag the app into Applications, then launch it from Applications. The trial was signed offline with Developer ID. Apple notarization is still outstanding, so Gatekeeper may block it on another Mac. If that happens, include the exact macOS message in your feedback.
+Open the DMG, drag OpenLXSSH into Applications, and launch it from there. This image was packaged on November 15, 2026, and contains app version **1.0.0 (build 3)**.
 
 ## Memory usage
 
-On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–111 MiB** of resident memory (RSS) at idle. With **five simultaneous SSH sessions**, the app and its SSH processes averaged **125.1 MiB** combined. The peak was **135.4 MiB** while producing terminal output and switching tabs. The current trial is a later build, and these measurements apply to build 3. [Measurement details](docs/reports/mac26-takeover.md)
+On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–111 MiB** of resident memory (RSS) at idle. With **five simultaneous SSH sessions**, the app and its SSH processes averaged **125.1 MiB** combined. The peak was **135.4 MiB** while producing terminal output and switching tabs. These measurements are from the October 30, 2026 build. [Measurement details](docs/reports/mac26-takeover.md)
 
 ## What you can do
 
@@ -23,7 +23,7 @@ On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–11
 
 ## Help test OpenLXSSH
 
-1. Install and launch the trial on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
+1. Install and launch Release 2.0 on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
 2. Open and switch between terminal tabs. If you use a jump host, try your regular nested SSH workflow.
 3. Upload and download a small test file in SFTP. Try a same-name transfer and check that **Cancel**, **Replace**, and **Keep Both** behave as you expect.
 

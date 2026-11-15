@@ -64,24 +64,38 @@ struct SettingsEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("设置").font(.title2).bold()
+            HStack(spacing: 12) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 34, height: 34)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("设置").font(.title3).bold()
+                    Text("仅非秘密偏好 · 外观、终端行为与连接默认项").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
-                Text("仅非秘密偏好").font(.caption).foregroundStyle(.secondary)
-            }.padding(20)
+            }.padding(.horizontal, 20).padding(.vertical, 16)
             Divider()
             HStack(spacing: 0) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 5) {
                         ForEach(PreferencesCategory.allCases) { item in
+                            let selected = category == item
                             Button { category = item } label: {
-                                Label(item.title, systemImage: item.symbol).frame(maxWidth: .infinity, alignment: .leading).padding(9)
-                                    .background(category == item ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                                Label(item.title, systemImage: item.symbol)
+                                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                                    .foregroundStyle(selected ? Color.accentColor : .primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 10).padding(.vertical, 8)
+                                    .background(selected ? DesktopStyle.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Color.accentColor.opacity(0.28) : .clear))
+                                    .contentShape(Rectangle())
                             }.buttonStyle(.plain).accessibilityIdentifier("settings.category." + item.rawValue)
-                                .accessibilityAddTraits(category == item ? .isSelected : [])
+                                .accessibilityAddTraits(selected ? .isSelected : [])
                         }
                     }.padding(12)
-                }.frame(width: 180).disabled(!editor.canEdit)
+                }.frame(width: 186).background(DesktopStyle.sidebar).disabled(!editor.canEdit)
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -103,7 +117,7 @@ struct SettingsEditor: View {
                     if editor.isWriting { ProgressView().controlSize(.small); Text("正在保存…").font(.caption) }
                     Button("取消") { if editor.attemptClose() { dismiss() } }.keyboardShortcut(.cancelAction).disabled(!editor.canEdit)
                         .accessibilityIdentifier("editor.cancel")
-                    Button("保存设置") { save() }.keyboardShortcut(.defaultAction).disabled(!editor.canEdit || model.isWriting)
+                    Button("保存设置") { save() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(!editor.canEdit || model.isWriting)
                         .accessibilityIdentifier("settings.save")
                 }
             }.padding(16)
@@ -186,6 +200,36 @@ struct SettingsEditor: View {
             })) {
                 ForEach(ColorPreset.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }.accessibilityIdentifier("settings.preset")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(ColorPreset.allCases.filter { $0 != .custom }, id: \.self) { preset in
+                        let selected = ColorPreset.matching(editor.draft.value) == preset
+                        let swatch = preset.previewColors
+                        Button {
+                            (editor.draft.value.foregroundColor, editor.draft.value.backgroundColor, editor.draft.value.cursorColor) = preset.colors
+                        } label: {
+                            HStack(spacing: 6) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color(nsColor: NSColor(sessionHex: swatch.background)))
+                                        .frame(width: 22, height: 16)
+                                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.white.opacity(0.18)))
+                                    Text("A_")
+                                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(Color(nsColor: NSColor(sessionHex: swatch.foreground)))
+                                }
+                                Text(preset.rawValue)
+                                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(selected ? DesktopStyle.selection : DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(selected ? Color.accentColor.opacity(0.7) : DesktopStyle.border))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
             field("前景色", range: "#RRGGBB", id: "settings.foreground", binding: $editor.draft.value.foregroundColor)
             field("背景色", range: "#RRGGBB", id: "settings.background", binding: $editor.draft.value.backgroundColor)
             field("光标色", range: "#RRGGBB", id: "settings.cursor", binding: $editor.draft.value.cursorColor)
@@ -197,13 +241,56 @@ struct SettingsEditor: View {
             Toggle("光标闪烁（默认开启）", isOn: $editor.draft.value.cursorBlink).accessibilityIdentifier("settings.cursorBlink")
             field("历史行数", range: "0–50000 行；默认 10000", id: "settings.history", binding: $editor.draft.history)
             note("保存后字体、配色、光标和历史容量立即应用所有现有标签，不重连。降低历史容量会清掉超出上限的内存历史；远端 TUI 仍可按终端协议改变光标。")
-            Text("实际终端预览").font(.subheadline).bold()
-            PreferencesTerminalPreview(settings: previewSettings).frame(height: 128).clipped().accessibilityIdentifier("settings.preview")
+            HStack {
+                Text("实际终端预览").font(.subheadline).bold()
+                Spacer()
+                Text(ColorPreset.matching(editor.draft.value).rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            let previewBg = previewSettings.map {
+                let hex = ColorPreset.matching($0) == .nord ? ColorPreset.nord.previewColors.background : $0.backgroundColor
+                return Color(nsColor: NSColor(sessionHex: hex))
+            } ?? DesktopStyle.terminalBackground
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Circle().fill(Color(nsColor: .systemRed).opacity(0.8)).frame(width: 8, height: 8)
+                    Circle().fill(Color(nsColor: .systemYellow).opacity(0.8)).frame(width: 8, height: 8)
+                    Circle().fill(Color(nsColor: .systemGreen).opacity(0.8)).frame(width: 8, height: 8)
+                    Text("ssh prod-app · zsh")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                        .padding(.leading, 4)
+                    Spacer()
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Color.white.opacity(0.04))
+                PreferencesTerminalPreview(settings: previewSettings)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .frame(height: 118)
+                    .accessibilityIdentifier("settings.preview")
+            }
+            .background(previewBg, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.borderStrong))
+            .clipped()
             if previewSettings == nil { note("当前输入无效，预览保留上一次有效值（首次为终端默认）；请修正后保存。") }
             Divider()
             Text("粘贴策略：精确原字节（当前固定策略）").font(.subheadline)
             note("多行不额外确认、不补回车；保留 UTF-8 与 Bracketed Paste，含包装总计最多 256 KiB。远端仍可能执行粘贴内容。可选多行确认尚未提供，不显示未接线开关。")
         case .connection:
+            HStack(spacing: 8) {
+                Text("快速预设").font(.caption).foregroundStyle(.secondary)
+                ForEach([("高稳 15 秒", "15", "3"), ("标准 30 秒", "30", "3"), ("省电 60 秒", "60", "3"), ("关闭", "0", "3")], id: \.0) { label, iv, cnt in
+                    let active = editor.draft.interval == iv && editor.draft.count == cnt
+                    Button(label) {
+                        editor.draft.interval = iv
+                        editor.draft.count = cnt
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(active ? .accentColor : .secondary)
+                }
+            }
             field("新主机默认 TCP 保活间隔", range: "0–3600 秒；默认 30，0 关闭", id: "settings.interval", binding: $editor.draft.interval)
             field("新主机默认 TCP 失败探测次数", range: "1–10 次；默认 3", id: "settings.count", binding: $editor.draft.count)
             note("连接空闲后由系统发送 TCP 保活；未响应时按相同间隔重试，到达失败次数后由系统判定连接失效。实际时刻由系统调度，不是固定的 SSH 响应截止时间。间隔 0 关闭；只用于以后新建的主机，已有主机和打开的连接不变。")
@@ -285,7 +372,7 @@ private struct PreferencesTerminalPreview: NSViewRepresentable {
         let terminal = NativeTerminalView()
         terminal.inputEnabled = false
         terminal.toolTip = "设置预览；不会连接服务器或发送输入。"
-        terminal.feed(text: "OpenLXSSH · 等宽字体预览\r\nAa 0123456789  中文  Unicode\r\n$ ")
+        terminal.feed(text: "\u{1b}[32mdeploy@prod\u{1b}[0m \u{1b}[34m~/app\u{1b}[0m \u{1b}[35mmain\u{1b}[0m % ls -la\r\n\u{1b}[34mdrwxr-xr-x\u{1b}[0m  deploy  \u{1b}[36mreleases/\u{1b}[0m   \u{1b}[33mconfig.yml\u{1b}[0m\r\nOpenLXSSH · Aa 0123456789 中文 🙂\r\n\u{1b}[32m✓\u{1b}[0m Ready $ ")
         if let settings { try? TerminalPreferences.apply(settings, to: terminal) }
         return terminal
     }

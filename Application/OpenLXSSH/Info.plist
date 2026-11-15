@@ -5,6 +5,7 @@
     <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
     <key>CFBundleDisplayName</key><string>OpenLXSSH</string>
     <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>OpenLXSSH</string>

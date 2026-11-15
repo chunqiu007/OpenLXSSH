@@ -32,17 +32,37 @@ struct DualPaneFilesView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Label("SFTP", systemImage: "externaldrive.connected.to.line.below").font(.headline)
-                Text("本地 ↔ 直连远端").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.left.arrow.right").font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.accentColor).frame(width: 34, height: 34)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("文件传输").font(.system(size: 16, weight: .semibold))
+                    HStack(spacing: 6) {
+                        Circle().fill(connectionDotColor).frame(width: 6, height: 6)
+                        Text(files.state == .ready ? "已连接 · \(files.selectedHost?.name ?? "")" : "SFTP · 本地与远端")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
-                Button { dialog = DualFilesDialog(content: .host) } label: { Label(files.selectedHost?.name ?? "选择主机", systemImage: "server.rack") }.accessibilityIdentifier("files.host.choose")
-                Button { files.tasksVisible = true } label: { Label("传输 \(files.transferSnapshot.jobs.filter { $0.state.isActive }.count)", systemImage: "arrow.up.arrow.down") }
-                    .accessibilityIdentifier("transfers.open")
-            }.padding(.horizontal, 14).padding(.vertical, 10)
-                .foregroundStyle(DesktopStyle.barForeground).background(DesktopStyle.managementBar)
-                .environment(\.colorScheme, .dark)
-            Divider()
+                Button { dialog = DualFilesDialog(content: .host) } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(connectionDotColor).frame(width: 7, height: 7)
+                        Image(systemName: "server.rack")
+                        Text(files.selectedHost?.name ?? "选择主机").lineLimit(1)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("files.host.choose")
+                let activeTransferCount = files.transferSnapshot.jobs.filter { $0.state.isActive }.count
+                Button { files.tasksVisible = true } label: {
+                    Label("传输 \(activeTransferCount)", systemImage: "arrow.up.arrow.down")
+                }
+                .modifier(ProminentIfModifier(prominent: activeTransferCount > 0))
+                .accessibilityIdentifier("transfers.open")
+            }.padding(.horizontal, 20).padding(.vertical, 12)
+                .foregroundStyle(.primary).background(DesktopStyle.panel)
+            Divider().overlay(DesktopStyle.border)
             FilesPaneSplit(left: localPane, right: remotePane, defaults: app.desktopPreferencesDefaults)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -121,53 +141,126 @@ struct DualPaneFilesView: View {
         remoteSort.apply(files.entries.filter { (remoteHidden || $0.name.bytes.first != 46) && (remoteFilter.isEmpty || FileDisplay.name($0.name).localizedStandardContains(remoteFilter)) })
     }
     private var selectedRemote: [DirectoryEntry] { remoteRows.filter { remoteSelection.contains($0.name) } }
+    private var connectionDotColor: Color {
+        switch files.state {
+        case .ready: DesktopStyle.statusGreen
+        case .preparing, .awaitingTrust, .authenticating, .closing: DesktopStyle.statusAmber
+        case .failed: DesktopStyle.statusRed
+        case .disconnected: .secondary.opacity(0.5)
+        }
+    }
     private var localPane: some View {
         VStack(spacing: 0) {
-            paneHeader(title: "本地", subtitle: local.path.map(FileDisplay.path) ?? "尚未读取", filter: $local.filter, hidden: $local.showsHidden, localSide: true)
-            FilesNavigationBar(path: local.path, back: local.history.backward != nil, forward: local.history.forward != nil,
-                up: local.canGoUp, enabled: !local.loading, prefix: "files.local", go: local.go, backward: local.back,
-                forwardAction: local.forward, parent: local.up, refresh: local.refresh, navigate: { local.navigate($0) },
-                onActivate: { activeSearchPane = .local })
+            VStack(spacing: 0) {
+                paneHeader(title: "本地", subtitle: local.path == nil ? "尚未读取" : "\(local.visibleEntries.count) 项" + (local.showsHidden ? " · 含隐藏项" : ""), filter: $local.filter, hidden: $local.showsHidden, localSide: true)
+                FilesNavigationBar(path: local.path, back: local.history.backward != nil, forward: local.history.forward != nil,
+                    up: local.canGoUp, enabled: !local.loading, prefix: "files.local", go: local.go, backward: local.back,
+                    forwardAction: local.forward, parent: local.up, refresh: local.refresh, navigate: { local.navigate($0) },
+                    onActivate: { activeSearchPane = .local })
+            }.background(DesktopStyle.panel)
+            Divider().overlay(DesktopStyle.border)
             browserTable(localSide: true)
             browserFooter(localSide: true)
-        }.background(Color(nsColor: .controlBackgroundColor))
+        }.background(DesktopStyle.background)
     }
     private var remotePane: some View {
         VStack(spacing: 0) {
-            paneHeader(title: files.selectedHost?.name ?? "远端", subtitle: files.selectedHost.map { $0.username + "@" + $0.address + ":" + String($0.port) } ?? "未选择主机", filter: $remoteFilter, hidden: $remoteHidden, localSide: false)
+            VStack(spacing: 0) {
+                paneHeader(title: files.selectedHost?.name ?? "远端", subtitle: files.selectedHost.map { $0.username + "@" + $0.address + ":" + String($0.port) } ?? "未选择主机", filter: $remoteFilter, hidden: $remoteHidden, localSide: false)
+                if files.state == .ready {
+                    FilesNavigationBar(path: files.path, back: files.navigationHistory.backward != nil, forward: files.navigationHistory.forward != nil,
+                        up: files.path != .root, enabled: !files.busy, prefix: "files.remote", go: files.go,
+                        backward: files.back, forwardAction: files.forward, parent: { files.browse(files.path.parent) },
+                        refresh: { files.browse(files.path) }, navigate: files.browse, onActivate: { activeSearchPane = .remote })
+                }
+            }.background(DesktopStyle.panel)
+            Divider().overlay(DesktopStyle.border)
             if files.state == .ready {
-                FilesNavigationBar(path: files.path, back: files.navigationHistory.backward != nil, forward: files.navigationHistory.forward != nil,
-                    up: files.path != .root, enabled: !files.busy, prefix: "files.remote", go: files.go,
-                    backward: files.back, forwardAction: files.forward, parent: { files.browse(files.path.parent) },
-                    refresh: { files.browse(files.path) }, navigate: files.browse, onActivate: { activeSearchPane = .remote })
                 browserTable(localSide: false)
             } else {
-                VStack(spacing: 14) {
-                    Image(systemName: "folder.badge.gearshape").font(.system(size: 42)).foregroundStyle(.secondary)
-                    Text(files.selectedHost == nil ? "连接到主机" : status).font(.title3)
-                    Text("本地浏览保持可用；远端连接独立于 SSH 标签和终端目录。").font(.caption).foregroundStyle(.secondary)
-                    if app.isEngineeringPreview {
-                        Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary)
-                    } else if files.selectedHost == nil { Button("选择主机") { dialog = DualFilesDialog(content: .host) }.accessibilityIdentifier("files.remote.empty.choose") }
-                    else if files.canConnect {
-                        SecureField(files.selectedHost?.authentication.needsKey == true ? "本次私钥口令（无口令可留空）" : "本次密码", text: $initialInput.secret)
-                            .onSubmit { connectInitial() }.frame(maxWidth: 280).accessibilityIdentifier("files.initial.secret")
-                        Toggle("本次使用已保存凭据", isOn: $initialInput.saved).fixedSize()
-                        if files.selectedHost?.authentication.needsKey == false { Toggle("仅交互认证", isOn: $initialInput.keyboardOnly).fixedSize() }
-                        NativeButton(title: "连接 SFTP", id: "files.connect", enabled: files.canConnect && !files.busy, isProminent: true) { connectInitial() }.fixedSize()
-                    } else { ProgressView().controlSize(.small) }
-                    if files.busy { Button("取消连接") { requestChange(nil, disconnect: true) } }
-                }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        Image(systemName: files.selectedHost == nil ? "server.rack" : "externaldrive.connected.to.line.below")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 52, height: 52)
+                            .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 13))
+                        VStack(spacing: 4) {
+                            Text(files.selectedHost == nil ? "连接到主机" : status)
+                                .font(.system(size: 16, weight: .semibold))
+                            if let host = files.selectedHost {
+                                Text(verbatim: host.username + "@" + host.address + ":" + String(host.port))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text("本地浏览保持可用；远端连接独立于 SSH 标签和终端目录。")
+                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        if app.isEngineeringPreview {
+                            Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary)
+                        } else if files.selectedHost == nil {
+                            Button("选择主机") { dialog = DualFilesDialog(content: .host) }
+                                .buttonStyle(.borderedProminent).controlSize(.large)
+                                .accessibilityIdentifier("files.remote.empty.choose")
+                        } else if files.canConnect {
+                            VStack(alignment: .leading, spacing: 10) {
+                                SecureField(files.selectedHost?.authentication.needsKey == true ? "本次私钥口令（无口令可留空）" : "本次密码", text: $initialInput.secret)
+                                    .textFieldStyle(.plain)
+                                    .onSubmit { connectInitial() }
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                                    .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
+                                    .accessibilityIdentifier("files.initial.secret")
+                                Toggle("本次使用已保存凭据", isOn: $initialInput.saved).toggleStyle(.checkbox).font(.caption)
+                                if files.selectedHost?.authentication.needsKey == false {
+                                    Toggle("仅交互认证", isOn: $initialInput.keyboardOnly).toggleStyle(.checkbox).font(.caption)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            NativeButton(title: "连接 SFTP", id: "files.connect", enabled: files.canConnect && !files.busy, isProminent: true) { connectInitial() }
+                                .fixedSize()
+                        } else {
+                            ProgressView().controlSize(.small)
+                        }
+                        if files.busy { Button("取消连接") { requestChange(nil, disconnect: true) }.buttonStyle(.bordered) }
+                    }
+                    .padding(26)
+                    .frame(maxWidth: 380)
+                    .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DesktopStyle.border))
+                    .padding(24)
+                    .frame(maxWidth: .infinity, minHeight: 340)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             browserFooter(localSide: false)
-        }.background(Color(nsColor: .controlBackgroundColor))
+        }.background(DesktopStyle.background)
     }
     private func paneHeader(title: String, subtitle: String, filter: Binding<String>, hidden: Binding<Bool>, localSide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label(title, systemImage: localSide ? "desktopcomputer" : "server.rack").font(.headline).lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: localSide ? "desktopcomputer" : "server.rack")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 24, height: 24)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 6))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        if !localSide {
+                            DesktopBadge(
+                                text: files.state == .ready ? "已连接" : "未连接",
+                                color: files.state == .ready ? DesktopStyle.statusGreen : .secondary,
+                                fill: files.state == .ready ? DesktopStyle.statusGreen.opacity(0.13) : DesktopStyle.separator
+                            )
+                        }
+                    }
+                    Text(verbatim: subtitle)
+                        .font(.system(size: 11, design: localSide ? .default : .monospaced))
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(subtitle)
+                }
                 Spacer(minLength: 4)
-                Menu("操作") {
+                Menu {
                     Button(localSide ? "上传所选" : "下载到左侧当前目录") { transfer(localSide: localSide) }.disabled(!files.canTransfer || (localSide ? local.selectedEntries.isEmpty : selectedRemote.isEmpty) || local.path == nil)
                     Divider()
                     Button("新建目录…") { newDirectory(localSide) }.disabled(localSide ? local.loading : files.state != .ready || files.busy)
@@ -179,16 +272,28 @@ struct DualPaneFilesView: View {
                         Divider()
                         Button("高级：检查非覆盖提交能力…") { files.prepareProbe() }.disabled(files.state != .ready || files.busy)
                     }
+                } label: {
+                    Label("操作", systemImage: "ellipsis.circle")
+                        .font(.system(size: 12))
                 }.menuStyle(.borderlessButton).fixedSize()
             }
-            Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(subtitle)
-            HStack {
-                NativeField(placeholder: "筛选当前目录", id: localSide ? "files.local.filter" : "files.remote.filter", text: filter,
+            HStack(spacing: 8) {
+                DesktopSearchField(
+                    placeholder: "筛选当前目录",
+                    id: localSide ? "files.local.filter" : "files.remote.filter",
+                    text: filter,
                     focusRequest: localSide ? localSearchFocusRequest : remoteSearchFocusRequest,
-                    onFocus: { activeSearchPane = localSide ? .local : .remote }).frame(height: 25)
-                Toggle("隐藏项", isOn: hidden).toggleStyle(.checkbox).fixedSize()
+                    onFocus: { activeSearchPane = localSide ? .local : .remote },
+                    clearLabel: "清除筛选"
+                )
+                Toggle("隐藏项", isOn: hidden)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
             }
-        }.padding(10)
+        }.padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
     }
     private func browserTable(localSide: Bool) -> some View {
         let entries = localSide ? local.visibleEntries : remoteRows
@@ -228,18 +333,22 @@ struct DualPaneFilesView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private func browserFooter(localSide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Divider()
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider().overlay(DesktopStyle.border)
+            HStack(spacing: 8) {
                 let rows = localSide ? local.selectedEntries : selectedRemote
-                Text("\(rows.count) 项已选 / \((localSide ? local.entries : files.entries).count) 项").font(.caption).foregroundStyle(.secondary)
+                let readyToTransfer = files.canTransfer && !rows.isEmpty && local.path != nil
+                Text("\(rows.count) 项已选 / \((localSide ? local.entries : files.entries).count) 项")
+                    .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                 Spacer()
                 Button(localSide ? "上传 →" : "← 下载") { transfer(localSide: localSide) }
-                    .disabled(!files.canTransfer || rows.isEmpty || local.path == nil)
+                    .modifier(ProminentIfModifier(prominent: readyToTransfer))
+                    .controlSize(.small)
+                    .disabled(!readyToTransfer)
                     .accessibilityIdentifier(localSide ? "files.upload.selected" : "files.download.selected")
             }
             if localSide ? local.readFailed : files.readFailed {
-                Text("目录读取失败；下方内容仍是上次成功位置的快照，请刷新重试。").font(.caption).foregroundStyle(.orange)
+                Text("目录读取失败；下方内容仍是上次成功位置的快照，请刷新重试。").font(.caption).foregroundStyle(DesktopStyle.statusAmber)
             }
             let reports = localSide ? local.deleteReports : files.lastDeleteReports
             if !reports.isEmpty {
@@ -257,7 +366,7 @@ struct DualPaneFilesView: View {
                 }.font(.caption)
             }
             IssueView(issue: localSide ? local.issue : files.issue) { if localSide { local.issue = nil } else { files.issue = nil } }
-        }.padding(.horizontal, 10).padding(.bottom, 7)
+        }.padding(.horizontal, 12).padding(.vertical, 8).background(DesktopStyle.panel)
     }
     private func deleteResult(_ state: DeleteItemResult.State) -> String {
         switch state { case .succeeded: "已删除"; case .failed(let error): "失败 · " + error.kind.rawValue; case .notAttempted(let error): "未执行 · " + error.kind.rawValue }
@@ -369,46 +478,85 @@ struct DualPaneFilesView: View {
     @ViewBuilder private func dialogView(_ value: DualFilesDialog) -> some View {
         Group {
             switch value.content {
-        case .host:
-            VStack(alignment: .leading, spacing: 12) {
-                Text("选择远端主机").font(.title2)
-                TextField("搜索名称、地址或用户名", text: $hostSearch)
-                Picker("范围", selection: $hostFilter) { Text("全部").tag("all"); Text("收藏").tag("favorites"); Text("最近").tag("recent") }.pickerStyle(.segmented)
-                List(filteredHosts, id: \.id) { host in Button { requestChange(host, disconnect: false); dialog = nil } label: { HStack { Image(systemName: host.isFavorite ? "star.fill" : "server.rack"); VStack(alignment: .leading) { Text(host.name); Text(host.username + "@" + host.address + ":" + String(host.port)).font(.caption).foregroundStyle(.secondary) }; Spacer() }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain) }.frame(height: 290)
-                Button("取消") { dialog = nil }
-            }.padding(22).frame(width: 470)
-        case .name(let target, let localSide):
-            if localSide {
-                DualFilesNameEditor(target: target) { name in
-                    if target.entries.isEmpty { local.mkdir(name, target: target) } else { local.rename(to: name, target: target) }
+            case .host:
+                hostChooserDialog
+            case .name(let target, let localSide):
+                if localSide {
+                    DualFilesNameEditor(target: target) { name in
+                        if target.entries.isEmpty { local.mkdir(name, target: target) } else { local.rename(to: name, target: target) }
+                        dismissDialog(value)
+                    } cancel: { cancelDialog(value); dismissDialog(value) }
+                } else {
+                    FilesNameEditor(model: files, entry: target.entries.first, target: target) { dismissDialog(value) }
+                }
+            case .details(let target, let localSide):
+                if let entry = target.entries.first, let path = target.path(for: entry) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("文件详情").font(.title2)
+                        FilesTargetSummary(target: target)
+                        Text(FilesMetadataDisplay.kind(entry.attributes.kind) + " · " + FilesMetadataDisplay.size(entry.attributes))
+                        Text("权限 " + FilesMetadataDisplay.permissions(entry.attributes) + " · 修改 " + FilesMetadataDisplay.modified(entry.attributes))
+                        Text("仅显示打开时的元数据，不执行、打开或自动下载文件。").font(.caption).foregroundStyle(.secondary)
+                        HStack { Button("复制精确路径") { FilesExactClipboard.copy(path) }; Spacer(); Button("关闭") { discardTarget(target, localSide: localSide); dismissDialog(value) } }
+                    }.padding(22).frame(width: 550)
+                }
+            case .deleteOptions(let target, let localSide):
+                DualFilesDeleteOptions(target: target) { linkOnly in
+                    if localSide { local.prepareDelete(target, linkOnly: linkOnly) } else { files.prepareDeleteBatch(target, removeLinkOnly: linkOnly) }
                     dismissDialog(value)
                 } cancel: { cancelDialog(value); dismissDialog(value) }
-            } else {
-                FilesNameEditor(model: files, entry: target.entries.first, target: target) { dismissDialog(value) }
-            }
-        case .details(let target, let localSide):
-            if let entry = target.entries.first, let path = target.path(for: entry) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("文件详情").font(.title2)
-                    FilesTargetSummary(target: target)
-                    Text(FilesMetadataDisplay.kind(entry.attributes.kind) + " · " + FilesMetadataDisplay.size(entry.attributes))
-                    Text("权限 " + FilesMetadataDisplay.permissions(entry.attributes) + " · 修改 " + FilesMetadataDisplay.modified(entry.attributes))
-                    Text("仅显示打开时的元数据，不执行、打开或自动下载文件。").font(.caption).foregroundStyle(.secondary)
-                    HStack { Button("复制精确路径") { FilesExactClipboard.copy(path) }; Spacer(); Button("关闭") { discardTarget(target, localSide: localSide); dismissDialog(value) } }
-                }.padding(22).frame(width: 550)
-            }
-        case .deleteOptions(let target, let localSide):
-            DualFilesDeleteOptions(target: target) { linkOnly in
-                if localSide { local.prepareDelete(target, linkOnly: linkOnly) } else { files.prepareDeleteBatch(target, removeLinkOnly: linkOnly) }
-                dismissDialog(value)
-            } cancel: { cancelDialog(value); dismissDialog(value) }
-        case .localDelete(let review):
-            DualFilesDeleteReview(review: review) { local.executeDelete(review); dismissDialog(value) } cancel: { local.discardDelete(review); dismissDialog(value) }
-        case .remoteDelete(let review):
-            DualFilesDeleteReview(review: review.review) { files.executeDeleteBatch(review); dismissDialog(value) } cancel: { files.discardDeleteBatch(review); dismissDialog(value) }
+            case .localDelete(let review):
+                DualFilesDeleteReview(review: review) { local.executeDelete(review); dismissDialog(value) } cancel: { local.discardDelete(review); dismissDialog(value) }
+            case .remoteDelete(let review):
+                DualFilesDeleteReview(review: review.review) { files.executeDeleteBatch(review); dismissDialog(value) } cancel: { files.discardDeleteBatch(review); dismissDialog(value) }
             }
         }
         .onDisappear { cancelDialog(value) }
+    }
+
+    private var hostChooserDialog: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("选择远端主机").font(.title2).bold()
+                Spacer()
+                Button { dialog = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+            }
+            DesktopSearchField(placeholder: "搜索名称、地址或用户名", id: "files.host.search", text: $hostSearch)
+            Picker("范围", selection: $hostFilter) { Text("全部").tag("all"); Text("收藏").tag("favorites"); Text("最近").tag("recent") }.pickerStyle(.segmented)
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(filteredHosts, id: \.id) { host in hostChooserRow(host) }
+                }
+            }.frame(height: 300)
+            HStack { Spacer(); Button("取消") { dialog = nil }.keyboardShortcut(.cancelAction) }
+        }.padding(22).frame(width: 480).background(DesktopStyle.background)
+    }
+
+    private func hostChooserRow(_ host: HostConfiguration) -> some View {
+        let isCurrent = files.selectedHost?.id == host.id
+        return Button { requestChange(host, disconnect: false); dialog = nil } label: {
+            HStack(spacing: 10) {
+                Image(systemName: host.isFavorite ? "star.fill" : "server.rack")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(host.isFavorite ? DesktopStyle.statusAmber : Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(host.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text("\(host.username)@\(host.address):\(host.port)")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                if isCurrent {
+                    DesktopBadge(text: "当前", color: Color.accentColor, fill: DesktopStyle.iconSurface)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isCurrent ? DesktopStyle.selection : DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(isCurrent ? Color.accentColor.opacity(0.6) : DesktopStyle.border))
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
     private var filteredHosts: [HostConfiguration] {
         let hosts = app.connectionHosts.filter { host in
@@ -422,6 +570,14 @@ struct DualPaneFilesView: View {
     }
 }
 
+
+private struct ProminentIfModifier: ViewModifier {
+    let prominent: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if prominent { content.buttonStyle(.borderedProminent) }
+        else { content.buttonStyle(.bordered) }
+    }
+}
 
 private struct FilesNavigationBar: View {
     let path: RemotePath?
@@ -440,30 +596,53 @@ private struct FilesNavigationBar: View {
     @State private var editing = false
     @State private var draft = ""
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                Button { onActivate(); backward() } label: { Image(systemName: "chevron.left") }.disabled(!enabled || !back).accessibilityLabel("后退").accessibilityIdentifier(prefix + ".back")
-                Button { onActivate(); forwardAction() } label: { Image(systemName: "chevron.right") }.disabled(!enabled || !forward).accessibilityLabel("前进")
-                Button { onActivate(); parent() } label: { Image(systemName: "arrow.up") }.disabled(!enabled || !up).accessibilityLabel("上级")
-                Button { onActivate(); refresh() } label: { Image(systemName: "arrow.clockwise") }.disabled(!enabled).accessibilityLabel("刷新")
-                Spacer(minLength: 0)
-                Button { onActivate(); draft = path.flatMap { String(data: $0.bytes, encoding: .utf8) } ?? ""; editing = true } label: { Image(systemName: "pencil") }.disabled(path == nil).accessibilityLabel("编辑绝对路径")
-            }.buttonStyle(.borderless)
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Button { onActivate(); backward() } label: { Image(systemName: "chevron.left").frame(width: 22, height: 22) }.disabled(!enabled || !back).accessibilityLabel("后退").accessibilityIdentifier(prefix + ".back")
+                Button { onActivate(); forwardAction() } label: { Image(systemName: "chevron.right").frame(width: 22, height: 22) }.disabled(!enabled || !forward).accessibilityLabel("前进")
+                Button { onActivate(); parent() } label: { Image(systemName: "arrow.up").frame(width: 22, height: 22) }.disabled(!enabled || !up).accessibilityLabel("上级")
+                Button { onActivate(); refresh() } label: { Image(systemName: "arrow.clockwise").frame(width: 22, height: 22) }.disabled(!enabled).accessibilityLabel("刷新")
+            }.buttonStyle(.borderless).font(.system(size: 11, weight: .medium))
+
             if editing {
                 NativeField(placeholder: "绝对路径", id: prefix + ".path", text: $draft,
-                    onSubmit: { _ in go(draft); editing = false }, onCancel: { draft = ""; editing = false }, onFocus: onActivate).frame(height: 26)
+                    onSubmit: { _ in go(draft); editing = false }, onCancel: { draft = ""; editing = false }, onFocus: onActivate, borderless: true)
+                    .frame(height: 24)
+                    .padding(.horizontal, 8)
+                    .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.accentColor.opacity(0.6)))
             } else {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 3) {
-                        Button("/") { onActivate(); navigate(.root) }.disabled(!enabled)
-                        ForEach(Array(crumbs.enumerated()), id: \.offset) { _, value in
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
-                            Button(FileDisplay.name(value.name!)) { onActivate(); navigate(value) }.disabled(!enabled).help(FileDisplay.path(value))
-                        }
-                    }.buttonStyle(.borderless).font(.caption)
-                }.frame(height: 22)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 3) {
+                            Button("/") { onActivate(); navigate(.root) }.disabled(!enabled)
+                            ForEach(Array(crumbs.enumerated()), id: \.offset) { _, value in
+                                Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.secondary)
+                                Button(FileDisplay.name(value.name!)) { onActivate(); navigate(value) }.disabled(!enabled).help(FileDisplay.path(value))
+                            }
+                            Color.clear.frame(width: 1, height: 1).id("crumb-end")
+                        }.buttonStyle(.borderless).font(.system(size: 11, design: .monospaced))
+                            .padding(.horizontal, 8)
+                    }
+                    .onAppear { proxy.scrollTo("crumb-end", anchor: .trailing) }
+                    .onChange(of: crumbs.count) { _, _ in proxy.scrollTo("crumb-end", anchor: .trailing) }
+                    .onChange(of: path) { _, _ in proxy.scrollTo("crumb-end", anchor: .trailing) }
+                }
+                .frame(height: 24)
+                .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DesktopStyle.border))
             }
-        }.padding(.horizontal, 10).padding(.bottom, 7)
+
+            Button {
+                onActivate()
+                if editing { editing = false }
+                else { draft = path.flatMap { String(data: $0.bytes, encoding: .utf8) } ?? ""; editing = true }
+            } label: {
+                Image(systemName: editing ? "xmark" : "pencil").frame(width: 22, height: 22)
+            }
+            .buttonStyle(.borderless).font(.system(size: 11))
+            .disabled(path == nil).accessibilityLabel("编辑绝对路径")
+        }.padding(.horizontal, 12).padding(.bottom, 8)
     }
     private var crumbs: [RemotePath] {
         guard let path else { return [] }
@@ -511,7 +690,9 @@ struct DualFilesEntryTable: NSViewRepresentable {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
         let table = DualFilesNativeTable(); table.identifier = NSUserInterfaceItemIdentifier(identifier)
         context.coordinator.configureColumns(in: table)
-        table.rowHeight = 29; table.usesAlternatingRowBackgroundColors = true; table.allowsMultipleSelection = true; table.allowsEmptySelection = true
+        table.rowHeight = 29; table.usesAlternatingRowBackgroundColors = false; table.allowsMultipleSelection = true; table.allowsEmptySelection = true
+        table.backgroundColor = NSColor(DesktopStyle.background)
+        scroll.drawsBackground = true; scroll.backgroundColor = NSColor(DesktopStyle.background)
         table.delegate = context.coordinator; table.dataSource = context.coordinator; table.target = context.coordinator; table.doubleAction = #selector(Coordinator.open(_:))
         table.contextMenu = { [weak coordinator = context.coordinator] table, event in coordinator?.makeMenu(table, event: event) }
         table.openSelection = { [weak coordinator = context.coordinator] table in coordinator?.open(table) }
@@ -541,16 +722,41 @@ struct DualFilesEntryTable: NSViewRepresentable {
             guard rows.indices.contains(row) else { return nil }
             let entry = rows[row], id = column?.identifier.rawValue ?? "name"
             if id == "name" {
-                let image = NSImageView(image: NSImage(systemSymbolName: entry.attributes.kind == .directory ? "folder.fill" : entry.attributes.kind == .symbolicLink ? "link" : "doc", accessibilityDescription: FilesMetadataDisplay.kind(entry.attributes.kind)) ?? NSImage())
-                image.contentTintColor = entry.attributes.kind == .directory ? .systemBlue : .secondaryLabelColor
+                let displayName = FileDisplay.name(entry.name)
+                let (symbol, tint) = iconStyle(for: entry, displayName: displayName)
+                let image = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: FilesMetadataDisplay.kind(entry.attributes.kind)) ?? NSImage())
+                image.contentTintColor = tint
                 image.translatesAutoresizingMaskIntoConstraints = false; image.widthAnchor.constraint(equalToConstant: 18).isActive = true
-                let text = NSTextField(labelWithString: FileDisplay.name(entry.name)); text.lineBreakMode = .byTruncatingMiddle
+                let text = NSTextField(labelWithString: displayName)
+                text.font = .systemFont(ofSize: 12.5, weight: entry.attributes.kind == .directory ? .medium : .regular)
+                text.lineBreakMode = .byTruncatingMiddle
                 let stack = NSStackView(views: [image, text]); stack.spacing = 7
-                stack.toolTip = FileDisplay.name(entry.name) + "\n原始名称字节(base64)：" + entry.name.bytes.base64EncodedString()
+                stack.toolTip = displayName + "\n原始名称字节(base64)：" + entry.name.bytes.base64EncodedString()
                 return stack
             }
             let value = id == "modified" ? FilesMetadataDisplay.modified(entry.attributes) : id == "size" ? FilesMetadataDisplay.size(entry.attributes) : id == "kind" ? FilesMetadataDisplay.kind(entry.attributes.kind) : FilesMetadataDisplay.permissions(entry.attributes)
-            return NSTextField(labelWithString: value)
+            let field = NSTextField(labelWithString: value)
+            field.font = id == "permissions" ? .monospacedSystemFont(ofSize: 11.5, weight: .regular) : .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            field.textColor = .secondaryLabelColor
+            return field
+        }
+        private func iconStyle(for entry: DirectoryEntry, displayName: String) -> (String, NSColor) {
+            switch entry.attributes.kind {
+            case .directory: return ("folder.fill", .systemBlue)
+            case .symbolicLink: return ("link", .systemTeal)
+            default:
+                let ext = (displayName as NSString).pathExtension.lowercased()
+                switch ext {
+                case "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "dmg":
+                    return ("doc.zipper", .systemOrange)
+                case "png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "ico":
+                    return ("photo", .systemPurple)
+                case "swift", "py", "js", "ts", "tsx", "json", "yaml", "yml", "toml", "sh", "zsh", "md", "txt", "log", "conf", "ini", "xml":
+                    return ("doc.text", .systemIndigo)
+                default:
+                    return ("doc", .secondaryLabelColor)
+                }
+            }
         }
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard let table = notification.object as? NSTableView else { return }

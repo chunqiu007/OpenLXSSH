@@ -13,7 +13,7 @@ import OpenLXSSHCore
         window.isMovableByWindowBackground = false
         window.backgroundColor = background(terminal: false)
     }
-    static func background(terminal: Bool) -> NSColor { NSColor(sessionHex: terminal ? "#171717" : "#2D344E") }
+    static func background(terminal: Bool) -> NSColor { NSColor(sessionHex: terminal ? "#1B212E" : "#252D3D") }
 }
 
 @MainActor final class WorkspaceWindowChromeState: ObservableObject {
@@ -145,17 +145,95 @@ enum DesktopStyle {
     static let barHeight: CGFloat = 48
     static let spacing: CGFloat = 8
     static let cornerRadius: CGFloat = 8
-    static let panel = Color(nsColor: .controlBackgroundColor)
-    static let background = Color(nsColor: .windowBackgroundColor)
-    static let managementBar = Color(nsColor: NSColor(sessionHex: "#2D344E"))
-    static let managementActive = Color(nsColor: NSColor(sessionHex: "#424B66"))
-    static let terminalBackground = Color(nsColor: NSColor(sessionHex: "#101010"))
-    static let terminalChrome = Color(nsColor: NSColor(sessionHex: "#171717"))
-    static let terminalActive = Color(nsColor: NSColor(sessionHex: "#303030"))
+    static let panel = adaptive(light: "#FFFFFF", dark: "#222936")
+    static let panelElevated = adaptive(light: "#F8FAFC", dark: "#2A3342")
+    static let well = adaptive(light: "#EEF1F6", dark: "#141922")
+    static let background = adaptive(light: "#F5F7FA", dark: "#1A202B")
+    static let sidebar = adaptive(light: "#ECEFF4", dark: "#151B24")
+    static let border = adaptive(light: "#E2E6EE", dark: "#2F394A")
+    static let borderStrong = adaptive(light: "#CFD6E3", dark: "#3D495E")
+    static let separator = Color.primary.opacity(0.08)
+    static let selection = Color.accentColor.opacity(0.13)
+    static let iconSurface = Color.accentColor.opacity(0.11)
+    static let managementBar = Color(nsColor: NSColor(sessionHex: "#252D3D"))
+    static let managementActive = Color(nsColor: NSColor(sessionHex: "#434F65"))
+    static let terminalBackground = Color(nsColor: NSColor(sessionHex: "#141821"))
+    static let terminalChrome = Color(nsColor: NSColor(sessionHex: "#1B212E"))
+    static let terminalActive = Color(nsColor: NSColor(sessionHex: "#2D374B"))
     static let barSecondary = Color(nsColor: NSColor(sessionHex: "#BBC3D6"))
     static let barForeground = Color(nsColor: NSColor(sessionHex: "#E4E8ED"))
+    static let statusGreen = Color(nsColor: .systemGreen)
+    static let statusAmber = Color(nsColor: .systemOrange)
+    static let statusRed = Color(nsColor: .systemRed)
+    private static func adaptive(light: String, dark: String) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            NSColor(sessionHex: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light)
+        })
+    }
     static func activeTab(terminal: Bool) -> Color { terminal ? terminalActive : managementActive }
     static func hoverTab(terminal: Bool) -> Color { activeTab(terminal: terminal).opacity(0.55) }
+}
+
+struct DesktopSearchField: View {
+    let placeholder: String
+    let id: String
+    @Binding var text: String
+    var focusRequest: UUID? = nil
+    var onFocus: (() -> Void)? = nil
+    var clearLabel = "清除搜索"
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            NativeField(placeholder: placeholder, id: id, text: $text, focusRequest: focusRequest, onFocus: onFocus, borderless: true)
+                .frame(height: 24)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(clearLabel)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
+    }
+}
+
+struct DesktopKeyValueRow: View {
+    let label: String
+    let value: String
+    var monospaced = false
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            Text(verbatim: value)
+                .font(monospaced ? .system(size: 12, design: .monospaced) : .system(size: 13))
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+struct DesktopBadge: View {
+    let text: String
+    var color: Color = .secondary
+    var fill: Color = DesktopStyle.separator
+    var body: some View {
+        Text(verbatim: text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(fill, in: Capsule())
+    }
 }
 
 struct IssueView: View {
@@ -163,15 +241,26 @@ struct IssueView: View {
     var dismiss: () -> Void
     var body: some View {
         if let issue {
-            HStack(alignment: .top) {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(DesktopStyle.statusAmber)
+                    .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(issue.message)
-                    DisclosureGroup("详情") { Text(issue.code).font(.caption.monospaced()).foregroundStyle(.secondary) }.font(.caption)
+                        .font(.system(size: 12, weight: .medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    DisclosureGroup("详情") {
+                        Text(issue.code).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    }.font(.caption)
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 NativeButton(title: "关闭", id: "issue.dismiss", action: dismiss).fixedSize()
-            }.accessibilityIdentifier("app.error")
+            }
+            .padding(10)
+            .background(DesktopStyle.statusAmber.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.statusAmber.opacity(0.28)))
+            .accessibilityIdentifier("app.error")
         }
     }
 }
@@ -512,6 +601,7 @@ struct NativeField: NSViewRepresentable {
     var onSubmit: ((Bool) -> Void)? = nil
     var onCancel: (() -> Void)? = nil
     var onFocus: (() -> Void)? = nil
+    var borderless = false
     func makeCoordinator() -> Coordinator {
         let value = Coordinator($text); value.onSubmit = onSubmit; value.onCancel = onCancel; value.onFocus = onFocus
         return value
@@ -521,6 +611,9 @@ struct NativeField: NSViewRepresentable {
         view.identifier = NSUserInterfaceItemIdentifier(id); view.placeholderString = placeholder
         view.delegate = context.coordinator; view.target = context.coordinator; view.action = #selector(Coordinator.committed(_:))
         view.lineBreakMode = .byTruncatingTail
+        if borderless {
+            view.isBezeled = false; view.isBordered = false; view.drawsBackground = false; view.focusRingType = .none
+        }
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         return view
     }

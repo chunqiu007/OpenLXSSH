@@ -480,15 +480,36 @@ private struct WorkspaceSessionTab: View {
         return [controller.displayTitle(for: tab), endpoint, tab.status,
                 tab.displayMetadata.configurationNotice(actual: tab.host), "中键关闭此标签"].joined(separator: "\n")
     }
+    private var statusDotColor: Color {
+        switch tab.state {
+        case .connected: DesktopStyle.statusGreen
+        case .preparing, .connectionPending, .awaitingTrust, .authenticating: DesktopStyle.statusAmber
+        case .failed: DesktopStyle.statusRed
+        default: DesktopStyle.barSecondary.opacity(0.55)
+        }
+    }
     private var titleContent: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 7) {
             Image(systemName: tab.authentication != nil || !tab.trust.isEmpty ? "exclamationmark.bubble" : (tab.isReusable ? "terminal" : "stop.circle"))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(tab.authentication != nil || !tab.trust.isEmpty ? DesktopStyle.statusAmber : DesktopStyle.barForeground.opacity(0.9))
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 3) {
-                    if tab.displayMetadata.isFavorite { Image(systemName: "star.fill").font(.caption2).accessibilityLabel("收藏") }
-                    Text(controller.displayTitle(for: tab)).lineLimit(1).truncationMode(.middle)
+                    if tab.displayMetadata.isFavorite { Image(systemName: "star.fill").font(.caption2).foregroundStyle(DesktopStyle.statusAmber).accessibilityLabel("收藏") }
+                    Text(controller.displayTitle(for: tab))
+                        .font(.system(size: 12, weight: active ? .semibold : .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                Text(statusLabel).font(.system(size: 9)).lineLimit(1)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(statusDotColor)
+                        .frame(width: 5, height: 5)
+                    Text(statusLabel)
+                        .font(.system(size: 9))
+                        .foregroundStyle(DesktopStyle.barSecondary.opacity(0.9))
+                        .lineLimit(1)
+                }
             }
         }.frame(width: 174, height: 34, alignment: .leading)
     }
@@ -502,7 +523,11 @@ private struct WorkspaceSessionTab: View {
                 .buttonStyle(.plain).focused($focusedAction, equals: .close).accessibilityLabel("关闭 " + controller.displayTitle(for: tab)).accessibilityIdentifier("tab.close." + tab.id.uuidString)
         }.padding(.leading, 10).padding(.trailing, 2).fixedSize()
         .background(active ? DesktopStyle.activeTab(terminal: terminalTheme) : (hovered ? DesktopStyle.hoverTab(terminal: terminalTheme) : .clear), in: RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius))
-        .overlay(RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius).stroke(focusedAction != nil ? DesktopStyle.barForeground : .clear, lineWidth: 1).allowsHitTesting(false))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius)
+                .stroke(focusedAction != nil ? DesktopStyle.barForeground : (active ? Color.white.opacity(0.14) : (hovered ? Color.white.opacity(0.08) : .clear)), lineWidth: 1)
+                .allowsHitTesting(false)
+        )
         .onHover { hovered = $0 }
         .overlay(TabMiddleClickTarget(tabID: tab.id, close: close).accessibilityHidden(true))
         .help(helpText)
@@ -592,29 +617,58 @@ private struct ConnectionChooser: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("新连接").font(.title2).bold(); Spacer(); Button("新建主机…") { dismiss(); model.showWorkspace(.vault); model.sendWorkspaceCommand(.newHost) } }
-            TextField("搜索已有主机", text: $search).textFieldStyle(.roundedBorder).accessibilityIdentifier("connection.search")
-            if model.connectionHosts.isEmpty { ContentUnavailableView("尚无主机", systemImage: "server.rack", description: Text("先创建主机配置，再建立连接。")) }
-            else if hosts.isEmpty { ContentUnavailableView.search(text: search) }
-            else {
+            HStack(spacing: 12) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 34, height: 34)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("新连接").font(.title3).bold()
+                    Text("选择已有主机快速建立终端会话").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("新建主机…") { dismiss(); model.showWorkspace(.vault); model.sendWorkspaceCommand(.newHost) }
+            }
+            DesktopSearchField(placeholder: "搜索已有主机", id: "connection.search", text: $search)
+            if model.connectionHosts.isEmpty {
+                ContentUnavailableView("尚无主机", systemImage: "server.rack", description: Text("先创建主机配置，再建立连接。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if hosts.isEmpty {
+                ContentUnavailableView.search(text: search)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(hosts) { host in
-                            HStack {
-                                Image(systemName: "server.rack").foregroundStyle(.secondary)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(host.name).font(.headline).lineLimit(1)
-                                    Text(host.username + "@" + host.address + ":" + String(host.port)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Spacer()
-                                Button("连接") { model.requestSession(hostID: host.id, mode: .reuse); dismiss() }
-                                Button("新会话") { model.requestSession(hostID: host.id, mode: .newSession); dismiss() }
-                            }.padding(12).background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius))
-                        }
+                        ForEach(hosts) { host in hostRow(host) }
                     }
                 }
             }
             HStack { Spacer(); Button("关闭", action: dismiss).keyboardShortcut(.cancelAction) }
-        }.padding(24).frame(width: 600, height: 440)
+        }.padding(24).frame(width: 620, height: 460).background(DesktopStyle.background)
+    }
+
+    private func hostRow(_ host: HostConfiguration) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 32, height: 32)
+                .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(host.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text("\(host.username)@\(host.address):\(host.port)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("新会话") { model.requestSession(hostID: host.id, mode: .newSession); dismiss() }
+            Button("连接") { model.requestSession(hostID: host.id, mode: .reuse); dismiss() }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(12)
+        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
     }
 }

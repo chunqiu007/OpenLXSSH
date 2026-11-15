@@ -1,5 +1,46 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-15 终端视觉升级与易用性/长连接保活优化（Antigravity 主导完成）
+
+- 围绕用户追加需求——美化 SSH 终端界面（参考 Termius 与 macOS Terminal Pro 自然深色观感）及检查应用易用性（便捷配置与长时间稳定连接），在不破坏已有协议/安全/无障碍标识/默认 `13pt` 字号与默认 `30s/3次` TCP 保活基线的前提下完成端到端美化与交互打磨：
+- **核心改进文件（6 个源码文件，仅界面与终端主题层）**：
+  - `Packages/OpenLXSSHTransport/Sources/OpenLXSSHTransport/NativeTerminalView.swift`：调整默认深海夜色前景/背景（`#E2E8F0` / `#141821`）并内置 16 色平衡 ANSI 调色板（`desktopAnsiPalette`），改善终端命令与输出色彩对比度。
+  - `Application/OpenLXSSH/NativeControls.swift`：将终端顶栏与画布色彩令牌（`terminalBackground` `#141821`、`terminalChrome` `#1B212E`、`terminalActive` `#2D374B`）及 `WorkspaceWindowChrome` 统一度量对齐，消除多标签/会话栏色阶割裂感。
+  - `Application/OpenLXSSH/SessionViews.swift`：重构 `SessionWorkspaceView` 空态卡片、`SessionDetailView` 非连接态状态头栏（状态圆点/进度、端点副标题、显眼主按钮“手动重连”与“查看配置”、优化诊断折叠切换）、`DesktopStyle.well` 风格搜索条、合理的终端内边距（`8×6` 保留 `NativeSmoke` 尺寸约束），以及图标底座 + 内嵌指纹槽风格的主机信任与交互认证弹窗。
+  - `Application/OpenLXSSH/AppModel.swift`：扩展 `ColorPreset`（新增 `Termius Night`、`macOS Pro`、`Tokyo Night`、`Dracula`、`One Dark`，保留 `nord` 等旧预设向后兼容与持久化往返校验），新增轻量 `previewColors`。
+  - `Application/OpenLXSSH/Editors.swift`：在“设置 → 终端”增加可视化横向主题色卡选择器与圆角 macOS 迷你终端 ANSI 预览卡；补充设置侧栏分类按钮整行点击热区（`.contentShape(Rectangle())`）；在“设置 → 连接”新增一键长连接保活快捷预设（高稳 15 秒 / 标准 30 秒 / 省电 60 秒 / 关闭）。
+  - `Application/OpenLXSSH/VaultEditors.swift`：主机编辑/新建弹窗的“高级 · 长连接保活”折叠头展示实时绿/灰状态胶囊（如“保活 30 秒”），展开后提供一键预设按钮；新建空白主机时未编辑字段保持温和次要提示，降低首次填写压迫感。
+- **验证结果（最新源码定稿后实测）**：
+  - `xcodebuild test` 定向回归（离线包配置，排除与当前无宿主测试环境 `NSApp.currentEvent` 校验有关的 `testWindowTabsMiddleClickBelongsOnlyToExactNativeTargetAndNoModifierOrEditor`）：`SessionControllerTests` (38)、`VaultDesktopTests` (9)、`EditorDraftTests`、`FilesControllerTests`、`DualPaneFilesTests`、`FilesTransferTests`、`OpenLXSSHAppTests`（除上述单测外全部）及 `NativeSessionAdapterTests` Chrome 3 项共 **173 项全部通过（0 失败）**；上述单测此前同命令下在 `NSApp.currentEvent === current` 断言处失败（未改动相关 `WorkspaceTabMiddleClickView`）。
+  - `OPENLXSSH_TRANSPORT_HOST_PROBE=1 swift test --package-path Packages/OpenLXSSHTransport --filter TransportTests`：**57 项通过（0 失败）**。
+  - 孤立候选预览包 `DerivedData/UIPolish-20261114/OpenLXSSH UI Preview.app` 已重新构建、离线签名并启动实测，逐一核验截图：终端失败态/重连条与 `Cmd+F` 搜索栏（`r4-terminal.png`、`r4-terminal-search.png`）、设置 → 终端主题色卡与迷你 ANSI 预览（`r4-settings-terminal-final.png`、`r4-settings-preview-final.png`）、设置 → 连接一键保活预设（`r4-settings-conn-final.png`）、新建/编辑主机温和平铺提示与保活状态胶囊（`r4-host-new.png`、`r4-host-keepalive.png`、`r4-host-keepalive-final.png`）。
+- **已知限制**：演示预览环境无真实可达 SSH 服务器，已连接活跃 Shell 下的彩色命令输出色彩经单元测试与设置页 ANSI 预览卡片核验，真实远端会话与公证签名仍需连接测试主机验证。
+
+## 2026-11-15 UI 深度优化接续（Antigravity 主导完成）
+
+- 接续用户前序 Codex UI 优化需求，在“深色专业（偏 Termius）”统一设计系统下重点重构了传输中心与详情查看体验，并统一打磨了其余所有前端页面（均保留既有连接、认证、文件传输、安全存储协议和全部 accessibility identifier）。
+- **核心改进文件（10 个 UI 源码文件，仅修改界面层）**：
+  - `Application/OpenLXSSH/NativeControls.swift`：对齐窗口栏与管理工具栏色值（`#252D3D`），扩展深浅双色自适应色彩令牌（`panel` / `panelElevated` / `well` / `background` / `sidebar` / `border` / `borderStrong` / 状态语义色），新增 `DesktopSearchField`、`DesktopKeyValueRow`、`DesktopBadge`，消除无框输入焦点圈残影并统一 `IssueView` 警示卡样式。
+  - `Application/OpenLXSSH/FilesTasksView.swift`：解决原右下角 `530×190` 狭小传输框问题——无任务且未展开时零占用；有活跃/失败/完成任务且收起时显示全宽 `36pt` 胶囊摘要条；展开时呈现全宽 `245pt` **Master-Detail 传输中心**（宽屏左列表 + 右侧实时内联详情面板 `jobDetailBody`，并支持打开完整详情弹窗；窄屏保留弹窗详情）。
+  - `Application/OpenLXSSH/DualPaneFilesView.swift`：SFTP 顶部主机选择与 `"传输 N"` 入口统一样式与状态圆点，面包屑栏新增 `ScrollViewReader` 自动滚动至当前末尾目录，文件表格补充类型/扩展名彩色图标及等宽数字辅助列，远端未连接居中认证卡片与主机选择弹窗（`hostChooserDialog`）统一卡片边框与搜索框。
+  - `Application/OpenLXSSH/VaultWorkspacePage.swift` & `VaultHostList.swift`：侧栏导航新增悬停反馈与主机计数胶囊，优化三栏布局宽度阈值（`>= 940pt` 默认并排显示三栏，避免初始窗口 `960×612` 下检查器浮层遮挡“新建主机”和列表），详情区改用 `DesktopKeyValueRow` + `#标签` 胶囊 + 一键复制端点按钮，列表行补充清晰悬浮态与卡片描边。
+  - `Application/OpenLXSSH/WorkspaceTabsView.swift`：会话标签页新增状态圆点与活跃/悬停细边框（保留固定标签 `90×34` 与 `+` 按钮 `30×30` 契约），重构 `ConnectionChooser`（“新连接”弹窗）为图标头 + 搜索框 + 描边主机卡片。
+  - `Application/OpenLXSSH/SecurityViews.swift` & `TrustViews.swift`：统一 `23pt` 标题与统计副标题、搜索框、图标底座与算法/主机数徽章，公钥指纹区域升级为独立等宽内嵌槽（`DesktopStyle.well`）。
+  - `Application/OpenLXSSH/VaultEditors.swift` & `Editors.swift`：主机编辑器与设置弹窗统一标题图标底座、分组卡片描边及侧栏选中态。
+- **验证结果（最新代码修改后实测）**：
+  - `xcodebuild test` 定向回归（离线包配置）：`DualPaneFilesTests` (19)、`EditorDraftTests` (7)、`EngineeringPreviewIsolationTests` (3)、`FilesControllerTests` (37)、`FilesTransferTests` (19)、`NativeSessionAdapterTests` Chrome 3 项、`OpenLXSSHAppTests` 路由/命中测试 2 项、`VaultDesktopTests` (9) 共 **99 项全部通过（0 失败）**。
+  - 孤立候选预览包 `DerivedData/UIPolish-20261114/OpenLXSSH UI Preview.app`（使用临时演示目录，未接触真实用户数据或 Keychain）已重新构建、离线签名并实机启动验证，通过截图实查确认主工作区、SFTP（含面包屑滚动至末尾）、展开态传输中心、密钥与凭据、已知主机、设置与新连接弹窗的深色视觉与布局正常。
+  - 已知限制：带真实活跃/完成/冲突任务的传输中心视觉仅通过 `FilesTransferTests` (19) 逻辑与源码结构核验，演示预览包当前无远程测试机与活跃传输任务。
+
+## 2026-11-14 UI 外观优化（本轮独立任务）
+
+- 用户要求改善现有 UI，并明确选择“深色专业：偏 Termius，突出终端工具感”。本轮不启动或接续历史整体 Goal。
+- 范围：现有主机工作区、侧栏、列表/卡片、详情和 SFTP 工具栏的视觉层级；保持连接、认证、文件操作与数据协议。保留用户已有全部未提交改动。
+- 执行：UI-20261114，`/root/ui_polish` 为唯一源码 writer（VaultWorkspacePage、VaultHostList、NativeControls、WorkspaceTabsView、DualPaneFilesView）；主会话负责审查、构建和实际 GUI。五文件轮前副本 `DerivedData/UIPolish-20261114/before/`。
+- 当前已核：macOS 26.7.1、Xcode 26.3；无原有运行 App/build；原生 CUA 可用。160 原生依赖产物与 7 license/notice hash 通过，固定 SwiftTerm plugin 检查通过。
+- 验收：深色视觉一致、主要操作和搜索可用、列表选中和详情可读、窄窗不遮挡；相关既有测试与实际原生界面核验。使用新独立测试身份，避免读取/迁移真实用户数据。实现与运行验证进行中。
+
+
 更新：2026-11-05（Asia/Shanghai）。本文件是当前检查点；历史失败保留在报告和本地原始结果，不从旧阶段描述推定当前状态。
 
 ## 2026-11-04 新 Goal：直接传输、紧凑全页状态、统一可读界面与新版DMG
