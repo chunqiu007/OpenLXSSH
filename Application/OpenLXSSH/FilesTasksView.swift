@@ -206,8 +206,15 @@ struct FilesTasksView: View {
             }
             if activeCount > 0 {
                 DesktopBadge(text: "\(activeCount) 进行中", color: Color.accentColor, fill: DesktopStyle.iconSurface)
+            } else if model.transferPlanPhase != nil {
+                DesktopBadge(text: "扫描准备中", color: Color.accentColor, fill: DesktopStyle.iconSurface)
             }
             Spacer(minLength: 8)
+            if model.transferPlanPhase != nil {
+                Button("取消准备") { model.cancelTransferPlan() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(model.admissionFrozen)
+            }
             Button {
                 historyOwner.prepare(using: model)
                 _ = historyOwner.confirm(using: model)
@@ -223,22 +230,47 @@ struct FilesTasksView: View {
     }
 
     private var headerSubtitle: String {
+        if model.transferPlanPhase != nil && model.transferSnapshot.jobs.isEmpty { return "正在递归扫描目录并核对传输清单" }
         if model.transferSnapshot.jobs.isEmpty { return "文件上传与下载任务队列" }
         return "共 \(model.transferSnapshot.jobs.count) 项任务 · \(activeCount) 活动 · \(finishedCount) 已结束"
     }
 
     private var emptyQueueState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "tray")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
-            Text("暂无传输任务")
-                .font(.system(size: 14, weight: .semibold))
-            Text("在 SFTP 中拖拽文件、点击“上传”或“下载”后，进度与详细结果会显示在这里。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 340)
+            if model.transferPlanPhase != nil {
+                ProgressView()
+                    .controlSize(.regular)
+                Text("正在扫描并准备目录传输…")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("正在递归检查目录结构、相对符号链接与目标路径，核对通过后会自动加入传输队列。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            } else if let prepIssue = model.transferPreparationIssue {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(DesktopStyle.statusRed)
+                Text("目录传输准备未通过")
+                    .font(.system(size: 14, weight: .semibold))
+                Text(verbatim: prepIssue.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: 460)
+            } else {
+                Image(systemName: "tray")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                Text("暂无传输任务")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("在 SFTP 中拖拽文件、点击“上传”或“下载”后，进度与详细结果会显示在这里。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 340)
+            }
         }
         .padding(20)
     }
@@ -665,7 +697,7 @@ struct FilesTransferDecisionView: View {
                         answer(.conflict(.overwrite, applyToBatch: batch))
                     }.fixedSize()
                     NativeButton(title: "都保留", id: "transfer.conflict.keepBoth",
-                        enabled: !submitting && (conflict.sourceKind == .regular || conflict.sourceKind == .directory), isProminent: true) {
+                        enabled: !submitting && [FileKind.regular, .directory, .symbolicLink].contains(conflict.sourceKind), isProminent: true) {
                         answer(.conflict(.autoRename, applyToBatch: batch))
                     }.fixedSize()
                 }

@@ -75,6 +75,8 @@ public final class TransferSourceManifest: Sendable, Equatable {
         public let attributes: FileAttributes
         /// Exact raw names, sorted by bytes. nil for non-directories, [] for a known empty directory.
         public let children: [FileName]?
+        /// Exact readlink bytes, never a path resolved through the local filesystem.
+        public let linkTarget: Data?
     }
     struct Anchor: Sendable { let path: RemotePath; let attributes: FileAttributes }
     public let planID: UUID
@@ -93,7 +95,16 @@ public final class TransferSourceManifest: Sendable, Equatable {
     private let indices: [RemotePath: Int]
     public var fileCount: Int { entries.filter { $0.attributes.kind == .regular }.count }
     public var directoryCount: Int { entries.filter { $0.attributes.kind == .directory }.count }
-    public var rejectedCount: Int { entries.filter { $0.attributes.kind != .regular && $0.attributes.kind != .directory }.count }
+    public var rejectedCount: Int {
+        let rejectedLinks = Set(issues.filter { $0.kind == .symbolicLink }.compactMap(\.path))
+        return entries.filter {
+            switch $0.attributes.kind {
+            case .regular, .directory: false
+            case .symbolicLink: $0.linkTarget == nil || rejectedLinks.contains($0.path)
+            default: true
+            }
+        }.count
+    }
     public var totalBytes: UInt64? {
         guard enumerationComplete else { return nil }
         var total: UInt64 = 0
@@ -131,6 +142,57 @@ public final class TransferSourceManifest: Sendable, Equatable {
         guard let index = indices[path] else { throw FileServiceError(.raceDetected, operation: "source-not-in-manifest", path: path) }
         return entries[index]
     }
+    /// Includes directories later removed by "..". They must also refer to real directories
+    /// at the destination for the original, unmodified target string to resolve safely.
+    func linkTargetEntries(for entry: Entry) throws -> [Entry] {
+        try Self.resolveLink(entry, root: source.path) { path in
+            indices[path].map { entries[$0] }
+        }.traversal
+    }
+    fileprivate static func resolveLink(_ entry: Entry, root: RemotePath,
+                                        lookup: (RemotePath) -> Entry?) throws -> (traversal: [Entry], target: Entry) {
+        var currentLink = entry
+        var visitedLinks = Set([entry.path])
+        var result: [Entry] = [], seen: Set<RemotePath> = []
+        while true {
+            let unsafe = FileServiceError(.symbolicLink, operation: "manifest-link-unsafe-target", path: currentLink.path)
+            let outside = FileServiceError(.symbolicLink, operation: "manifest-link-outside-tree", path: currentLink.path)
+            guard let target = currentLink.linkTarget, !target.isEmpty, target.count <= 32_768,
+                  !target.contains(0), var current = lookup(currentLink.path.parent) else { throw unsafe }
+            guard target.first != 47 else { throw outside }
+            if seen.insert(current.path).inserted { result.append(current) }
+            // Empty interior components are repeated separators. A trailing separator, dot,
+            // or dot-dot still requires the preceding component to be a real directory.
+            for part in target.split(separator: 47, omittingEmptySubsequences: false) {
+                guard current.attributes.kind == .directory else { throw unsafe }
+                if part.isEmpty || part.elementsEqual([46]) { continue }
+                if part.elementsEqual([46, 46]) {
+                    guard current.path != root else { throw outside }
+                    guard let parent = lookup(current.path.parent) else { throw unsafe }
+                    current = parent
+                } else {
+                    guard let name = try? FileName(bytes: Data(part)),
+                          let path = try? current.path.appending(name), let next = lookup(path),
+                          next.attributes.kind == .regular || next.attributes.kind == .directory
+                              || (next.attributes.kind == .symbolicLink && next.linkTarget != nil) else { throw unsafe }
+                    current = next
+                }
+                if seen.insert(current.path).inserted { result.append(current) }
+            }
+            if current.attributes.kind == .symbolicLink {
+                guard visitedLinks.insert(current.path).inserted, visitedLinks.count <= 16 else {
+                    throw FileServiceError(.symbolicLink, operation: "manifest-link-unsafe-target", path: entry.path)
+                }
+                currentLink = current
+                continue
+            }
+            if current.attributes.kind == .directory,
+               visitedLinks.contains(where: { $0.parent.components.starts(with: current.path.components) }) {
+                throw FileServiceError(.symbolicLink, operation: "manifest-link-unsafe-target", path: entry.path)
+            }
+            return (result, current)
+        }
+    }
     private func unchanged(_ service: any RemoteFileService, path: RemotePath, attributes: FileAttributes,
                            token: CancellationToken) async throws {
         do {
@@ -144,6 +206,12 @@ public final class TransferSourceManifest: Sendable, Equatable {
     }
     private func validateEntry(_ service: any RemoteFileService, _ entry: Entry, token: CancellationToken) async throws {
         try await unchanged(service, path: entry.path, attributes: entry.attributes, token: token)
+        if let target = entry.linkTarget {
+            guard try await service.readSymbolicLink(entry.path, token: token) == target else {
+                throw FileServiceError(.raceDetected, operation: "manifest-link-target-changed", path: entry.path)
+            }
+            try token.check()
+        }
         if let expected = entry.children {
             let rows = try await service.list(entry.path, token: token); try token.check()
             guard rows.count == expected.count, Set(rows.map(\.name)).count == rows.count,
@@ -199,7 +267,7 @@ public final class TransferSourceManifest: Sendable, Equatable {
     }
 }
 
-/// One bounded scan, entirely lstat/list. On a problem the prefix is explicitly incomplete and
+/// One bounded metadata scan using lstat/list and, for preserved links, readlink. On a problem the prefix is explicitly incomplete and
 /// unconfirmable; the error is retained instead of silently skipping the rejected subtree.
 struct TransferManifestScan: Sendable {
     var entries: [TransferSourceManifest.Entry] = []
@@ -207,6 +275,7 @@ struct TransferManifestScan: Sendable {
     var issues: [FileServiceError] = []
     var complete = false
     var metadataBytes = 0
+    var preserveRelativeLinks = false
     let maxEntries: Int
     let maxDepth: Int
     let maxBytes: Int
@@ -226,6 +295,7 @@ struct TransferManifestScan: Sendable {
                     throw FileServiceError(.raceDetected, operation: "manifest-request-kind-changed", path: root.path)
                 }
             }
+            try validateLinks(root: request.source.path, token: token)
             complete = true
         } catch {
             try token.check()
@@ -236,13 +306,64 @@ struct TransferManifestScan: Sendable {
         guard bytes <= maxBytes - metadataBytes else { throw FileServiceError(.resourceLimit, operation: "manifest-metadata-limit") }
         metadataBytes += bytes
     }
+    private func validateLinks(root: RemotePath, token: CancellationToken) throws {
+        guard entries.contains(where: { $0.linkTarget != nil }) else { return }
+        let indices = Dictionary(uniqueKeysWithValues: entries.enumerated().map { ($0.element.path, $0.offset) })
+        struct DirectoryEdge { let directory: RemotePath; let link: RemotePath? }
+        var edges: [RemotePath: [DirectoryEdge]] = [:]
+        for entry in entries where entry.linkTarget != nil {
+            try token.check()
+            let result = try TransferSourceManifest.resolveLink(entry, root: root) { path in
+                indices[path].map { entries[$0] }
+            }
+            if result.target.attributes.kind == .directory {
+                edges[entry.path.parent, default: []].append(.init(directory: result.target.path, link: entry.path))
+            }
+        }
+        guard !edges.isEmpty else { return }
+        for entry in entries where entry.attributes.kind == .directory && entry.path != root {
+            edges[entry.path.parent, default: []].append(.init(directory: entry.path, link: nil))
+        }
+        // A pair of individually in-tree directory links can still form a cycle. Visit
+        // the directory graph once, without recursion or any filesystem traversal.
+        enum Visit { case enter(DirectoryEdge), leave(DirectoryEdge) }
+        var active: Set<RemotePath> = [], finished: Set<RemotePath> = [], activeLinks: [RemotePath] = []
+        var stack: [Visit] = [.enter(.init(directory: root, link: nil))]
+        while let visit = stack.popLast() {
+            try token.check()
+            switch visit {
+            case .enter(let edge):
+                if finished.contains(edge.directory) { continue }
+                guard active.insert(edge.directory).inserted else {
+                    throw FileServiceError(.symbolicLink, operation: "manifest-link-unsafe-target", path: edge.link ?? activeLinks.last)
+                }
+                if let link = edge.link { activeLinks.append(link) }
+                stack.append(.leave(edge))
+                for child in edges[edge.directory, default: []].reversed() { stack.append(.enter(child)) }
+            case .leave(let edge):
+                active.remove(edge.directory)
+                finished.insert(edge.directory)
+                if edge.link != nil { activeLinks.removeLast() }
+            }
+        }
+    }
     private mutating func walk(_ service: any RemoteFileService, path: RemotePath, depth: Int, token: CancellationToken) async throws {
         try token.check()
         guard depth <= maxDepth, entries.count < maxEntries else { throw FileServiceError(.resourceLimit, operation: "manifest-recursive-bound", path: path) }
         let attr = try await service.lstat(path, token: token)
         try charge(512 + 2 * path.bytes.count + (attr.identity?.utf8.count ?? 0))
         let index = entries.count
-        entries.append(.init(path: path, attributes: attr, children: attr.kind == .directory ? [] : nil))
+        entries.append(.init(path: path, attributes: attr, children: attr.kind == .directory ? [] : nil, linkTarget: nil))
+        if attr.kind == .symbolicLink, preserveRelativeLinks, depth > 0 {
+            let target = try await service.readSymbolicLink(path, token: token)
+            try token.check()
+            try charge(target.count)
+            guard try await service.lstat(path, token: token) == attr else {
+                throw FileServiceError(.raceDetected, operation: "manifest-link-changed-during-scan", path: path)
+            }
+            entries[index] = .init(path: path, attributes: attr, children: nil, linkTarget: target)
+            return
+        }
         guard attr.kind == .regular || attr.kind == .directory else {
             throw FileServiceError(attr.kind == .symbolicLink ? .symbolicLink : .unsupported, operation: "manifest-rejected-kind", path: path)
         }
@@ -252,7 +373,7 @@ struct TransferManifestScan: Sendable {
             guard Set(rows.map(\.name)).count == rows.count else { throw FileServiceError(.protocolFailure, operation: "manifest-duplicate-name", path: path) }
             try charge(rows.reduce(0) { $0 + 64 + $1.name.bytes.count })
             let names = rows.map(\.name).sorted { $0.bytes.lexicographicallyPrecedes($1.bytes) }
-            entries[index] = .init(path: path, attributes: attr, children: names)
+            entries[index] = .init(path: path, attributes: attr, children: names, linkTarget: nil)
             for name in names { try await walk(service, path: path.appending(name), depth: depth + 1, token: token) }
             guard try await service.lstat(path, token: token) == attr else {
                 throw FileServiceError(.raceDetected, operation: "manifest-directory-changed-during-scan", path: path)

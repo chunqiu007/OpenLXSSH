@@ -1,5 +1,22 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-19 SFTP 文件夹传输符号链接保留、准备错误准确提示与边界问题修复（Antigravity 接续完成）
+
+- 接续前序中断会话，完成“文件夹内包含相对符号链接（如 `FlagGems-vllm/.github/copilot-instructions.md`）导致整批无法上传且误报 `files.conflict`（文件名已存在或类型冲突）”的完整修复，并系统性排查、一并修复了文件夹传输（上传/下载/覆盖/冲突/状态同步）中的多项潜在问题：
+- **核心改进与修复（16 个源码与测试文件）**：
+  - **目录内相对符号链接安全保留（上传与下载双向支持）**：
+    - `Packages/OpenLXSSHFiles/Sources/COpenLXSSHFiles/Bridge.c` & `include/COpenLXSSHFiles.h`、`LibSSH2FileService.swift`、`LocalFileService.swift`、`RemoteFileService.swift`：新增 `readSymbolicLink` 与独占 `createSymbolicLink`（含 SFTP v3 `(target, name)` 与 `(name, target)` 线序安全探测 `.openlxssh-link-<UUID> -> .` 及清理校验）。
+    - `Packages/OpenLXSSHFiles/Sources/OpenLXSSHFiles/TransferSourceManifest.swift`：在 `preserveRelativeLinks` 模式下读取并复核符号链接原始目标字节，验证目标为所选文件夹内的安全相对路径（阻止绝对路径、`..` 越界逃逸、悬空目标、经非目录/中间链接跳转 `..` 以及单步或多步目录/链接循环），并支持指向目录内另一相对符号链接的链式相对链接（如 `copilot-instructions.md -> ../CLAUDE.md -> AGENTS.md` 或版本化动态库链）。
+    - `Packages/OpenLXSSHFiles/Sources/OpenLXSSHFiles/SafeTransferEngine.swift`：`copyTree` 在普通文件与目录传输完成后，按依赖拓扑顺序创建相对符号链接，并在创建前复核全部依赖路径已到达预定目标；若 `walk` 因 `.raceDetected` 或 `.cancelled` 中止，则立即停止后续延迟链接创建；合并/覆盖（`.overwrite`）已有目录时，若目标位置已存在指向相同相对路径的符号链接则核验后直接通过；修复子目录与目标同名普通文件冲突时点击“都保留”（`.autoRename`）未处理而抛 `directory-conflict` 的缺陷。
+    - `Application/OpenLXSSH/FilesController.swift`：不仅在上传文件夹（`enqueueUploads`）时启用 `preserveRelativeLinks: kind == .tree`，在下载远端文件夹（`enqueueDownloads`）时同样启用 `preserveRelativeLinks: entry.attributes.kind == .directory`，保证含相对链接的仓库上传与下载往返一致；修复目录扫描准备失败退出时 `clearTransferPlanOwner` 未同步更新 `hasPendingOperations` 的状态残留问题。
+  - **消除准备阶段误报“文件名已存在”并完善传输中心与双栏反馈**：
+    - `Packages/OpenLXSSHFiles/Sources/OpenLXSSHFiles/TransferManager.swift`：`confirmPreparedBatch` 在 `!plan.canExecute` 时不再笼统抛出 `.conflict`（`manifest-plan-not-confirmable`），而是清理计划并抛出 `plan.issues.first?.error` 真实根因。
+    - `Application/OpenLXSSH/FilesConnection.swift`：新增 `AppIssue.transferPreparation(_:)` 并细化 `AppIssue.files(_:)`，对越界链接、不安全链接目标、特殊文件、目录层级/数量超限（10,000 项 / 32 层）、清单缓存预算已满（提示“清除已完成”）、扫描期间目录变化（`.raceDetected`）、正在扫描另一批目录（`files-transfer-review-busy`）、重叠源目录等给出明确中文原因与具体涉及路径（`涉及路径：...`），不再误报“文件名已存在或类型冲突”。
+    - `Application/OpenLXSSH/FilesTasksView.swift` & `DualPaneFilesView.swift`：支持符号链接同名冲突选择“都保留”；当队列为 0 任务但处于目录扫描准备中或准备失败时，传输中心主区域直接展示扫描进度（含“取消准备”按钮）或具体准备失败原因与路径，不再空白显示“暂无传输任务”；双栏底部关闭错误提示时同步清除 `transferPreparationIssue`；含根目录已创建后中止的文件夹任务完成时自动刷新目标目录列表。
+- **验证结果**：
+  - `swift test --package-path Packages/OpenLXSSHFiles --filter "RelativeLinkManifestTests|SymbolicLinkIOTests|TransferManifestTests|RemoteCapabilityPolicyTests|TransferPolicyTests|TransferManagerTests"`：**85 项测试全部通过（0 失败）**。
+  - `OPENLXSSH_FILES_TARGET26=1 xcodebuild test ... -only-testing:OpenLXSSHAppTests/FilesTransferTests -only-testing:OpenLXSSHAppTests/FilesTransferPlanAppTests -only-testing:OpenLXSSHAppTests/FilesManifestConflictAppTests -only-testing:OpenLXSSHAppTests/DualPaneFilesTests -only-testing:OpenLXSSHAppTests/FilesControllerTests`：**82 项 App 层集成测试全部通过（0 失败）**。
+
 ## 2026-11-15 终端视觉升级与易用性/长连接保活优化（Antigravity 主导完成）
 
 - 围绕用户追加需求——美化 SSH 终端界面（参考 Termius 与 macOS Terminal Pro 自然深色观感）及检查应用易用性（便捷配置与长时间稳定连接），在不破坏已有协议/安全/无障碍标识/默认 `13pt` 字号与默认 `30s/3次` TCP 保活基线的前提下完成端到端美化与交互打磨：

@@ -483,17 +483,159 @@ public struct SafeTransferEngine: Sendable {
                 }
             }
             var results: [TransferItemResult] = []
+            var links: [PendingTreeLink] = []
             // Carry the chosen overwrite into the root check; do not ask the same
             // directory/type conflict again. Alternate names are root-only.
             let walkAction: ConflictDecision = rootDecision == .overwrite ? .overwrite : action
-            await self.walk(source, sourcePath, destination, target, walkAction, token, policy, hooks, 0, &results, manifest: sourceManifest)
+            await self.walk(source, sourcePath, destination, target, walkAction, token, policy, hooks, 0, &results, &links, manifest: sourceManifest)
+            let stopped = results.contains {
+                if case .failed(let error) = $0.state {
+                    return error.kind == .raceDetected || error.kind == .cancelled
+                }
+                return false
+            }
+            if let manifest = sourceManifest, !links.isEmpty, !stopped {
+                var completed = results.reduce(into: [RemotePath: RemotePath]()) { paths, item in
+                    if case .succeeded = item.state { paths[item.source] = item.destination }
+                }
+                let orderedLinks = Self.orderTreeLinks(links, manifest: manifest)
+                for (index, link) in orderedLinks.enumerated() {
+                    let item = await self.copyTreeLink(link, source: source, destination: destination,
+                        root: target, completed: completed, manifest: manifest, conflict: walkAction, hooks: hooks, token: token)
+                    if case .succeeded = item.state { completed[link.entry.path] = item.destination }
+                    results.append(item)
+                    if case .failed(let error) = item.state, error.kind == .raceDetected || error.kind == .cancelled { break }
+                    if token.isCancelled {
+                        if index + 1 < orderedLinks.count {
+                            results.append(self.failure(FileServiceError(.cancelled, operation: "recursive-cancelled-with-remaining-items", path: sourcePath),
+                                source: sourcePath, destination: target))
+                        }
+                        break
+                    }
+                }
+            }
             return TransferReport(items: results)
         }
     }
+    private struct PendingTreeLink {
+        let entry: TransferSourceManifest.Entry
+        let destination: RemotePath
+        let risks: [TransferRisk]
+    }
+    private static func orderTreeLinks(_ links: [PendingTreeLink], manifest: TransferSourceManifest) -> [PendingTreeLink] {
+        guard links.count > 1 else { return links }
+        var remaining = links
+        var remainingPaths = Set(links.map(\.entry.path))
+        var ordered: [PendingTreeLink] = []
+        ordered.reserveCapacity(links.count)
+        while !remaining.isEmpty {
+            var nextRemaining: [PendingTreeLink] = []
+            var progressed = false
+            for link in remaining {
+                let deps = (try? manifest.linkTargetEntries(for: link.entry).map(\.path)) ?? []
+                if deps.allSatisfy({ $0 == link.entry.path || !remainingPaths.contains($0) }) {
+                    ordered.append(link)
+                    remainingPaths.remove(link.entry.path)
+                    progressed = true
+                } else {
+                    nextRemaining.append(link)
+                }
+            }
+            if !progressed {
+                ordered.append(contentsOf: nextRemaining)
+                break
+            }
+            remaining = nextRemaining
+        }
+        return ordered
+    }
+
+    /// A link is created only after the regular files and directories it references have
+    /// reached their intended names. A skipped or renamed referent cannot silently retarget it.
+    private func copyTreeLink(_ link: PendingTreeLink, source: any RemoteFileService,
+                              destination: any RemoteFileService, root: RemotePath,
+                              completed: [RemotePath: RemotePath], manifest: TransferSourceManifest,
+                              conflict: ConflictDecision, hooks: TransferHooks, token: CancellationToken) async -> TransferItemResult {
+        let sourcePath = link.entry.path
+        var output = link.destination
+        do {
+            try token.check()
+            guard let target = link.entry.linkTarget, let name = output.name else {
+                throw FileServiceError(.invalidPath, operation: "link-manifest-target", path: sourcePath)
+            }
+            var decision = conflict
+            var existingIdenticalLink: FileAttributes?
+            try await TransferChecks.inspect(destination, path: output, includeLeaf: false, token: token)
+            do {
+                let existing = try await destination.lstat(output, token: token)
+                if decision == .fail, let resolve = hooks.resolveConflict {
+                    decision = try await resolve(TransferConflict(source: sourcePath, destination: output, existing: existing, sourceKind: .symbolicLink))
+                }
+                switch decision {
+                case .skip:
+                    return TransferItemResult(source: sourcePath, destination: output, state: .skipped, retainedTemporary: nil)
+                case .autoRename, .renameTo: break
+                case .overwrite where existing.kind == .symbolicLink:
+                    guard (try? await destination.readSymbolicLink(output, token: token)) == target else {
+                        throw FileServiceError(.conflict, operation: "link-target-exists", path: output)
+                    }
+                    existingIdenticalLink = existing
+                default: throw FileServiceError(.conflict, operation: "link-target-exists", path: output)
+                }
+            } catch let error as FileServiceError where error.kind == .notFound { decision = .fail }
+
+            // Check both the link parent and every directory in the literal target, even
+            // those cancelled out by "..". Destination paths can change while a decision is pending.
+            try await manifest.validateSource(source, path: sourcePath, token: token)
+            let sourceDepth = manifest.source.path.components.count
+            let dependencies = try manifest.linkTargetEntries(for: link.entry)
+            for entry in dependencies {
+                let expected = try entry.path.components.dropFirst(sourceDepth).reduce(root) { try $0.appending($1) }
+                guard completed[entry.path] == expected else {
+                    throw FileServiceError(.raceDetected, operation: "link-target-not-transferred", path: entry.path)
+                }
+                try await TransferChecks.inspect(destination, path: expected, includeLeaf: false, token: token)
+                guard try await destination.lstat(expected, token: token).kind == entry.attributes.kind else {
+                    throw FileServiceError(.raceDetected, operation: "link-target-changed", path: expected)
+                }
+            }
+            if let existingIdenticalLink {
+                guard try await destination.lstat(output, token: token) == existingIdenticalLink,
+                      try await destination.readSymbolicLink(output, token: token) == target else {
+                    throw FileServiceError(.raceDetected, operation: "link-target-changed", path: output)
+                }
+                return TransferItemResult(source: sourcePath, destination: output, state: .succeeded(bytes: 0),
+                                          retainedTemporary: nil, acknowledgedRisks: link.risks)
+            }
+
+            for index in 1...1000 {
+                try token.check()
+                if decision == .autoRename {
+                    output = try link.destination.parent.appending(Self.automaticName(name, index: index))
+                } else { output = try conflictDestination(link.destination, decision) }
+                try await TransferChecks.inspect(destination, path: output, includeLeaf: false, token: token)
+                do {
+                    try await destination.createSymbolicLink(output, target: target, token: token)
+                    return TransferItemResult(source: sourcePath, destination: output, state: .succeeded(bytes: 0),
+                                              retainedTemporary: nil, acknowledgedRisks: link.risks)
+                } catch let error as FileServiceError where decision == .autoRename && error.kind == .conflict {
+                    continue
+                }
+            }
+            throw FileServiceError(.conflict, operation: "automatic-name-limit", path: link.destination)
+        } catch {
+            let probeError = error as? FileServiceError
+            let retained = probeError.flatMap {
+                ["symlink-probe-outcome-uncertain", "symlink-probe-cleanup-unconfirmed"].contains($0.operation) ? $0.path : nil
+            }
+            return failure(error, source: sourcePath, destination: output, retained: retained, risks: link.risks)
+        }
+    }
+
     private func walk(_ source: any RemoteFileService, _ sourcePath: RemotePath,
                       _ destination: any RemoteFileService, _ destinationPath: RemotePath,
                       _ conflict: ConflictDecision, _ token: CancellationToken, _ policy: TransferPolicy, _ hooks: TransferHooks,
-                      _ depth: Int, _ results: inout [TransferItemResult], acknowledgedRisks: [TransferRisk] = [],
+                      _ depth: Int, _ results: inout [TransferItemResult], _ links: inout [PendingTreeLink], acknowledgedRisks: [TransferRisk] = [],
                       manifest: TransferSourceManifest? = nil) async {
         var risks = acknowledgedRisks
         do {
@@ -502,9 +644,16 @@ public struct SafeTransferEngine: Sendable {
                 let risk = TransferRisk.remotePathChecksAreNotAtomic(path: path)
                 try await policy.require(risk); risks.append(risk)
             }
+            if let entry = try manifest?.entry(sourcePath), entry.linkTarget != nil {
+                guard depth <= maxDepth, results.count + links.count < maxItems else {
+                    throw FileServiceError(.resourceLimit, operation: "recursive-bound", path: sourcePath)
+                }
+                links.append(PendingTreeLink(entry: entry, destination: destinationPath, risks: risks))
+                return
+            }
             try await TransferChecks.inspect(source, path: sourcePath, includeLeaf: true, token: token)
             try await TransferChecks.inspect(destination, path: destinationPath, includeLeaf: false, token: token)
-            guard depth <= maxDepth, results.count < maxItems else { throw FileServiceError(.resourceLimit, operation: "recursive-bound", path: sourcePath) }
+            guard depth <= maxDepth, results.count + links.count < maxItems else { throw FileServiceError(.resourceLimit, operation: "recursive-bound", path: sourcePath) }
             let observed = try await source.lstat(sourcePath, token: token)
             try await manifest?.validateSource(source, path: sourcePath, token: token)
             let attr = try manifest?.entry(sourcePath).attributes ?? observed
@@ -519,7 +668,7 @@ public struct SafeTransferEngine: Sendable {
                 let existing = try await destination.lstat(destinationPath, token: token)
                 if existing.kind != .directory {
                     let decision: ConflictDecision
-                    if conflict == .fail, let resolveConflict = hooks.resolveConflict {
+                    if (conflict == .fail || (depth > 0 && conflict == .overwrite)), let resolveConflict = hooks.resolveConflict {
                         decision = try await resolveConflict(TransferConflict(source: sourcePath, destination: destinationPath, existing: existing, sourceKind: attr.kind))
                         try token.check()
                         try await manifest?.validateSource(source, path: sourcePath, token: token)
@@ -527,6 +676,26 @@ public struct SafeTransferEngine: Sendable {
                     if decision == .skip {
                         results.append(TransferItemResult(source: sourcePath, destination: destinationPath, state: .skipped, retainedTemporary: nil,
                                                           acknowledgedRisks: risks))
+                        return
+                    }
+                    if decision == .autoRename {
+                        guard let name = destinationPath.name else { throw FileServiceError(.invalidPath, operation: "automatic-name-root") }
+                        var reserved: RemotePath?
+                        for index in 1...1000 {
+                            try token.check()
+                            let candidate = try destinationPath.parent.appending(Self.automaticName(name, index: index))
+                            if destination.capabilities.traversal == .remoteComponentLstat {
+                                let risk = TransferRisk.remotePathChecksAreNotAtomic(path: candidate)
+                                try await policy.require(risk); risks.append(risk)
+                                try token.check()
+                            }
+                            try await TransferChecks.inspect(destination, path: candidate, includeLeaf: false, token: token)
+                            try await manifest?.validateSource(source, path: sourcePath, token: token)
+                            do { try await destination.mkdir(candidate, token: token); reserved = candidate; break }
+                            catch let error as FileServiceError where error.kind == .conflict { continue }
+                        }
+                        guard let target = reserved else { throw FileServiceError(.conflict, operation: "automatic-name-limit", path: destinationPath) }
+                        await walk(source, sourcePath, destination, target, .fail, token, policy, hooks, depth, &results, &links, acknowledgedRisks: risks, manifest: manifest)
                         return
                     }
                     if case .renameTo = decision {
@@ -540,7 +709,7 @@ public struct SafeTransferEngine: Sendable {
                         // Reserve the alternate directory exclusively, just like copyTree(renameTo:).
                         try await manifest?.validateSource(source, path: sourcePath, token: token)
                         try await destination.mkdir(target, token: token)
-                        await walk(source, sourcePath, destination, target, .fail, token, policy, hooks, depth, &results, acknowledgedRisks: risks, manifest: manifest)
+                        await walk(source, sourcePath, destination, target, .fail, token, policy, hooks, depth, &results, &links, acknowledgedRisks: risks, manifest: manifest)
                         return
                     }
                     throw FileServiceError(.conflict, operation: "directory-conflict", path: destinationPath)
@@ -557,11 +726,11 @@ public struct SafeTransferEngine: Sendable {
                                               acknowledgedRisks: risks))
             for (index, name) in names.enumerated() {
                 try token.check()
-                guard results.count < maxItems else { throw FileServiceError(.resourceLimit, operation: "recursive-item-bound", path: sourcePath) }
+                guard results.count + links.count < maxItems else { throw FileServiceError(.resourceLimit, operation: "recursive-item-bound", path: sourcePath) }
                 // Live lists only validate the approved set; they never supply new traversal work.
                 try await manifest?.validateSource(source, path: sourcePath, token: token)
                 await walk(source, try sourcePath.appending(name), destination, try destinationPath.appending(name),
-                           conflict, token, policy, hooks, depth + 1, &results, manifest: manifest)
+                           conflict, token, policy, hooks, depth + 1, &results, &links, manifest: manifest)
                 if manifest != nil, case .failed(let error)? = results.last?.state, error.kind == .raceDetected { return }
                 if token.isCancelled && index + 1 < names.count {
                     throw FileServiceError(.cancelled, operation: "recursive-cancelled-with-remaining-items", path: sourcePath)

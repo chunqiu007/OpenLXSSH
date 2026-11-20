@@ -271,8 +271,15 @@ final class TransferManifestTests: XCTestCase, @unchecked Sendable {
             XCTAssertFalse(plan.canExecute); XCTAssertFalse(plan.enumerationComplete); XCTAssertNil(plan.totalBytes)
             XCTAssertFalse(plan.issues.isEmpty)
             XCTAssertEqual(plan.issues.first?.error.kind, kind == "link" ? .symbolicLink : kind == "fifo" ? .unsupported : .protocolFailure)
+            do {
+                _ = try await manager.confirmPreparedBatch(plan.id)
+                XCTFail("Incomplete plan admitted")
+            } catch let error as FileServiceError {
+                XCTAssertEqual(error, plan.issues.first?.error)
+            }
+            await assertZero(f, manager)
+            manifestEqual(await manager.snapshot().planResources, .empty)
             await expectError(.conflict) { try await manager.confirmPreparedBatch(plan.id) }
-            await assertZero(f, manager); await manager.discardPreparedBatch(plan.id)
         }
     }
     func testDepthItemsMetadataAndDeepParentLimitsDoNotProducePartialExecutablePlan() async throws {

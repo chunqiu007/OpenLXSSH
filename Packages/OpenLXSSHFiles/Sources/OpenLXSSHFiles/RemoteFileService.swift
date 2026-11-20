@@ -160,6 +160,10 @@ public protocol RemoteFileService: AnyObject, Sendable {
     func initialDirectory(token: CancellationToken) async throws -> RemotePath
     func commit(_ source: RemotePath, to destination: RemotePath, request: CommitRequest, token: CancellationToken) async throws
     func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry]
+    /// Transfers only the raw link text. The manifest owns containment and target policy.
+    func readSymbolicLink(_ path: RemotePath, token: CancellationToken) async throws -> Data
+    /// Creates the link itself and fails if any object already occupies its name.
+    func createSymbolicLink(_ path: RemotePath, target: Data, token: CancellationToken) async throws
     func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes
     /// Metadata of the actual opened handle, without moving its read offset. nil explicitly means
     /// unsupported (the source-compatible default), not a substitute path stat or snapshot guarantee.
@@ -175,7 +179,23 @@ public protocol RemoteFileService: AnyObject, Sendable {
     func cancel()
     func close() async
 }
+enum SymbolicLinkBytes {
+    static let limit = 32_768
+    static func validate(_ target: Data, at path: RemotePath) throws {
+        guard !target.isEmpty, target.count <= limit, !target.contains(0) else {
+            throw FileServiceError(.invalidPath, operation: "link-target-bytes", path: path)
+        }
+    }
+}
 extension RemoteFileService {
+    public func readSymbolicLink(_ path: RemotePath, token: CancellationToken) async throws -> Data {
+        try token.check()
+        throw FileServiceError(.unsupported, operation: "readlink", path: path)
+    }
+    public func createSymbolicLink(_ path: RemotePath, target: Data, token: CancellationToken) async throws {
+        try token.check()
+        throw FileServiceError(.unsupported, operation: "symlink", path: path)
+    }
     public func initialDirectory(token: CancellationToken) async throws -> RemotePath {
         try token.check()
         throw FileServiceError(.unsupported, operation: "initial-directory")

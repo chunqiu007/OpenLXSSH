@@ -645,7 +645,7 @@ private final class FilesAppPlanCounts: @unchecked Sendable {
     private var values: [String: Int] = [:]
     func add(_ key: String) { lock.lock(); defer { lock.unlock() }; values[key, default: 0] += 1 }
     func value(_ key: String) -> Int { lock.lock(); defer { lock.unlock() }; return values[key, default: 0] }
-    var mutations: Int { ["writeOpen", "write", "mkdir", "commit", "rename", "remove"].reduce(0) { $0 + value($1) } }
+    var mutations: Int { ["writeOpen", "write", "mkdir", "commit", "rename", "remove", "symlink"].reduce(0) { $0 + value($1) } }
 }
 private actor FilesAppPlanService: RemoteFileService {
     nonisolated let capabilities: FileServiceCapabilities
@@ -691,6 +691,13 @@ private actor FilesAppPlanService: RemoteFileService {
     func write(_ handle: FileHandleID, data: Data, token: CancellationToken) async throws -> Int { counts.add("write"); return try await base.write(handle, data: data, token: token) }
     func finish(_ handle: FileHandleID, token: CancellationToken) async throws { try await base.finish(handle, token: token) }
     func closeHandle(_ handle: FileHandleID) async throws { try await base.closeHandle(handle) }
+    func readSymbolicLink(_ path: RemotePath, token: CancellationToken) async throws -> Data {
+        try await base.readSymbolicLink(path, token: token)
+    }
+    func createSymbolicLink(_ path: RemotePath, target: Data, token: CancellationToken) async throws {
+        counts.add("symlink")
+        try await base.createSymbolicLink(path, target: target, token: token)
+    }
     func mkdir(_ path: RemotePath, token: CancellationToken) async throws { counts.add("mkdir"); try await base.mkdir(path, token: token) }
     func rename(_ source: RemotePath, to destination: RemotePath, mode: RenameMode, token: CancellationToken) async throws { counts.add("rename"); try await base.rename(source, to: destination, mode: mode, token: token) }
     func commit(_ source: RemotePath, to destination: RemotePath, request: CommitRequest, token: CancellationToken) async throws { counts.add("commit"); try await base.commit(source, to: destination, request: request, token: token) }
@@ -766,12 +773,68 @@ private final class FilesAppPlanLocalFactory: @unchecked Sendable {
         XCTAssertNil(job.pendingDecision); XCTAssertNil(f.model.transferPlanReview)
         XCTAssertEqual(try Data(contentsOf: f.remote.appendingPathComponent("tree/.hidden")), Data("abc".utf8))
     }
-    func testDirectTreeWithLinkIsRejectedBeforeJobsOrWrites() async throws {
+    func testUploadRepositoryPreservesRelativeLinkToFileTransferredLater() async throws {
+        let f = try await fixture(remoteRisk: true)
+        let repo = f.local.appendingPathComponent("FlagGems-vllm")
+        let github = repo.appendingPathComponent(".github")
+        try FileManager.default.createDirectory(at: github, withIntermediateDirectories: true)
+        try Data("repo instructions".utf8).write(to: repo.appendingPathComponent("AGENTS.md"))
+        let leaf = ".github/copilot-instructions.md"
+        try FileManager.default.createSymbolicLink(atPath: repo.appendingPathComponent("CLAUDE.md").path, withDestinationPath: "AGENTS.md")
+        try FileManager.default.createSymbolicLink(atPath: repo.appendingPathComponent(leaf).path, withDestinationPath: "../CLAUDE.md")
+        let ids = try await f.model.enqueueUploads([repo], context: f.model.transferContext(upload: true)).value
+        let job = try await terminal(f.model, XCTUnwrap(ids.first))
+        XCTAssertEqual(job.state, .succeeded, String(describing: job.error))
+        let output = f.remote.appendingPathComponent("FlagGems-vllm").appendingPathComponent(leaf)
+        let claudeOutput = f.remote.appendingPathComponent("FlagGems-vllm/CLAUDE.md")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: claudeOutput.path), "AGENTS.md")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: output.path), "../CLAUDE.md")
+        XCTAssertEqual(try Data(contentsOf: output), Data("repo instructions".utf8))
+        XCTAssertEqual(f.service.counts.value("symlink"), 2)
+
+        // Round-trip download of a remote repository containing preserved relative symlinks.
+        f.model.browse(.root); await f.model.waitUntilCurrentWorkCompletes()
+        let downloadDir = f.root.appendingPathComponent("downloaded-repo")
+        try FileManager.default.createDirectory(at: downloadDir, withIntermediateDirectories: true)
+        let downloadIDs = try await f.model.enqueueDownloads(f.model.entries, to: downloadDir, context: f.model.transferContext(upload: false)).value
+        let downloadJob = try await terminal(f.model, XCTUnwrap(downloadIDs.first))
+        XCTAssertEqual(downloadJob.state, .succeeded, String(describing: downloadJob.error))
+        let downloadedLeaf = downloadDir.appendingPathComponent("FlagGems-vllm").appendingPathComponent(leaf)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: downloadedLeaf.path), "../CLAUDE.md")
+        XCTAssertEqual(try Data(contentsOf: downloadedLeaf), Data("repo instructions".utf8))
+
+        // Re-uploading into existing tree with overwrite preference succeeds when identical relative links exist.
+        f.model.updateTransferPreference(.overwrite)
+        let overwriteIDs = try await f.model.enqueueUploads([repo], context: f.model.transferContext(upload: true)).value
+        let overwriteJob = try await terminal(f.model, XCTUnwrap(overwriteIDs.first))
+        XCTAssertEqual(overwriteJob.state, .succeeded, String(describing: overwriteJob.error))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: output.path), "../CLAUDE.md")
+    }
+    func testDirectTreeWithEscapingLinkIsRejectedBeforeJobsOrWrites() async throws {
         let f = try await fixture(), url = try tree(f)
-        try FileManager.default.createSymbolicLink(atPath: url.appendingPathComponent("link").path, withDestinationPath: ".hidden")
+        let linkName = "link\nname"
+        try FileManager.default.createSymbolicLink(atPath: url.appendingPathComponent(linkName).path, withDestinationPath: "../outside")
         do { _ = try await f.model.enqueueUploads([url], context: f.model.transferContext(upload: true)).value; XCTFail("Linked tree admitted") }
-        catch let error as FileServiceError { XCTAssertTrue([.symbolicLink, .conflict].contains(error.kind)) }
+        catch let error as FileServiceError {
+            XCTAssertEqual(error.kind, .symbolicLink)
+            XCTAssertEqual(error.path?.bytes, Data(("/tree/" + linkName).utf8))
+        }
+        let issue = try XCTUnwrap(f.model.transferPreparationIssue)
+        XCTAssertEqual(issue.code, "files.symbolicLink")
+        XCTAssertTrue(issue.message.contains("/tree/link\\nname"))
+        XCTAssertFalse(issue.message.contains("\n"))
+        XCTAssertEqual(issue, f.model.issue)
+        XCTAssertFalse(f.model.hasPendingOperations)
         await zero(f); XCTAssertNil(f.model.transferPlanReview)
+    }
+    func testPreparationIssueExplainsUnsafeLinkTargets() throws {
+        let path = try RemotePath(bytes: Data("/tree/.github/link".utf8))
+        for (operation, reason) in [("manifest-link-outside-tree", "文件夹以外"), ("manifest-link-unsafe-target", "安全相对路径")] {
+            let issue = AppIssue.transferPreparation(FileServiceError(.symbolicLink, operation: operation, path: path))
+            XCTAssertEqual(issue.code, "files.symbolicLink")
+            XCTAssertTrue(issue.message.contains(reason))
+            XCTAssertTrue(issue.message.contains("/tree/.github/link"))
+        }
     }
     func testPureFileStillEnqueuesAutomaticallyAndRetainsActualBytesLabel() async throws {
         let f = try await fixture(), file = f.local.appendingPathComponent("file")

@@ -29,12 +29,15 @@ public struct TransferRequest: Sendable, Equatable {
     public let source: TransferLocation
     public let destination: TransferLocation
     public let kind: TransferKind
+    public let preserveRelativeLinks: Bool
     public let sourceManifest: TransferSourceManifest?
     public let conflictPolicy: TransferConflictPolicy?
     public init(hostID: String, batchID: TransferBatchID = UUID(), source: TransferLocation,
-                destination: TransferLocation, kind: TransferKind = .file, sourceManifest: TransferSourceManifest? = nil, conflictPolicy: TransferConflictPolicy? = nil) {
+                destination: TransferLocation, kind: TransferKind = .file, sourceManifest: TransferSourceManifest? = nil, conflictPolicy: TransferConflictPolicy? = nil,
+                preserveRelativeLinks: Bool = false) {
         self.hostID = hostID; self.batchID = batchID; self.source = source; self.destination = destination; self.kind = kind
         self.sourceManifest = sourceManifest; self.conflictPolicy = conflictPolicy
+        self.preserveRelativeLinks = preserveRelativeLinks
     }
 }
 public enum TransferJobState: String, Sendable {
@@ -397,7 +400,8 @@ public actor TransferManager {
             throw FileServiceError(.conflict, operation: "retry-requires-failed-or-cancelled-job")
         }
         let old = previous.request
-        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind, conflictPolicy: conflictPolicy)
+        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind,
+            conflictPolicy: conflictPolicy, preserveRelativeLinks: old.preserveRelativeLinks)
         return try await prepare([request], confirmations: previous.serverConfirmation.map { [old.destination.serviceID: $0] } ?? [:],
                                  retryOf: jobID, token: token)
     }
@@ -413,7 +417,8 @@ public actor TransferManager {
         let old = previous.request
         let request = TransferRequest(hostID: old.hostID, batchID: batchID,
             source: .init(serviceID: sourceService, path: old.source.path),
-            destination: .init(serviceID: destinationService, path: old.destination.path), kind: old.kind, conflictPolicy: conflictPolicy)
+            destination: .init(serviceID: destinationService, path: old.destination.path), kind: old.kind,
+            conflictPolicy: conflictPolicy, preserveRelativeLinks: old.preserveRelativeLinks)
         return try await prepare([request], confirmations: serverConfirmation.map { [destinationService: $0] } ?? [:],
                                  retryOf: jobID, token: token)
     }
@@ -462,6 +467,7 @@ public actor TransferManager {
                 let depthAllowance = min(limits.maxDepth, self.engine.maxDepth)
                 var scan = try await self.withServiceOperation(serviceID: request.source.serviceID, hostID: request.hostID, token: token) { service, operationToken in
                     var scan = TransferManifestScan(maxEntries: entryAllowance, maxDepth: depthAllowance, maxBytes: byteAllowance)
+                    scan.preserveRelativeLinks = request.kind == .tree && request.preserveRelativeLinks
                     try await scan.run(service, request: request, token: operationToken)
                     try operationToken.check(); return scan
                 }
@@ -494,7 +500,8 @@ public actor TransferManager {
                 remainingEntries -= manifest.entries.count; remainingBytes -= size
                 issues += manifest.issues.map { TransferPlanIssue(requestIndex: index, error: $0) }
                 result.append(TransferRequest(hostID: request.hostID, batchID: request.batchID, source: request.source,
-                    destination: request.destination, kind: request.kind, sourceManifest: manifest, conflictPolicy: request.conflictPolicy))
+                    destination: request.destination, kind: request.kind, sourceManifest: manifest,
+                    conflictPolicy: request.conflictPolicy, preserveRelativeLinks: request.preserveRelativeLinks))
             }
             try token.check()
             return TransferBatchPlan(id: id, createdAt: created, expiresAt: created.addingTimeInterval(Double(limits.lifetime.components.seconds) + Double(limits.lifetime.components.attoseconds) / 1e18), requests: result, issues: issues)
@@ -528,10 +535,14 @@ public actor TransferManager {
     public func confirmPreparedBatch(_ planID: UUID, token: CancellationToken = CancellationToken()) async throws -> [TransferJobID] {
         try token.check()
         guard !closed, var record = plans[planID], record.phase == .ready, !record.discardRequested,
-              ContinuousClock.now < record.deadline, let plan = record.plan, plan.canExecute else {
+              ContinuousClock.now < record.deadline, let plan = record.plan else {
             throw FileServiceError(.conflict, operation: "manifest-plan-not-confirmable")
         }
         try record.token.check()
+        guard plan.canExecute else {
+            finishPlan(planID)
+            throw plan.issues.first?.error ?? FileServiceError(.protocolFailure, operation: "manifest-incomplete")
+        }
         record.token = token; record.phase = .confirming
         let planToken = record.token
         let worker = Task<Void, Error> {
@@ -597,7 +608,8 @@ public actor TransferManager {
         }
         let old = previous.request
         guard old.sourceManifest == nil else { throw FileServiceError(.conflict, operation: "manifest-retry-requires-prepare-and-confirm") }
-        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind, conflictPolicy: conflictPolicy)
+        let request = TransferRequest(hostID: old.hostID, batchID: batchID, source: old.source, destination: old.destination, kind: old.kind,
+            conflictPolicy: conflictPolicy, preserveRelativeLinks: old.preserveRelativeLinks)
         try validateAdmission([request], confirmations: previous.serverConfirmation.map { [request.destination.serviceID: $0] } ?? [:])
         let id = insert(request, confirmation: previous.serverConfirmation, retryOf: jobID)
         publish(); pump(); return id

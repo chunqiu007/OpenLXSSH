@@ -219,6 +219,32 @@ enum FileDisplay {
     }
 }
 extension AppIssue {
+    static func transferPreparation(_ error: Error) -> AppIssue {
+        let issue = files(error)
+        guard let failure = error as? FileServiceError else { return issue }
+        let explanation: String
+        switch failure.kind {
+        case .symbolicLink where failure.operation == "manifest-link-outside-tree":
+            explanation = "符号链接指向所选文件夹以外的位置，无法随文件夹传输。"
+        case .symbolicLink where failure.operation == "manifest-link-unsafe-target":
+            explanation = "无法确认符号链接的目标是所选文件夹内的安全相对路径。"
+        case .symbolicLink: explanation = "传输准备遇到不支持的符号链接。"
+        case .unsupported where failure.operation == "manifest-rejected-kind":
+            explanation = "目录包含不支持传输的特殊文件（如命名管道、套接字或设备文件）。"
+        case .resourceLimit where failure.operation == "manifest-preparation-budget":
+            explanation = "传输清单缓存达到上限。请先在传输中心点击“清除已完成”，或分批传输。"
+        case .resourceLimit where failure.operation.hasPrefix("manifest-"):
+            explanation = "传输清单达到容量或数量限制（单次上限 10,000 项、32 层深度）。请分批传输。"
+        case .raceDetected where failure.operation.hasPrefix("manifest-"):
+            explanation = "准备传输期间文件夹内的文件或目录发生了变化。请确认无其他程序正在修改该目录后重试。"
+        case .permissionDenied: explanation = "准备传输时没有权限访问所需的文件或目录。"
+        case .notFound: explanation = "准备传输时找不到所需的文件或目录。"
+        default: explanation = issue.message
+        }
+        let path = failure.path.map { " 涉及路径：" + FileDisplay.path($0) } ?? ""
+        return AppIssue(code: issue.code, message: explanation + path)
+    }
+
     static func files(_ error: Error) -> AppIssue {
         if let repository = error as? RepositoryError { return .sanitized(repository) }
         guard let typed = error as? FileServiceError else { return .security(error) }
@@ -231,6 +257,27 @@ extension AppIssue {
         if ["probe-directory-create-outcome-uncertain", "transfer-file-create-outcome-uncertain"].contains(typed.operation) {
             return AppIssue(code: "files." + typed.kind.rawValue,
                 message: "连接在创建临时对象时中断；服务器可能已创建成功。所示临时路径需人工核实，App不会在后续连接中自动删除它；原有目标未被本次提交替换。")
+        }
+        if typed.operation == "symlink-probe-outcome-uncertain" || typed.operation == "symlink-probe-cleanup-unconfirmed" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "服务器上可能留有用于检查链接支持的临时链接。请核对详情中的临时路径。")
+        }
+        if typed.operation == "link-target-not-transferred" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "链接所需的文件或目录未传到预定位置，已停止创建此链接。")
+        }
+        if typed.operation == "files-transfer-review-busy" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "正在扫描准备另一批目录传输，请稍候完成后再试。")
+        }
+        if typed.operation == "stale-download-selection" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "所选远端项目已变化，请刷新目录后重新选择。")
+        }
+        if typed.operation == "manifest-overlapping-source-roots" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "同批传输中包含互相重叠的源目录，请勿同时选择父目录与子目录。")
+        }
+        if typed.operation == "manifest-plan-not-confirmable" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "目录传输准备计划已过期或不可用，请重新发起传输。")
+        }
+        if typed.operation == "automatic-name-limit" {
+            return AppIssue(code: "files." + typed.kind.rawValue, message: "同名项目的自动重命名编号已达上限（1000），请先清理目标目录中的同名项。")
         }
         let message: String
         switch typed.kind {

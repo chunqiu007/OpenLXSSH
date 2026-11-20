@@ -670,7 +670,8 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
                         } catch { Darwin.close(fd); throw error }
                         requests.append(TransferRequest(hostID: context.hostID.uuidString, batchID: batch,
                             source: .init(serviceID: localID, path: try RemotePath.root.appending(name)),
-                            destination: .init(serviceID: context.serviceID, path: try context.path.appending(name)), kind: kind, conflictPolicy: actionConflictPolicy))
+                            destination: .init(serviceID: context.serviceID, path: try context.path.appending(name)), kind: kind, conflictPolicy: actionConflictPolicy,
+                            preserveRelativeLinks: kind == .tree))
                     }
                 } else {
                     guard let destination else { throw FileServiceError(.invalidPath, operation: "download-root") }
@@ -691,7 +692,8 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
                         requests.append(TransferRequest(hostID: context.hostID.uuidString, batchID: batch,
                             source: .init(serviceID: context.serviceID, path: try context.path.appending(entry.name)),
                             destination: .init(serviceID: id, path: try RemotePath.root.appending(entry.name)),
-                            kind: entry.attributes.kind == .directory ? .tree : .file, conflictPolicy: actionConflictPolicy))
+                            kind: entry.attributes.kind == .directory ? .tree : .file, conflictPolicy: actionConflictPolicy,
+                            preserveRelativeLinks: entry.attributes.kind == .directory))
                     }
                 }
                 let confirmations = context.confirmation.map { [context.serviceID: $0] } ?? [:]
@@ -726,7 +728,7 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
                 await manager.closeIdleServices(registered)
                 if !planToken.isCancelled, context.lifetime == lifetime,
                    transferPlanOwner?.id == slot || (admittedFiles && transferPlanOwner == nil) {
-                    issue = .files(error); transferPreparationIssue = .files(error)
+                    issue = .transferPreparation(error); transferPreparationIssue = issue
                 }
                 throw error
             }
@@ -773,6 +775,8 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
         guard transferPlanOwner?.id == expected else { return }
         transferPlanExpiry?.cancel(); transferPlanExpiry = nil
         transferPlanOwner = nil; transferPlanReview = nil; transferPlanPhase = nil
+        hasPendingOperations = connection != nil || !transferSnapshot.serviceOperations.isEmpty || !transferPlanDrains.isEmpty
+            || (state == .closing && serviceID != nil)
     }
     /// Cancels only this unsubmitted metadata/confirmation operation. Drains and closes only
     /// services registered for this review; existing retry services and unrelated jobs survive.
@@ -995,7 +999,7 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
             } catch {
                 if transferPlanOwner?.id == slot, !token.isCancelled,
                    (error as? FileServiceError)?.kind != .cancelled, !(error is CancellationError) {
-                    issue = .files(error); transferPreparationIssue = issue
+                    issue = .transferPreparation(error); transferPreparationIssue = issue
                 }
                 throw error
             }
@@ -1011,7 +1015,7 @@ struct FilesHistoryRemovalReview: Identifiable, Sendable {
             direction: direction, source: request.source, destination: request.destination, kind: request.kind, localRoot: root)
     }
     private func cancelPathSelection() { retrySelection = nil; pathPicker.cancel() }
-    private static func retryIssue(_ error: Error) -> AppIssue { (error as? FilesRetryAuthorizationError)?.issue ?? .files(error) }
+    private static func retryIssue(_ error: Error) -> AppIssue { (error as? FilesRetryAuthorizationError)?.issue ?? .transferPreparation(error) }
     func prepareTransferRetrySelection(_ id: TransferJobID) throws -> FilesTransferRetrySelection {
         guard transferPlanOwner == nil, transferPlanDrains.isEmpty, retrySelection == nil, !pathPicker.isChoosing, !busy else {
             throw FilesRetryAuthorizationError.busy

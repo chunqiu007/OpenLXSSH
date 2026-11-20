@@ -118,11 +118,13 @@ struct DualPaneFilesView: View {
         let jobs = files.latestCompletedBatchJobs
         if files.state == .ready, !files.busy, jobs.contains(where: { job in
             job.request.destination.serviceID == files.serviceID && job.request.hostID == files.selectedHost?.id.uuidString
-                && job.items.contains { $0.destination.parent == files.path }
+                && (job.request.destination.path.parent == files.path || job.items.contains { $0.destination.parent == files.path })
         }) { files.browse(files.path) }
         guard let current = local.path else { return }
         if jobs.contains(where: { job in
             guard let root = files.transferLabels[job.id]?.localRoots[job.request.destination.serviceID] else { return false }
+            let targetParentBytes = (root == .root ? Data() : root.bytes) + (job.request.destination.path.parent == .root ? Data() : job.request.destination.path.parent.bytes)
+            if (try? RemotePath(bytes: targetParentBytes)) == current { return true }
             return job.items.contains { item in
                 let bytes = (root == .root ? Data() : root.bytes) + (item.destination.parent == .root ? Data() : item.destination.parent.bytes)
                 return (try? RemotePath(bytes: bytes)) == current
@@ -365,7 +367,10 @@ struct DualPaneFilesView: View {
                     }.frame(maxHeight: 85)
                 }.font(.caption)
             }
-            IssueView(issue: localSide ? local.issue : files.issue) { if localSide { local.issue = nil } else { files.issue = nil } }
+            IssueView(issue: localSide ? local.issue : (files.transferPreparationIssue ?? files.issue)) {
+                if localSide { local.issue = nil }
+                else { files.issue = nil; files.dismissTransferPreparationIssue() }
+            }
         }.padding(.horizontal, 12).padding(.vertical, 8).background(DesktopStyle.panel)
     }
     private func deleteResult(_ state: DeleteItemResult.State) -> String {

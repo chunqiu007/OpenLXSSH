@@ -107,6 +107,9 @@ int rf_tcp_keepalive_configure(int socket_fd, int interval_seconds, int failed_p
 int rf_start_sftp(rf_connection *, rf_cancel *, double);
 uint64_t rf_sftp_error(rf_connection *);
 int rf_lstat(rf_connection *, const char *, unsigned int, LIBSSH2_SFTP_ATTRIBUTES *, rf_cancel *, double);
+int rf_readlink(rf_connection *, const char *, unsigned int, char *, unsigned int, rf_cancel *, double);
+/* First and second are the negotiated wire order, not POSIX argument names. */
+int rf_symlink(rf_connection *, const char *, unsigned int, char *, unsigned int, rf_cancel *, double);
 int rf_fstat(rf_connection *, LIBSSH2_SFTP_HANDLE *, LIBSSH2_SFTP_ATTRIBUTES *, rf_cancel *, double);
 LIBSSH2_SFTP_HANDLE *rf_open(rf_connection *, const char *, unsigned int, int kind, int *error,
                             rf_cancel *, double);

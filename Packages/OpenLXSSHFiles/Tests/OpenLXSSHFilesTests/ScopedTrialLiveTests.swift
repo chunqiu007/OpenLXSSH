@@ -9,6 +9,79 @@ import OpenLXSSHFiles
 /// No live permission means an error, never a skipped or pretend-passed test.
 /// The normal package verification must select its own offline classes explicitly.
 final class ScopedTrialLiveTests: XCTestCase, @unchecked Sendable {
+    func testPreserveRelativeLinkInUploadedRepository() async throws {
+        let run = try UX97Run(name: "sftp-upload-relative-repository-link")
+        addTeardownBlock { try await run.cleanup() }
+        let remote = try await run.connectFiles()
+        try await run.createRemoteRoot(remote)
+        let local = try LocalFileService(root: run.localRoot)
+        run.retainLocal(local)
+        let manager = TransferManager(idleTimeout: nil, executionMode: .direct)
+        run.retainManager(manager)
+        let sourceID = try await manager.registerService(local)
+        let destinationID = try await manager.registerService(remote, hostID: run.hostID)
+
+        let repository = run.localRoot.appendingPathComponent("repo")
+        let github = repository.appendingPathComponent(".github")
+        try FileManager.default.createDirectory(at: github, withIntermediateDirectories: true)
+        let payload = Data("scoped live SFTP link payload\n".utf8)
+        try payload.write(to: repository.appendingPathComponent("AGENTS.md"))
+        let linkName = "copilot-instructions.md"
+        let target = "../AGENTS.md"
+        let link = github.appendingPathComponent(linkName)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
+
+        let remoteRepo = try run.remoteRoot.appending(FileName("repo"))
+        let remoteGithub = try remoteRepo.appending(FileName(".github"))
+        let remoteFile = try remoteRepo.appending(FileName("AGENTS.md"))
+        let remoteLink = try remoteGithub.appending(FileName(linkName))
+        run.addCleanupDirectory(remoteRepo); run.addCleanupDirectory(remoteGithub)
+        run.addCleanupFile(remoteFile); run.addCleanupFile(remoteLink)
+        let request = TransferRequest(hostID: run.hostID, source: .init(serviceID: sourceID, path: try RemotePath("/repo")),
+            destination: .init(serviceID: destinationID, path: remoteRepo), kind: .tree, preserveRelativeLinks: true)
+        let plan = try await manager.prepareBatch([request], token: run.token)
+        let ids = try await manager.confirmPreparedBatch(plan.id, token: run.token)
+        let jobID = try XCTUnwrap(ids.first)
+        let deadline = ContinuousClock.now + .seconds(45)
+        while true {
+            try run.token.check()
+            let snapshot = await manager.snapshot()
+            let job = try XCTUnwrap(snapshot.jobs.first { $0.id == jobID })
+            if !job.state.isActive {
+                if let error = job.error { throw error }
+                try run.require(job.state == .succeeded, "upload-tree-job-succeeded")
+                break
+            }
+            try run.require(ContinuousClock.now < deadline, "upload-tree-job-deadline")
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        let kind = try await remote.lstat(remoteLink, token: run.token).kind
+        let readBack = try await remote.readSymbolicLink(remoteLink, token: run.token)
+        try run.require(kind == .symbolicLink && readBack == Data(target.utf8), "exact-server-link-target")
+        let rows = try await remote.list(remoteGithub, token: run.token)
+        try run.require(rows.map(\.name) == [FileName(linkName)], "only-copilot-link-in-dotgithub")
+        try await run.verifyFile(remoteFile, bytes: payload, remote: remote, local: local, engine: SafeTransferEngine(), name: "roundtrip.txt")
+
+        let outside = "outside-" + UUID().uuidString
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "../../" + outside)
+        let refused = try TransferRequest(hostID: run.hostID, source: request.source,
+            destination: .init(serviceID: destinationID, path: run.remoteRoot.appending(FileName("refused"))),
+            kind: .tree, preserveRelativeLinks: true)
+        let invalid = try await manager.prepareBatch([refused], token: run.token)
+        do {
+            _ = try await manager.confirmPreparedBatch(invalid.id, token: run.token)
+            XCTFail("Escaping upload was admitted")
+        } catch let error as FileServiceError {
+            XCTAssertEqual(error.kind, .symbolicLink)
+            XCTAssertEqual(error.path, try RemotePath("/repo/.github/" + linkName))
+        }
+        let snapshot = await manager.snapshot()
+        XCTAssertEqual(snapshot.jobs.map(\.id), [jobID])
+        try await run.assertRemoteNames(remote, expected: ["repo"])
+        run.record("verified-upload-tree-ordinary-bytes-exact-relative-link-and-rejected-escape")
+    }
+
     func testUX97FirstUploadTreeRoundTripConflictsCancellationAndDeniedTarget() async throws {
         let run = try UX97Run(name: "sftp-small-roundtrip")
         addTeardownBlock { try await run.cleanup() }

@@ -99,6 +99,29 @@ public actor LocalFileService: RemoteFileService {
         }
         return attributes(st)
     }
+    public func readSymbolicLink(_ path: RemotePath, token: CancellationToken) async throws -> Data {
+        try check(token)
+        let (fd, name) = try parent(path)
+        defer { Darwin.close(fd) }
+        var buffer = [CChar](repeating: 0, count: SymbolicLinkBytes.limit + 1)
+        let count = name.cBytes.withUnsafeBufferPointer { readlinkat(fd, $0.baseAddress!, &buffer, buffer.count) }
+        guard count >= 0 else { throw Self.error("readlink", path: path) }
+        guard count <= SymbolicLinkBytes.limit else { throw FileServiceError(.resourceLimit, operation: "readlink", path: path) }
+        let target = buffer.withUnsafeBytes { Data($0.prefix(count)) }
+        try SymbolicLinkBytes.validate(target, at: path)
+        return target
+    }
+    public func createSymbolicLink(_ path: RemotePath, target: Data, token: CancellationToken) async throws {
+        try check(token)
+        try SymbolicLinkBytes.validate(target, at: path)
+        let (fd, name) = try parent(path)
+        defer { Darwin.close(fd) }
+        let bytes = target.map { CChar(bitPattern: $0) } + [0]
+        let rc = bytes.withUnsafeBufferPointer { value in
+            name.cBytes.withUnsafeBufferPointer { symlinkat(value.baseAddress!, fd, $0.baseAddress!) }
+        }
+        guard rc == 0 else { throw Self.error("symlink", path: path) }
+    }
     public func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] {
         try check(token)
         let fd = try directory(path)

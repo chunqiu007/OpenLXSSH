@@ -99,6 +99,8 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
     private var activeToken: CancellationToken?
     private var handles: [FileHandleID: OpaquePointer] = [:]
     private var ready = false
+    private enum LinkOrder { case targetFirst, nameFirst }
+    private var linkOrder: LinkOrder? // Accessed only on the SFTP owner queue.
     private var recordedTerminalFailure: FileServiceError?
     public var terminalFailure: FileServiceError? {
         lock.lock(); defer { lock.unlock() }; return recordedTerminalFailure
@@ -341,13 +343,102 @@ public final class LibSSH2FileService: RemoteFileService, @unchecked Sendable {
         // would hide embedded NULs or replace undecodable bytes before path validation.
         return try RemotePath(bytes: Data(buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }))
     }
+    private func lstat(_ path: RemotePath, connection: OpaquePointer, token: CancellationToken) throws -> FileAttributes {
+        var value = LIBSSH2_SFTP_ATTRIBUTES()
+        let rc = path.withCString { rf_lstat(connection, $0, $1, &value, token.native, timeout) }
+        try check(rc, connection, operation: "lstat", path: path)
+        return attributes(value)
+    }
     public func lstat(_ path: RemotePath, token: CancellationToken) async throws -> FileAttributes {
         try await perform(token) { c in
             try self.requireReady()
-            var a = LIBSSH2_SFTP_ATTRIBUTES()
-            let rc = path.withCString { rf_lstat(c, $0, $1, &a, token.native, self.timeout) }
-            try self.check(rc, c, operation: "lstat", path: path)
-            return self.attributes(a)
+            return try self.lstat(path, connection: c, token: token)
+        }
+    }
+    private func readLink(_ path: RemotePath, connection: OpaquePointer, token: CancellationToken) throws -> Data {
+        var buffer = [CChar](repeating: 0, count: SymbolicLinkBytes.limit + 1)
+        let count = path.withCString { name, length in
+            rf_readlink(connection, name, length, &buffer, UInt32(SymbolicLinkBytes.limit + 1), token.native, timeout)
+        }
+        if count == LIBSSH2_ERROR_BUFFER_TOO_SMALL {
+            throw FileServiceError(.resourceLimit, operation: "readlink", path: path)
+        }
+        try check(count, connection, operation: "readlink", path: path)
+        guard count > 0, count <= SymbolicLinkBytes.limit else {
+            throw FileServiceError(.protocolFailure, operation: "readlink-response", path: path)
+        }
+        let target = buffer.withUnsafeBytes { Data($0.prefix(Int(count))) }
+        try SymbolicLinkBytes.validate(target, at: path)
+        return target
+    }
+    public func readSymbolicLink(_ path: RemotePath, token: CancellationToken) async throws -> Data {
+        try await perform(token) { c in
+            try self.requireReady()
+            return try self.readLink(path, connection: c, token: token)
+        }
+    }
+    private func createLink(_ path: RemotePath, target: Data, order: LinkOrder,
+                            connection: OpaquePointer, token: CancellationToken) throws {
+        let first = order == .targetFirst ? target : path.bytes
+        let second = order == .targetFirst ? path.bytes : target
+        // libssh2 1.11.1 writes these strings to the packet in call order. Keep both
+        // buffers stable across EAGAIN inside the bridge, with writable second storage.
+        var secondBytes = second.map { CChar(bitPattern: $0) } + [0]
+        let rc = (first.map { CChar(bitPattern: $0) } + [0]).withUnsafeBufferPointer {
+            rf_symlink(connection, $0.baseAddress!, UInt32(first.count), &secondBytes, UInt32(second.count), token.native, timeout)
+        }
+        try check(rc, connection, operation: "symlink", path: path)
+        guard rc == 0 else { throw FileServiceError(.protocolFailure, operation: "symlink-response", path: path) }
+    }
+    private func confirmedLinkOrder(parent: RemotePath, connection: OpaquePointer, token: CancellationToken) throws -> LinkOrder {
+        if let linkOrder { return linkOrder }
+        // OpenSSH v3 takes (target, name), while other servers use (name, target).
+        // With "." as the target the wrong convention can only try to create the
+        // existing working directory. Never guess an order using a user's link text.
+        let probe = try parent.appending(FileName(".openlxssh-link-" + UUID().uuidString))
+        let dot = Data([46])
+        var order = LinkOrder.targetFirst
+        do {
+            do { try createLink(probe, target: dot, order: order, connection: connection, token: token) }
+            catch let error as FileServiceError where (error.kind == .protocolFailure && error.code == Int64(LIBSSH2_FX_FAILURE)) || error.kind == .conflict {
+                // A definitive rejection of this harmless probe. Never reverse a real
+                // request or a create with an uncertain acknowledgement.
+                order = .nameFirst
+                try createLink(probe, target: dot, order: order, connection: connection, token: token)
+            }
+        } catch let error as FileServiceError {
+            if [.transport, .closed, .timeout, .cancelled].contains(error.kind) {
+                throw FileServiceError(error.kind, operation: "symlink-probe-outcome-uncertain", path: probe, code: error.code)
+            }
+            // An error at the probe name is never a collision at the user's chosen name.
+            throw FileServiceError(error.kind == .conflict ? .io : error.kind, operation: "symlink-probe", path: probe, code: error.code)
+        }
+        do {
+            guard try readLink(probe, connection: connection, token: token) == dot else {
+                throw FileServiceError(.integrity, operation: "symlink-probe-changed", path: probe)
+            }
+            let rc = probe.withCString { rf_remove(connection, $0, $1, 0, token.native, timeout) }
+            try check(rc, connection, operation: "symlink-probe-cleanup", path: probe)
+        } catch let error as FileServiceError {
+            throw FileServiceError(error.kind, operation: "symlink-probe-cleanup-unconfirmed", path: probe, code: error.code)
+        }
+        linkOrder = order
+        return order
+    }
+    public func createSymbolicLink(_ path: RemotePath, target: Data, token: CancellationToken) async throws {
+        try SymbolicLinkBytes.validate(target, at: path)
+        guard path.name != nil else { throw FileServiceError(.invalidPath, operation: "symlink-root", path: path) }
+        try await perform(token) { c in
+            try self.requireReady()
+            let order = try self.confirmedLinkOrder(parent: path.parent, connection: c, token: token)
+            do { try self.createLink(path, target: target, order: order, connection: c, token: token) }
+            catch let failure as FileServiceError where failure.kind == .protocolFailure && failure.code == Int64(LIBSSH2_FX_FAILURE) {
+                // OpenSSH v3 also uses generic FAILURE for EEXIST. Only report a
+                // collision when the exclusive create failed and the leaf is present.
+                do { _ = try self.lstat(path, connection: c, token: token) }
+                catch let error as FileServiceError where error.kind == .notFound { throw failure }
+                throw FileServiceError(.conflict, operation: "symlink", path: path, code: failure.code)
+            }
         }
     }
     public func list(_ path: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] {

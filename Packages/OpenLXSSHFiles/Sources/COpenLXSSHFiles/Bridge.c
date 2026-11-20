@@ -505,6 +505,16 @@ int rf_lstat(rf_connection *c, const char *path, unsigned int len, LIBSSH2_SFTP_
     if(!c || !c->sftp) return RF_CLOSED;
     RETRY(c, cancel, timeout, libssh2_sftp_stat_ex(c->sftp, path, len, LIBSSH2_SFTP_LSTAT, a));
 }
+int rf_readlink(rf_connection *c, const char *path, unsigned int len, char *target, unsigned int capacity,
+                rf_cancel *cancel, double timeout) {
+    if(!c || !c->sftp) return RF_CLOSED;
+    RETRY(c, cancel, timeout, libssh2_sftp_symlink_ex(c->sftp, path, len, target, capacity, LIBSSH2_SFTP_READLINK));
+}
+int rf_symlink(rf_connection *c, const char *first, unsigned int first_len, char *second, unsigned int second_len,
+               rf_cancel *cancel, double timeout) {
+    if(!c || !c->sftp) return RF_CLOSED;
+    RETRY(c, cancel, timeout, libssh2_sftp_symlink_ex(c->sftp, first, first_len, second, second_len, LIBSSH2_SFTP_SYMLINK));
+}
 int rf_fstat(rf_connection *c, LIBSSH2_SFTP_HANDLE *h, LIBSSH2_SFTP_ATTRIBUTES *a,
              rf_cancel *cancel, double timeout) {
     if(!c || !c->sftp || !h) return RF_CLOSED;
