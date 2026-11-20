@@ -330,6 +330,17 @@ struct VaultHostEditor: View {
             Text(error)
                 .font(.caption)
                 .foregroundStyle(showUrgent ? DesktopStyle.statusRed : .secondary)
+            if key == "address", VaultHostDraft.parsedSSHCommand(draft.configuration.address) != nil {
+                Button("识别到 SSH 连接命令，点击自动填入地址、端口与用户名") {
+                    _ = draft.applySSHCommand(draft.configuration.address)
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+            } else if key == "username", VaultHostDraft.parsedSSHCommand(draft.configuration.username) != nil {
+                Button("识别到 SSH 连接命令，点击自动填入地址、端口与用户名") {
+                    _ = draft.applySSHCommand(draft.configuration.username)
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+            }
         }
     }
 }

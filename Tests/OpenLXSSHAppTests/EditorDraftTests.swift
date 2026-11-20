@@ -47,6 +47,16 @@ import OpenLXSSHTransport
         XCTAssertNil(draft.fieldErrors["address"])
         draft.configuration.username = "two words"
         XCTAssertNotNil(draft.fieldErrors["username"])
+        draft.configuration.username = "demo#root#00000000-0000-4000-8000-000000000001"
+        XCTAssertNil(draft.fieldErrors["username"])
+        var jumpDraft = VaultHostDraft(settings: AppSettings())
+        XCTAssertTrue(jumpDraft.applySSHCommand("ssh demo#root#00000000-0000-4000-8000-000000000001@bastion.example.test -p 2224"))
+        XCTAssertEqual(jumpDraft.configuration.address, "bastion.example.test")
+        XCTAssertEqual(jumpDraft.configuration.username, "demo#root#00000000-0000-4000-8000-000000000001")
+        XCTAssertEqual(jumpDraft.port, "2224")
+        XCTAssertEqual(jumpDraft.configuration.name, "bastion.example.test")
+        XCTAssertTrue(jumpDraft.fieldErrors.isEmpty)
+        XCTAssertFalse(jumpDraft.applySSHCommand("ssh -oProxyCommand=id user@bastion.example.test"))
         draft.configuration.username = "CaseSensitive"
         for port in ["0", "65536", "22x", "022", ""] { draft.port = port; XCTAssertNotNil(draft.fieldErrors["port"]) }
         draft.port = "22"; draft.interval = "3601"; draft.count = "0"

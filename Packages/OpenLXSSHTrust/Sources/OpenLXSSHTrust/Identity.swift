@@ -113,7 +113,7 @@ public struct SSHUser: Hashable, Sendable {
         guard !value.isEmpty, value.utf8.count <= 256, !hasControlCharacters(value),
               !value.hasPrefix("-"), value.utf8.allSatisfy({
                   (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) ||
-                  [45, 46, 64, 95, 43, 92].contains($0)
+                  [35, 45, 46, 64, 95, 43, 92].contains($0)
               }) else { throw HostTrustError.invalidUser }
         self.value = value
     }

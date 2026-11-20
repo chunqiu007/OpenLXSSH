@@ -570,6 +570,67 @@ struct VaultHostDraft: Equatable, Identifiable {
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.utf8.count <= limit
             && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
+    static func parsedSSHCommand(_ raw: String) -> (address: String, username: String, port: Int?)? {
+        guard raw.utf8.count <= 1024,
+              !raw.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) }) else {
+            return nil
+        }
+        var tokens = raw.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard !tokens.isEmpty, tokens.count <= 8 else { return nil }
+        if tokens.first == "ssh" { tokens.removeFirst() }
+        guard !tokens.isEmpty else { return nil }
+        var target: String?
+        var explicitUser: String?
+        var parsedPort: Int?
+        var index = 0
+        while index < tokens.count {
+            let token = tokens[index]
+            if token == "-p" {
+                guard parsedPort == nil, index + 1 < tokens.count,
+                      let number = Int(tokens[index + 1]), String(number) == tokens[index + 1],
+                      (try? SSHPort(number)) != nil else { return nil }
+                parsedPort = number; index += 2
+            } else if token.hasPrefix("-p"), token.count > 2 {
+                let portText = String(token.dropFirst(2))
+                guard parsedPort == nil, let number = Int(portText), String(number) == portText,
+                      (try? SSHPort(number)) != nil else { return nil }
+                parsedPort = number; index += 1
+            } else if token == "-l" {
+                guard explicitUser == nil, index + 1 < tokens.count else { return nil }
+                explicitUser = tokens[index + 1]; index += 2
+            } else if token.hasPrefix("-") {
+                return nil
+            } else {
+                guard target == nil else { return nil }
+                target = token; index += 1
+            }
+        }
+        guard let target else { return nil }
+        let userPart: String
+        let hostPart: String
+        if let atRange = target.range(of: "@", options: .backwards) {
+            guard explicitUser == nil else { return nil }
+            userPart = String(target[..<atRange.lowerBound])
+            hostPart = String(target[atRange.upperBound...])
+        } else if let explicitUser {
+            userPart = explicitUser
+            hostPart = target
+        } else {
+            return nil
+        }
+        guard (try? HostAddress(hostPart)) != nil, let validUser = try? SSHUser(userPart) else { return nil }
+        return (address: hostPart, username: validUser.value, port: parsedPort)
+    }
+    @discardableResult mutating func applySSHCommand(_ raw: String) -> Bool {
+        guard let parsed = Self.parsedSSHCommand(raw) else { return false }
+        configuration.address = parsed.address
+        configuration.username = parsed.username
+        if let port = parsed.port { self.port = String(port) }
+        if configuration.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            configuration.name = parsed.address
+        }
+        return true
+    }
 }
 
 /// Per-editor, non-Codable input owner used by the real View. Never shared with AppModel.

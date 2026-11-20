@@ -1,5 +1,16 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-20 JumpServer 堡垒机 `#` 分隔用户名支持与 SSH 命令一键拆分填入
+
+- **问题根因**：JumpServer 堡垒机（Koko）直连资产生成的 SSH 用户名采用 `跳板机用户#系统用户#资产UUID` 格式（如 `demo#root#00000000-0000-4000-8000-000000000001`），而 `Packages/OpenLXSSHTrust/Sources/OpenLXSSHTrust/Identity.swift` 中 `SSHUser` 的字符白名单此前仅包含字母数字与 `-.@_+\\`，未包含 `#`（ASCII 35），导致主机编辑器校验报错“请输入有效 SSH 用户名；大小写保持原样，不含空白”。
+- **修复与增强**：
+  - `Packages/OpenLXSSHTrust/Sources/OpenLXSSHTrust/Identity.swift`：在 `SSHUser` 字符白名单中加入 `#`（ASCII 35）；由于 `ControlledSSHConfiguration` 与 `DirectSSHConfiguration` 始终以双引号（`User "..."`）写入受控 `ssh_config`，经 `/usr/bin/ssh -G -F` 实测确认 `#` 不会被当作注释截断，`libssh2` 原生层亦按原始 UTF-8 字节与长度直传。
+  - `Application/OpenLXSSH/VaultDesktopModel.swift` & `VaultEditors.swift`：在 `VaultHostDraft` 中新增受控的 `parsedSSHCommand` / `applySSHCommand`，当用户直接将完整连接命令（如 `ssh demo#root#00000000-0000-4000-8000-000000000001@bastion.example.test -p 2224`）粘贴到“服务器地址”或“用户名”栏时，界面自动识别并提供“识别到 SSH 连接命令，点击自动填入地址、端口与用户名”一键拆分按钮（拒绝任何 `-o` 等未知选项注入）。
+  - `Packages/OpenLXSSHTrust/Tests/OpenLXSSHTrustTests/ConfigurationTests.swift` & `Tests/OpenLXSSHAppTests/EditorDraftTests.swift`：新增含 `#` 的 JumpServer 用户名校验、`/usr/bin/ssh -G` 配置解析及完整 `ssh` 命令拆分回归测试。
+- **验证结果**：
+  - `swift test --package-path Packages/OpenLXSSHTrust`：全部通过（0 失败）。
+  - `OPENLXSSH_FILES_TARGET26=1 xcodebuild test ... -only-testing:OpenLXSSHAppTests/EditorDraftTests -only-testing:OpenLXSSHAppTests/VaultDesktopTests`：16 项全部通过（0 失败）。
+
 ## 2026-11-20　2.0.1 发布包
 
 - 将 11 月 19 日的 SFTP 文件夹传输与准备阶段反馈改动及对应测试纳入提交 `076ed97`。应用版本 2.0.1，构建号 4。

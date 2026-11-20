@@ -11,6 +11,8 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertEqual(try HostAddress("fe80::1%en0").value, "fe80::1%en0")
         XCTAssertEqual(try SSHUser("DOMAIN\\alice").value, "DOMAIN\\alice")
         XCTAssertEqual(try SSHUser("alice@example.com").value, "alice@example.com")
+        XCTAssertEqual(try SSHUser("demo#root#00000000-0000-4000-8000-000000000001").value,
+                       "demo#root#00000000-0000-4000-8000-000000000001")
         for value in ["", "-oProxyCommand=id", "host user", "host\nProxyCommand id", "host\r", "host\0",
                       "host\t", "host\u{7f}", "host\u{85}", "host\u{2028}", "$(id)", "a;b", "a#b",
                       "a\"b", "a*b", "a?b", "a,b", "a|b", "user@host", "host:22", "[host]", "host%h",
@@ -90,7 +92,7 @@ final class ConfigurationTests: XCTestCase {
         for address in ["Server.Example.", "192.0.2.7", "2001:db8::20", "fe80::1%en0", "fe80::1%1234"] {
             let identity = try host(address, port: 2200)
             let configuration = ControlledSSHConfiguration(
-                connection: SSHConnection(host: identity, user: try SSHUser("test.user+tag@example")),
+                connection: SSHConnection(host: identity, user: try SSHUser("test.user+tag#asset-1@example")),
                 trustStore: store)
             let prepared = try configuration.write(in: directory.path)
             let invocation = prepared.invocation(preview: true)
@@ -98,7 +100,7 @@ final class ConfigurationTests: XCTestCase {
             XCTAssertEqual(result.status, 0, result.error)
             XCTAssertTrue(result.output.contains("hostname \(identity.address.value)\n"))
             XCTAssertTrue(result.output.contains("hostkeyalias \(identity.knownHostsName)\n"))
-            XCTAssertTrue(result.output.contains("user test.user+tag@example\n"))
+            XCTAssertTrue(result.output.contains("user test.user+tag#asset-1@example\n"))
         }
         let nonexistentScope = ControlledSSHConfiguration(
             connection: SSHConnection(host: try host("fe80::1%openlxssh-missing-scope"), user: try SSHUser("probe")),
