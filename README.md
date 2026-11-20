@@ -4,11 +4,11 @@
 
 OpenLXSSH 是一款为 **Apple Silicon（M 系列芯片）Mac** 打造的轻量原生 **SSH 和 SFTP 客户端**，支持 **macOS 26 及以上版本**。应用使用 SwiftUI 和 AppKit 开发，无需 Electron 运行环境或云端账号。
 
-## 下载 Release 2.0.1
+## 下载 Release 2.0.2
 
-[下载 Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.0.1/OpenLXSSH-2.0.1-arm64.dmg) · [发布说明](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.0.1)
+[下载 Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.0.2/OpenLXSSH-2.0.2-arm64.dmg) · [发布说明](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.0.2)
 
-打开 DMG，将 OpenLXSSH 拖到「应用程序」，然后从「应用程序」启动。包内应用版本为 **2.0.1（构建号 4）**，使用 Developer ID 离线签名，未经 Apple 公证。
+打开 DMG，将 OpenLXSSH 拖到「应用程序」，然后从「应用程序」启动。包内应用版本为 **2.0.2（构建号 5）**，使用 Developer ID 离线签名，未经 Apple 公证。
 
 ## 内存占用
 
@@ -23,7 +23,7 @@ OpenLXSSH 是一款为 **Apple Silicon（M 系列芯片）Mac** 打造的轻量�
 
 ## 帮忙测试
 
-1. 在 M 系列 Mac 上安装并启动 Release 2.0.1。添加一台有权限测试的主机，核对主机指纹，再用平时的认证方式连接。
+1. 在 M 系列 Mac 上安装并启动 Release 2.0.2。添加一台有权限测试的主机，核对主机指纹，再用平时的认证方式连接。
 2. 新建并切换多个终端标签。平时使用跳板机的话，可以试一下手动嵌套 SSH。
 3. 用 SFTP 上传和下载一个小测试文件，再试一次同名传输，检查「取消」「替换」「都保留」是否符合预期。
 

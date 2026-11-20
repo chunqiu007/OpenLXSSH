@@ -1,5 +1,12 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-20　2.0.2 发布包
+
+- 应用版本 2.0.2，构建号 5。提交 `2831b62` 包含 JumpServer 用户名支持、主机编辑器 SSH 命令填入及对应测试。示例使用虚构身份和保留域名。
+- 本轮在 Apple Silicon / macOS 26 上重跑 OpenLXSSHTrust 59 项、EditorDraftTests 和 VaultDesktopTests 合计 16 项，全部通过。系统 OpenSSH 离线解析保留完整用户名、主机名和端口。未连接真实堡垒机。
+- 使用 Release 配置，剥离主程序和 askpass 的调试符号，生成 LZMA 只读镜像。已挂载验证应用版本、架构、资源、调试段及签名。应用和镜像采用 Developer ID 离线签名，未经 Apple 公证。
+- `OpenLXSSH-2.0.2-arm64.dmg` 共 7,324,323 字节，SHA-256 为 `36d8ee0052804fdf584927e63837313970e1caf8a4610285c947d721b6080342`。
+
 ## 2026-11-20 JumpServer 堡垒机 `#` 分隔用户名支持与 SSH 命令一键拆分填入
 
 - **问题根因**：JumpServer 堡垒机（Koko）直连资产生成的 SSH 用户名采用 `跳板机用户#系统用户#资产UUID` 格式（如 `demo#root#00000000-0000-4000-8000-000000000001`），而 `Packages/OpenLXSSHTrust/Sources/OpenLXSSHTrust/Identity.swift` 中 `SSHUser` 的字符白名单此前仅包含字母数字与 `-.@_+\\`，未包含 `#`（ASCII 35），导致主机编辑器校验报错“请输入有效 SSH 用户名；大小写保持原样，不含空白”。
