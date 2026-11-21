@@ -78,19 +78,19 @@ import OpenLXSSHFiles
         let host = try XCTUnwrap(model.selectedHost)
         var visible = true
         func context() -> FilesInitialInputOwner.Context {
-            .init(visible: visible, hostID: model.selectedHost?.id, identity: model.selectedHost?.connectionIdentity, epoch: model.initialInputEpoch)
+            .init(visible: visible, host: model.selectedHost, keys: [], epoch: model.initialInputEpoch)
         }
-        input.update(context()); input.secret = UUID().uuidString; input.showSecret = true; input.saved = true; input.keyboardOnly = true
+        input.update(context()); input.secret = UUID().uuidString; input.useTemporaryCredential = true
         visible = false; model.hide(); input.update(context())
-        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.showSecret); XCTAssertFalse(input.saved); XCTAssertFalse(input.keyboardOnly)
-        XCTAssertNil(input.take()); XCTAssertEqual(model.state, .disconnected)
+        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.useTemporaryCredential)
+        XCTAssertNil(input.take(for: context())); XCTAssertEqual(model.state, .disconnected)
         visible = true; model.show(host: host); input.update(context()); input.secret = UUID().uuidString
-        let supplied = try XCTUnwrap(input.take()); XCTAssertTrue(input.secret.isEmpty)
+        let supplied = try XCTUnwrap(input.take(for: context())); XCTAssertTrue(input.secret.isEmpty)
         model.connect(supplied); await gate.waitForArrival()
-        input.update(context()); input.secret = UUID().uuidString; input.showSecret = true
+        input.update(context()); input.secret = UUID().uuidString; input.useTemporaryCredential = true
         let epoch = model.initialInputEpoch
         visible = false; model.hide(); input.update(context())
-        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.showSecret)
+        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.useTemporaryCredential)
         XCTAssertEqual(model.initialInputEpoch, epoch); XCTAssertEqual(model.state, .preparing)
         await gate.release(); await model.waitUntilCurrentWorkCompletes()
         XCTAssertEqual(model.state, .ready, "Hiding clears only UI input; an accepted connection continues")
@@ -99,11 +99,57 @@ import OpenLXSSHFiles
         model.show(host: renamed); input.update(context()); XCTAssertFalse(input.secret.isEmpty)
         model.cancelCurrent(); input.update(context()); XCTAssertTrue(input.secret.isEmpty)
         await model.waitUntilCurrentWorkCompletes()
-        input.secret = UUID().uuidString; input.showSecret = true
+        input.secret = UUID().uuidString; input.useTemporaryCredential = true
         var changed = host; changed.port = 2222
         model.show(host: changed); input.update(context())
-        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.showSecret)
+        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.useTemporaryCredential)
         input.secret = UUID().uuidString; await model.closeForWindow(); input.update(context()); XCTAssertTrue(input.secret.isEmpty)
+    }
+    func testConnectionFormUsesConfiguredCredentialAndScopesTemporaryOverridesToOneAttempt() throws {
+        let input = FilesInitialInputOwner(), epoch = UUID(), ref = UUID()
+        var host = HostConfiguration(name: "Test", address: "example.invalid", username: "fixture",
+                                     credentialRef: ref, savePasswordAuthorized: true)
+        func context(_ keys: [ManagedKeyReference] = []) -> FilesInitialInputOwner.Context {
+            .init(visible: true, host: host, keys: keys, epoch: epoch)
+        }
+        let password = context()
+        input.update(password)
+        guard case .configuredCredential(ref)? = input.take(for: password)?.primary else { return XCTFail("Expected saved host password") }
+        input.useTemporaryCredential = true
+        input.secret = UUID().uuidString
+        let supplied = input.secret
+        let override = try XCTUnwrap(input.take(for: password))
+        guard case .manual(let bytes) = override.primary else { return XCTFail("Expected one-time override") }
+        XCTAssertTrue(bytes.matches(.init(utf8: supplied))); XCTAssertFalse(override.keyboardOnly)
+        XCTAssertFalse(input.useTemporaryCredential); XCTAssertTrue(input.secret.isEmpty)
+        guard case .configuredCredential(ref)? = input.take(for: password)?.primary else { return XCTFail("Expected configuration on next click") }
+        input.useTemporaryCredential = true
+        XCTAssertTrue(try XCTUnwrap(input.take(for: password)).keyboardOnly)
+
+        host.savePasswordAuthorized = false
+        let unsaved = context()
+        input.update(unsaved)
+        XCTAssertNil(input.take(for: password))
+        XCTAssertTrue(try XCTUnwrap(input.take(for: unsaved)).keyboardOnly)
+        input.secret = UUID().uuidString
+        XCTAssertFalse(try XCTUnwrap(input.take(for: unsaved)).keyboardOnly)
+
+        let key = ManagedKeyReference(algorithm: .ed25519, passphraseCredentialRef: UUID())
+        host.authentication = .privateKey; host.keyRef = key.id; host.credentialRef = nil
+        let savedKey = context([key])
+        input.update(savedKey)
+        guard case .configuredCredential(let phrase)? = input.take(for: savedKey)?.primary else { return XCTFail("Expected saved key passphrase") }
+        XCTAssertEqual(phrase, key.passphraseCredentialRef)
+        input.useTemporaryCredential = true; input.secret = UUID().uuidString
+        let plainKey = context([.init(id: key.id, algorithm: key.algorithm)])
+        input.update(plainKey)
+        XCTAssertNil(input.take(for: savedKey)); XCTAssertTrue(input.secret.isEmpty)
+        let keyInput = try XCTUnwrap(input.take(for: plainKey))
+        guard case .manual(let empty) = keyInput.primary else { return XCTFail("Expected key without saved passphrase") }
+        XCTAssertTrue(empty.withUnsafeBytes { $0.isEmpty }); XCTAssertFalse(keyInput.keyboardOnly)
+        host.id = UUID()
+        input.update(context())
+        XCTAssertNil(input.take(for: plainKey))
     }
     func testLeavingRetainedPageDoesNotCancelConfirmedLocalMutationsOrLoseDeleteReports() async throws {
         let root = try fixture(), refreshGate = ReliabilityLocalRefreshGate()
@@ -1288,16 +1334,17 @@ import SwiftUI
         await files.waitUntilCurrentWorkCompletes()
         files.connect(.init(primary: .manual(.init(utf8: "")))); await gate.waitForArrival()
         let input = FilesInitialInputOwner()
-        input.update(.init(visible: true, hostID: files.selectedHost?.id, identity: files.selectedHost?.connectionIdentity, epoch: files.initialInputEpoch))
-        input.secret = UUID().uuidString; input.showSecret = true
-        input.update(.init(visible: false, hostID: files.selectedHost?.id, identity: files.selectedHost?.connectionIdentity, epoch: files.initialInputEpoch))
+        input.update(.init(visible: true, host: files.selectedHost, keys: [], epoch: files.initialInputEpoch))
+        input.secret = UUID().uuidString; input.useTemporaryCredential = true
+        let hidden = FilesInitialInputOwner.Context(visible: false, host: files.selectedHost, keys: [], epoch: files.initialInputEpoch)
+        input.update(hidden)
         let owned = FilesLayoutOwnedTable(defaults: defaults, side: .remote), view = split(defaults: defaults)
         resize(try column(.name, in: owned.table), in: owned.table, to: 650); view.setPosition(600, ofDividerAt: 0)
         _ = FilesLayoutPreferences(defaults: defaults).columns(.remote)
         XCTAssertEqual(files.state, .preparing); XCTAssertNil(local.path); XCTAssertTrue(local.entries.isEmpty)
         let readCount = await reads.count, closeCount = await service.closes
         XCTAssertEqual(readCount, 0); XCTAssertEqual(closeCount, 0)
-        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.showSecret); XCTAssertNil(input.take())
+        XCTAssertTrue(input.secret.isEmpty); XCTAssertFalse(input.useTemporaryCredential); XCTAssertNil(input.take(for: hidden))
         await gate.release(); await files.waitUntilCurrentWorkCompletes()
         XCTAssertEqual(files.state, .ready); XCTAssertTrue(files.transferSnapshot.jobs.isEmpty)
         XCTAssertTrue(input.secret.isEmpty); XCTAssertEqual(files.navigationHistory.paths, [.root])

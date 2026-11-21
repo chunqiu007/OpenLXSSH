@@ -55,6 +55,52 @@ import OpenLXSSHSecurity
             try await repository.apply([.deleteHost(host.id), .insertHost(changed)])
         }
     }
+    func testConfiguredKeyChecksRenderedReferenceBeforeReadingSavedPassphrase() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let connector = LibSSH2FilesConnector(repository: repo, security: security, environment: SessionEnvironment(location: .isolated(root)))
+        let phrase = OpenLXSSHSecurity.SecretBytes(utf8: UUID().uuidString)
+        let keyID = try await security.createKey(.generate, protection: .passphrase(phrase), rememberPassphrase: phrase).id
+        var host = host(); host.authentication = .privateKey; host.keyRef = keyID
+        try await repo.apply([.insertHost(host)])
+        let metadata = try await repo.securityMetadata()
+        let displayed = try XCTUnwrap(metadata.keys.first { $0.id == keyID }?.passphraseCredentialRef)
+        let replacement = OpenLXSSHCore.CredentialReference(purpose: .privateKeyPassphrase, isSavingAuthorized: true)
+        try await repo.apply([.registerCredential(replacement), .updateKeyPassphrase(keyID: keyID, credentialRef: replacement.id)])
+        do {
+            _ = try await plan(connector, host: host, input: .init(primary: .configuredCredential(displayed)))
+            XCTFail("A click authorized for the previous passphrase read the replacement")
+        } catch let error as FileServiceError { XCTAssertEqual(error.kind, .cancelled) }
+        let deniedReads = await credentials.readCount
+        XCTAssertEqual(deniedReads, 0)
+        let prepared = try await plan(connector, host: host, input: .init(primary: .configuredCredential(replacement.id)))
+        XCTAssertEqual(prepared.methods.count, 2)
+        let authorizedReads = await credentials.readCount
+        XCTAssertEqual(authorizedReads, 1)
+    }
+    func testEncryptedKeyWithoutPassphraseRequestsInputBeforeNetworkAndAcceptsManualRetry() async throws {
+        let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
+        let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)
+        addTeardownBlock { try await security.close(); try await repo.close() }
+        let connector = LibSSH2FilesConnector(repository: repo, security: security, environment: SessionEnvironment(location: .isolated(root)))
+        let phrase = OpenLXSSHSecurity.SecretBytes(utf8: UUID().uuidString)
+        var host = host(); host.authentication = .privateKey
+        host.keyRef = try await security.createKey(.generate, protection: .passphrase(phrase), rememberPassphrase: nil).id
+        try await repo.apply([.insertHost(host)])
+        do {
+            _ = try await plan(connector, host: host, input: .init(primary: .manual(.init(utf8: ""))))
+            XCTFail("Expected local passphrase request before opening a socket")
+        } catch let error as FileServiceError {
+            XCTAssertEqual(AppIssue.files(error).code, "files.keyPassphraseRequired")
+        }
+        let prepared = try await plan(connector, host: host, input: .init(primary: .manual(phrase)))
+        guard case .publicKey = prepared.methods.first, case .keyboardInteractive = prepared.methods.last else {
+            return XCTFail("Manual passphrase retry must keep the key and interactive server challenges")
+        }
+        let reads = await credentials.readCount
+        XCTAssertEqual(reads, 0)
+    }
     func testProductionManualAndKeyboardOnlyPlansNeverReadSavedSecret() async throws {
         let (root, repo) = try fixture(), credentials = FilesAuthCredentials()
         let security = SecurityCoordinator(repository: repo, location: .isolated(root), credentials: credentials)

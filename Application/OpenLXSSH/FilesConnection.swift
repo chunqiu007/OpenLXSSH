@@ -22,6 +22,7 @@ struct FilesRequest: Equatable, Sendable {
 enum FilesInitialSecret: Sendable {
     case manual(OpenLXSSHSecurity.SecretBytes)
     case saved
+    case configuredCredential(UUID)
 }
 struct FilesConnectInput: Sendable {
     let primary: FilesInitialSecret
@@ -89,13 +90,16 @@ actor LibSSH2FilesConnector: FilesConnecting {
         var usedCredential: OpenLXSSHCore.CredentialReference?
         var authentication: [FileAuthentication] = []
         if !input.keyboardOnly {
-            if host.authentication.needsKey {
-                let bytes = try await security.privateKeyForFileAuthentication(host: host, authorized: true)
+            if let usedKey {
+                let material = try await security.keyAuthenticationMaterial(host: host, expectedKey: usedKey)
                 try token.check(); guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "stale-files-material") }
                 try token.check()
                 let phrase = try await initialSecret(input.primary, request: request, key: usedKey, privateKey: true, token: token, isCurrent: isCurrent)
                 usedCredential = phrase.credential
-                authentication.append(.publicKey(publicKey: nil, privateKey: bytes.withUnsafeBytes { Data($0) }, passphrase: phrase.secret.withUnsafeBytes { Data($0) }))
+                if material.encrypted, phrase.secret.withUnsafeBytes({ $0.isEmpty }) {
+                    throw FileServiceError(.authentication, operation: "key-passphrase-required")
+                }
+                authentication.append(.publicKey(publicKey: nil, privateKey: material.bytes.withUnsafeBytes { Data($0) }, passphrase: phrase.secret.withUnsafeBytes { Data($0) }))
             } else {
                 let password = try await initialSecret(input.primary, request: request, key: nil, privateKey: false, token: token, isCurrent: isCurrent)
                 usedCredential = password.credential
@@ -164,7 +168,7 @@ actor LibSSH2FilesConnector: FilesConnecting {
         try token.check()
         switch source {
         case .manual(let secret): return (secret, nil)
-        case .saved:
+        case .saved, .configuredCredential:
             let metadata = try await validate(request, token: token, isCurrent: isCurrent)
             let host = request.host
             let ref: UUID
@@ -180,6 +184,9 @@ actor LibSSH2FilesConnector: FilesConnecting {
             } else {
                 guard host.savePasswordAuthorized, let value = host.credentialRef else { throw FileServiceError(.authentication, operation: "saved-password-not-authorized") }
                 ref = value; kind = .password; purpose = .password
+            }
+            if case .configuredCredential(let displayedID) = source, displayedID != ref {
+                throw FileServiceError(.cancelled, operation: "secret-authorization-changed")
             }
             guard let credential = metadata.credentials.first(where: { $0.id == ref && $0.purpose == purpose && $0.isSavingAuthorized }) else {
                 throw FileServiceError(.authentication, operation: "saved-secret-not-authorized")
@@ -248,6 +255,9 @@ extension AppIssue {
     static func files(_ error: Error) -> AppIssue {
         if let repository = error as? RepositoryError { return .sanitized(repository) }
         guard let typed = error as? FileServiceError else { return .security(error) }
+        if typed.kind == .authentication, typed.operation == "key-passphrase-required" {
+            return AppIssue(code: "files.keyPassphraseRequired", message: "此私钥已加密，请输入本次私钥口令后重新连接。")
+        }
         if typed.kind == .timeout, typed.operation == "local-network-access" {
             return AppIssue(code: "files.localNetworkAccessRequired", message: "本地网络访问尚未获准。请在 macOS“系统设置 → 隐私与安全性 → 本地网络”检查此 App 的访问权限，然后手动连接；尚未进行 SSH 握手或认证。")
         }

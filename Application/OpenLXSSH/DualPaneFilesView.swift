@@ -6,8 +6,6 @@ import Combine
 
 enum FilesSearchPane { case local, remote }
 
-private enum FilesLoginMethod { case manual, saved, interactive }
-
 /// The application keeps this view mounted; page visibility only activates local metadata once.
 struct DualPaneFilesView: View {
     @ObservedObject private var app: AppModel
@@ -21,7 +19,6 @@ struct DualPaneFilesView: View {
     @State private var hostSearch = ""
     @State private var hostFilter = "all"
     @StateObject private var initialInput = FilesInitialInputOwner()
-    @State private var selectedSavedCredentialID: UUID?
     @State private var pendingChange: FilesConnectionChangeReview?
     @State private var operationDialog: FilesDialog?
     @State private var showingLocalReports = false
@@ -107,15 +104,8 @@ struct DualPaneFilesView: View {
     }
     private var credentialContent: some View {
         routedContent
-            .onChange(of: files.selectedHost) { _, _ in remoteSelection = []; updateInitialInput() }
-            .onChange(of: availableSavedCredentialID) { _, id in
-                if selectedSavedCredentialID != id {
-                    selectedSavedCredentialID = nil
-                    initialInput.saved = false
-                }
-            }
-            .onChange(of: files.initialInputEpoch) { _, _ in updateInitialInput() }
-            .onChange(of: files.visible) { _, _ in updateInitialInput() }
+            .onChange(of: files.selectedHost) { _, _ in remoteSelection = [] }
+            .onChange(of: inputContext) { _, current in initialInput.update(current) }
     }
     private var reviewedContent: some View {
         credentialContent
@@ -147,12 +137,12 @@ struct DualPaneFilesView: View {
         }) { local.refreshPreservingSelection() }
     }
     private func activateIfVisible() {
-        updateInitialInput()
+        initialInput.update(inputContext)
         if app.workspacePage == .sftp { local.activate() } else { local.deactivate() }
     }
-    private func updateInitialInput() {
-        initialInput.update(.init(visible: app.workspacePage == .sftp && files.visible,
-            hostID: files.selectedHost?.id, identity: files.selectedHost?.connectionIdentity, epoch: files.initialInputEpoch))
+    private var inputContext: FilesInitialInputOwner.Context {
+        .init(visible: app.workspacePage == .sftp && files.visible,
+              host: files.selectedHost, keys: app.keys, epoch: files.initialInputEpoch)
     }
     private var remoteRows: [DirectoryEntry] {
         remoteSort.apply(files.entries.filter { (remoteHidden || $0.name.bytes.first != 46) && (remoteFilter.isEmpty || FileDisplay.name($0.name).localizedStandardContains(remoteFilter)) })
@@ -251,45 +241,40 @@ struct DualPaneFilesView: View {
         .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(DesktopStyle.border) }
     }
-    private var availableSavedCredentialID: UUID? {
-        guard let host = files.selectedHost else { return nil }
-        if host.authentication.needsKey {
-            return app.keys.first { $0.id == host.keyRef }?.passphraseCredentialRef
-        }
-        return host.savePasswordAuthorized ? host.credentialRef : nil
+    private var requiresKeyPassphrase: Bool {
+        files.state == .failed && files.selectedHost?.authentication.needsKey == true
+            && files.issue?.code == "files.keyPassphraseRequired"
     }
     private func connectionForm(_ host: HostConfiguration) -> some View {
-        let credentialID = availableSavedCredentialID
-        let method = Binding<FilesLoginMethod>(
-            get: {
-                if initialInput.keyboardOnly { return .interactive }
-                if initialInput.saved, let credentialID, selectedSavedCredentialID == credentialID { return .saved }
-                return .manual
-            },
-            set: { choice in
-                initialInput.secret = ""
-                selectedSavedCredentialID = choice == .saved ? credentialID : nil
-                initialInput.saved = selectedSavedCredentialID != nil
-                initialInput.keyboardOnly = choice == .interactive
-            })
-        return VStack(alignment: .leading, spacing: 12) {
-            if host.authentication.needsKey && credentialID == nil {
-                Label("SSH 密钥", systemImage: "key").font(.callout).foregroundStyle(.secondary)
-            } else {
-                Picker("认证方式", selection: method) {
-                    Text(host.authentication.needsKey ? "SSH 密钥" : "输入密码").tag(FilesLoginMethod.manual)
-                    if credentialID != nil { Text("使用已保存凭据").tag(FilesLoginMethod.saved) }
-                    if !host.authentication.needsKey { Text("仅交互认证").tag(FilesLoginMethod.interactive) }
-                }.pickerStyle(.menu)
-            }
-            if method.wrappedValue == .manual {
-                SecureField(host.authentication.needsKey ? "本次私钥口令（无口令可留空）" : "本次密码", text: $initialInput.secret)
+        let displayed = inputContext
+        let key = host.authentication.needsKey
+        let hasSavedCredential = displayed.savedCredentialID != nil
+        let needsPassphrase = requiresKeyPassphrase
+        let canUseConfigured = key || hasSavedCredential
+        let showField = !canUseConfigured || initialInput.useTemporaryCredential || needsPassphrase
+        return VStack(alignment: .leading, spacing: 10) {
+            if showField {
+                SecureField(key ? "本次私钥口令" : "本次密码", text: $initialInput.secret)
                     .textFieldStyle(.roundedBorder).controlSize(.large)
-                    .onSubmit { connectInitial() }
+                    .onSubmit { connectInitial(displayed) }
                     .accessibilityIdentifier("files.initial.secret")
+                if !key {
+                    Text("留空时按服务器提示认证。").font(.caption).foregroundStyle(.secondary)
+                }
+                if canUseConfigured && !needsPassphrase {
+                    Button("使用主机配置") { initialInput.clear() }.buttonStyle(.link)
+                }
+            } else {
+                Label(key ? (hasSavedCredential ? "SSH 密钥 · 已保存口令" : "SSH 密钥") : "使用已保存的密码",
+                      systemImage: key ? "key" : "lock")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button(key ? "输入本次私钥口令…" : "输入本次密码…") {
+                    initialInput.useTemporaryCredential = true
+                }.buttonStyle(.link)
             }
             NativeButton(title: files.state == .failed ? "重新连接 SFTP" : "连接 SFTP", id: "files.connect",
-                         enabled: files.canConnect && !files.busy, isProminent: true) { connectInitial() }
+                         enabled: files.canConnect && !files.busy && !(needsPassphrase && initialInput.secret.isEmpty),
+                         isProminent: true) { connectInitial(displayed) }
                 .fixedSize()
         }
     }
@@ -440,16 +425,11 @@ struct DualPaneFilesView: View {
     private func requestChange(_ host: HostConfiguration?, disconnect: Bool) {
         if let review = files.prepareConnectionChange(host: host, disconnect: disconnect) { pendingChange = review }
     }
-    private func connectInitial() {
-        guard files.canConnect, !files.busy, app.allowSensitivePreviewAction() else { return }
-        updateInitialInput()
-        if initialInput.saved && (selectedSavedCredentialID == nil || selectedSavedCredentialID != availableSavedCredentialID) {
-            initialInput.saved = false
-            selectedSavedCredentialID = nil
-            return
-        }
-        selectedSavedCredentialID = nil
-        if let value = initialInput.take() { files.connect(value) }
+    private func connectInitial(_ displayed: FilesInitialInputOwner.Context) {
+        guard displayed == inputContext, files.canConnect, !files.busy,
+              !(requiresKeyPassphrase && initialInput.secret.isEmpty), app.allowSensitivePreviewAction(),
+              let input = initialInput.take(for: displayed) else { return }
+        files.connect(input)
     }
     private func chooseLocalDirectory() {
         guard app.allowSensitivePreviewAction() else { return }

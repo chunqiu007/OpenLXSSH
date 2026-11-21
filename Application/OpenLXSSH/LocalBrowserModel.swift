@@ -380,21 +380,36 @@ enum FilesDeletePreflight {
         let hostID: UUID?
         let identity: HostConnectionIdentity?
         let epoch: UUID
+        let savedCredentialID: UUID?
+
+        init(visible: Bool, host: HostConfiguration?, keys: [ManagedKeyReference], epoch: UUID) {
+            self.visible = visible
+            hostID = host?.id
+            identity = host?.connectionIdentity
+            self.epoch = epoch
+            if let host, host.authentication.needsKey {
+                savedCredentialID = keys.first { $0.id == host.keyRef }?.passphraseCredentialRef
+            } else {
+                savedCredentialID = host?.savePasswordAuthorized == true ? host?.credentialRef : nil
+            }
+        }
     }
     @Published var secret = ""
-    @Published var showSecret = false
-    @Published var saved = false
-    @Published var keyboardOnly = false
+    @Published var useTemporaryCredential = false
     private var context: Context?
     func update(_ value: Context) {
         if context != value || !value.visible { clear() }
         context = value
     }
-    func clear() { secret = ""; showSecret = false; saved = false; keyboardOnly = false }
-    func take() -> FilesConnectInput? {
-        guard context?.visible == true, context?.hostID != nil else { clear(); return nil }
-        let value = FilesConnectInput(primary: saved ? .saved : .manual(.init(utf8: secret)), keyboardOnly: keyboardOnly)
-        clear(); return value
+    func clear() { secret = ""; useTemporaryCredential = false }
+    func take(for displayed: Context) -> FilesConnectInput? {
+        guard displayed == context, displayed.visible, displayed.hostID != nil, let identity = displayed.identity else { return nil }
+        defer { clear() }
+        if !useTemporaryCredential, secret.isEmpty, let id = displayed.savedCredentialID {
+            return FilesConnectInput(primary: .configuredCredential(id))
+        }
+        return FilesConnectInput(primary: .manual(.init(utf8: secret)),
+                                 keyboardOnly: !identity.authentication.needsKey && secret.isEmpty)
     }
 }
 

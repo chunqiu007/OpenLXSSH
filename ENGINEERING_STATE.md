@@ -1,5 +1,11 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-21 SFTP 登录沿用主机配置
+
+- 基于 2.0.3，SFTP-AUTO 已完成本地审查。用户点击连接时默认使用主机已授权的密码或关联的 SSH 密钥，支持已记住的私钥口令和仅本次覆盖。服务器交互验证按实际挑战显示，切换主机或页面不会触发认证。加密私钥缺少口令时，在 TCP 连接前提示本次输入。
+- 修改涉及 `DualPaneFilesView.swift`、`LocalBrowserModel.swift`、`FilesConnection.swift`、两组认证与双栏测试及使用说明。已复核表单切换、连接代次、凭据引用绑定、Keychain 读取前后重验和失败重试。
+- arm64/macOS 26.7.1 上候选构建成功。普通 Debug 配置运行 FilesAuthenticationTests、DualPaneFilesTests、FilesControllerTests，78 项通过、0 失败。独立 App 使用合成主机配置实测了默认隐藏密码框、按需显示本次输入、切回主机配置。测试凭据归属与密钥口令检查采用隔离测试资料，未连接真实服务器。体验版、原始构建命令、截图和 xcresult 均在 `DerivedData/SFTPAuto-20261121/`。本次未发布。
+
 ## 2026-11-21　2.0.3 发布包
 
 - 应用版本 2.0.3，构建号 6，包含提交 `ceb157d` 的主机工作区、SFTP 连接面板和标签栏改动。中英文 README 已同步更新下载地址。
