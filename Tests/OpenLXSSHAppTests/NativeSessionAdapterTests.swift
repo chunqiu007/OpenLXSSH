@@ -3842,7 +3842,9 @@ extension NativeSessionAdapterTests {
             try await wait {
                 hosting.layoutSubtreeIfNeeded()
                 guard let drag = self.descendants(hosting).compactMap({ $0 as? WorkspaceChromeDragView }).first,
-                      let state = drag.state, state.isIntegrated, state.leadingInset > 8, state.interactiveFrames.count >= 5 else { return false }
+                      let state = drag.state, state.isIntegrated, state.leadingInset > 8,
+                      state.interactiveFrames.count == 3,
+                      let plus = state.interactiveFrames.first(where: { abs($0.width - 30) < 1 && abs($0.height - 30) < 1 }) else { return false }
                 let contentRect = hosting.convert(hosting.bounds, to: nil), stripRect = drag.convert(drag.bounds, to: nil)
                 let buttonFrames = buttons.map { $0.convert($0.bounds, to: nil) }
                 let fixed = state.interactiveFrames.filter { abs($0.width - 90) < 1 && abs($0.height - 34) < 1 }.sorted { $0.minX < $1.minX }
@@ -3853,7 +3855,7 @@ extension NativeSessionAdapterTests {
                 let fixedAligned = fixed.count == 2 && fixed.allSatisfy { frame in
                     frame.minX >= state.leadingInset - 1 && abs(drag.convert(frame, to: nil).midY - stripRect.midY) < 1
                 }
-                let geometry = [window.frame, contentRect, stripRect] + buttonFrames + fixed
+                let geometry = [window.frame, contentRect, stripRect, plus] + buttonFrames + fixed
                     + [NSRect(x: state.leadingInset, y: state.topSafeInset, width: 0, height: 0)]
                 let stable = previousGeometry == geometry
                 previousGeometry = geometry
@@ -3912,6 +3914,10 @@ extension NativeSessionAdapterTests {
                 XCTAssertFalse(state.canDrag(at: NSPoint(x: frame.midX, y: frame.midY), in: drag.bounds))
             }
             let plus = try XCTUnwrap(state.interactiveFrames.first { abs($0.width - 30) < 1 && abs($0.height - 30) < 1 })
+            let lastFixed = try XCTUnwrap(fixed.max(by: { $0.maxX < $1.maxX }))
+            XCTAssertGreaterThanOrEqual(plus.minX, lastFixed.maxX)
+            XCTAssertLessThan(plus.minX - lastFixed.maxX, 16, "New connection belongs immediately after the fixed tabs")
+            XCTAssertTrue(state.canDrag(at: NSPoint(x: plus.maxX + 20, y: plus.midY), in: drag.bounds))
             var root = hosting as NSView
             while let parent = root.superview { root = parent }
             for frame in fixed + [plus] {
@@ -3950,7 +3956,14 @@ extension NativeSessionAdapterTests {
         try await wait { window.backgroundColor == WorkspaceWindowChrome.background(terminal: true) }
         let drag = try XCTUnwrap(descendants(hosting).compactMap { $0 as? WorkspaceChromeDragView }.first)
         let state = try XCTUnwrap(drag.state)
-        try await wait { hosting.layoutSubtreeIfNeeded(); return state.interactiveFrames.contains { $0.width > 180 && $0.height >= 34 } }
+        try await wait {
+            hosting.layoutSubtreeIfNeeded()
+            return state.interactiveFrames.count == 4 && state.interactiveFrames.contains { $0.width > 180 && $0.height >= 34 }
+        }
+        let sessionFrame = try XCTUnwrap(state.interactiveFrames.first { $0.width > 180 && $0.height >= 34 })
+        let plus = try XCTUnwrap(state.interactiveFrames.first { abs($0.width - 30) < 1 && abs($0.height - 30) < 1 })
+        XCTAssertGreaterThanOrEqual(plus.minX, sessionFrame.maxX)
+        XCTAssertLessThan(plus.minX - sessionFrame.maxX, 32, "Leave space for the end-drop target before the adjacent add button")
         XCTAssertFalse(state.canDrag(at: NSPoint(x: 10, y: 24), in: drag.bounds), "The actual native-controls gutter is never a content drag target")
         for frame in state.interactiveFrames where !frame.isEmpty {
             XCTAssertFalse(state.canDrag(at: NSPoint(x: frame.midX, y: frame.midY), in: drag.bounds), "Tabs, close/overflow and new-connection controls keep their own gestures")

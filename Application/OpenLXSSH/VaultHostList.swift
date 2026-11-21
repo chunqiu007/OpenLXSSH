@@ -27,7 +27,7 @@ struct VaultHostList: NSViewRepresentable {
         table.addTableColumn(NSTableColumn(identifier: .init("host")))
         table.headerView = nil; table.allowsMultipleSelection = true; table.allowsEmptySelection = true
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.intercellSpacing = NSSize(width: 0, height: 6)
+        table.style = .plain
         table.backgroundColor = .clear; table.selectionHighlightStyle = .none
         table.setDraggingSourceOperationMask(.move, forLocal: true)
         table.setDraggingSourceOperationMask([], forLocal: false)
@@ -49,7 +49,9 @@ struct VaultHostList: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self; coordinator.updating = true
         guard let table = coordinator.table else { return }
-        table.rowHeight = model.displayMode == .cards ? 112 : 84
+        let card = model.displayMode == .cards
+        table.intercellSpacing = NSSize(width: 0, height: card ? 7 : 2)
+        table.rowHeight = card ? 88 : 54
         table.reloadData()
         table.selectRowIndexes(IndexSet(model.hosts.indices.filter { model.selectedIDs.contains(model.hosts[$0].id) }), byExtendingSelection: false)
         coordinator.updating = false
@@ -151,51 +153,99 @@ private struct VaultHostRow: View {
     let card: Bool
     @State private var hovered = false
     private var endpoint: String { host.username + "@" + host.vaultEndpoint }
-    private var visibleTags: [HostTag] { Array((metadata?.tags ?? []).prefix(3)) }
-    private var remainingTagCount: Int { max(0, (metadata?.tags.count ?? 0) - visibleTags.count) }
-    private var rowBackground: Color { selected ? DesktopStyle.selection : (hovered ? DesktopStyle.panelElevated : (card ? DesktopStyle.panel : .clear)) }
-    private var borderColor: Color { selected ? Color.accentColor.opacity(0.65) : ((card || hovered) ? DesktopStyle.border : .clear) }
-    private var helpText: String { host.name + "\n" + endpoint + "\n" + (metadata?.folderPath?.displayName ?? "未分组") }
+    private var folderName: String { metadata?.folderPath?.displayName ?? "未分组" }
+    private var tags: [HostTag] { metadata?.tags ?? [] }
+
+    private var rowBackground: Color {
+        if selected { return DesktopStyle.selection }
+        if hovered { return DesktopStyle.panelElevated }
+        return card ? DesktopStyle.panel : .clear
+    }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "server.rack").font(.system(size: card ? 22 : 19, weight: .medium))
-                .foregroundStyle(Color.accentColor).frame(width: card ? 48 : 40, height: card ? 48 : 40)
-                .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
-            VStack(alignment: .leading, spacing: 5) {
-                heading
-                Text(endpoint).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                organization
-            }
+        Group {
+            if card { cardContent }
+            else { listContent }
         }
-        .padding(.horizontal, 12).padding(.vertical, card ? 14 : 8)
+        .padding(.horizontal, card ? 14 : 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(rowBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius))
-        .overlay { RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius).strokeBorder(borderColor, lineWidth: 1) }
-        .padding(.horizontal, 4)
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: card ? 10 : 6))
+        .overlay {
+            if card {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(selected ? Color.accentColor : DesktopStyle.border, lineWidth: selected ? 1.5 : 1)
+            }
+        }
+        .overlay(alignment: .leading) {
+            if selected && !card {
+                Capsule().fill(Color.accentColor).frame(width: 3, height: 24)
+            }
+        }
         .onHover { hovered = $0 }
-        .help(helpText)
+        .help(([host.name, endpoint, host.vaultAuthenticationLabel, folderName] + tags.map(\.name)).joined(separator: "\n"))
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
-    private var heading: some View {
-        HStack {
-            Text(host.name).font(.system(size: 13, weight: .semibold)).lineLimit(1).layoutPriority(1)
-            if host.isFavorite { Image(systemName: "star.fill").foregroundStyle(.orange).accessibilityLabel("已收藏") }
-            Spacer(minLength: 4)
-            Text(host.vaultAuthenticationLabel).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(DesktopStyle.separator, in: Capsule())
+
+    private var listContent: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(selected ? Color.accentColor : .secondary)
+                .frame(width: 22).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                name
+                endpointLabel
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 4) {
+                Label(folderName, systemImage: "folder").lineLimit(1).truncationMode(.middle)
+                Text(host.vaultAuthenticationLabel).lineLimit(1)
+            }
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .frame(maxWidth: 112, alignment: .trailing)
         }
     }
-    private var organization: some View {
-        HStack(spacing: 6) {
-            if let path = metadata?.folderPath { Label(path.displayName, systemImage: "folder").lineLimit(1) }
-            ForEach(visibleTags) { tag in
-                Text(tag.name).lineLimit(1).padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(DesktopStyle.separator, in: RoundedRectangle(cornerRadius: 4))
+
+    private var cardContent: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "server.rack").font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Color.accentColor).frame(width: 40, height: 40)
+                .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    name
+                    Spacer(minLength: 4)
+                    DesktopBadge(text: host.vaultAuthenticationLabel)
+                }
+                endpointLabel
+                HStack(spacing: 6) {
+                    Label(folderName, systemImage: "folder").lineLimit(1).truncationMode(.middle)
+                    ForEach(tags.prefix(2)) { tag in
+                        DesktopBadge(text: tag.name, color: .secondary)
+                    }
+                    if tags.count > 2 { Text("+\(tags.count - 2)").fixedSize() }
+                }
+                .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            if remainingTagCount > 0 { Text("+\(remainingTagCount)") }
-        }.font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private var name: some View {
+        HStack(spacing: 5) {
+            Text(verbatim: host.name).font(.system(size: card ? 15 : 13, weight: .semibold))
+                .lineLimit(1).truncationMode(.tail)
+            if host.isFavorite {
+                Image(systemName: "star.fill").font(.caption2)
+                    .foregroundStyle(.orange).accessibilityLabel("已收藏")
+            }
+        }
+    }
+
+    private var endpointLabel: some View {
+        Text(verbatim: endpoint).font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
     }
 }
 

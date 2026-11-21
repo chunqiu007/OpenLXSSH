@@ -269,6 +269,7 @@ struct WorkspaceTabBar: View {
     @StateObject private var batchClose = SessionBatchCloseOwner()
     @State private var renamePresentation: TabRenamePresentation?
     @StateObject private var tabDrag = WorkspaceTabDragOwner()
+    @State private var tabContentWidth: CGFloat?
     @State private var viewport: WorkspaceTabViewport?
     @State private var tabFrames: [UUID: CGRect] = [:]
     @State private var hoveredFixedID: String?
@@ -283,51 +284,21 @@ struct WorkspaceTabBar: View {
             fixedTab("保险箱", icon: "tray.full", page: .vault, id: "workspace.vault")
             fixedTab("SFTP", icon: "folder", page: .sftp, id: "workspace.sftp")
             Divider().padding(.vertical, 10)
-            ScrollViewReader { proxy in
-                HStack(spacing: 2) {
-                    overflowButton(forwards: false, proxy: proxy)
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 4) {
-                            ForEach(sessions.tabs) { tab in
-                                WorkspaceSessionTab(tab: tab, controller: sessions, dragOwner: tabDrag, order: { sessions.tabs.map(\.id) }, active: model.workspacePage == .session(tab.id), terminalTheme: model.workspacePage.sessionID != nil, select: { model.showWorkspace(.session(tab.id)) }, close: { Task { await sessions.closeTab(tab.id) } })
-                                    .workspaceChromeControl()
-                                    .id(tab.id)
-                                    .background(GeometryReader { geometry in Color.clear.preference(key: WorkspaceTabFrames.self, value: [tab.id: geometry.frame(in: .named("workspace.session.strip"))]) })
-                                    .overlay(tabDropTarget(before: tab.id))
-                                    .contextMenu {
-                                        Button("连接信息") { showConnectionInfo(tab) }
-                                        Button("重命名当前标签…") { renamePresentation = TabRenamePresentation(tab: tab) }
-                                        Divider()
-                                        Button("断开") { sessions.disconnect(tab.id) }.disabled(!tab.isReusable)
-                                        Button("重新连接") { sessions.reconnect(tab.id) }.disabled(!tab.canReconnect)
-                                        Divider()
-                                        Button("关闭") { Task { await sessions.closeTab(tab.id) } }
-                                        Button("关闭其他会话…") { requestClose(.otherSessions(tab.id)) }.disabled(sessions.tabs.count < 2 || batchClose.review != nil)
-                                        Button("关闭右侧会话…") { requestClose(.sessionsToRight(tab.id)) }.disabled(sessions.tabs.last?.id == tab.id || batchClose.review != nil)
-                                    }
-                            }
-                            Text(tabDrag.isDragging ? "末尾" : "").font(.caption)
-                                .frame(width: tabDrag.isDragging ? 54 : 18, height: 34)
-                                .background(tabDrag.isDragging ? DesktopStyle.managementActive : .clear, in: RoundedRectangle(cornerRadius: 8))
-                                .contentShape(Rectangle()).accessibilityHidden(true)
-                                .overlay(tabDropTarget(before: nil))
-                        }.coordinateSpace(name: "workspace.session.strip")
+            GeometryReader { space in
+                HStack(spacing: 4) {
+                    if !sessions.tabs.isEmpty {
+                        sessionStrip(maximumWidth: max(0, space.size.width - newConnectionSize - 4))
                     }
-                    .scrollIndicators(.hidden)
-                    .onScrollGeometryChange(for: WorkspaceTabViewport.self) { geometry in
-                        WorkspaceTabViewport(visibleRect: geometry.visibleRect, contentWidth: geometry.contentSize.width)
-                    } action: { _, value in viewport = value }
-                    .onPreferenceChange(WorkspaceTabFrames.self) { value in tabFrames = value; revealActive(using: proxy, frames: value) }
-                    .onChange(of: model.workspacePage) { _, _ in revealActive(using: proxy) }
-                    .onChange(of: sessions.tabs.map(\.id)) { _, _ in revealActive(using: proxy) }
-                    .onChange(of: viewport?.visibleRect.size) { _, _ in revealActive(using: proxy) }
-                    .frame(maxWidth: .infinity)
-                    overflowButton(forwards: true, proxy: proxy)
+                    Button { chooser = ConnectionChooserPresentation() } label: {
+                        Image(systemName: "plus")
+                            .frame(width: newConnectionSize, height: newConnectionSize)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).help("新连接（⌘T）").accessibilityLabel("新连接")
+                    .accessibilityIdentifier("workspace.new").workspaceChromeControl()
                 }
+                .frame(maxHeight: .infinity)
             }
-            Button { chooser = ConnectionChooserPresentation() } label: { Image(systemName: "plus").frame(width: 30, height: 30) }
-                .buttonStyle(.plain).help("新连接（⌘T）").accessibilityLabel("新连接").accessibilityIdentifier("workspace.new")
-                .workspaceChromeControl()
             if files.hasActiveTransfers || !files.transferSnapshot.jobs.isEmpty {
                 Button { model.showTransferTasks() } label: {
                     Label("\(files.transferSnapshot.jobs.filter { $0.state.isActive }.count)", systemImage: "arrow.up.arrow.down")
@@ -355,6 +326,57 @@ struct WorkspaceTabBar: View {
             if request.command == .newConnection { chooser = ConnectionChooserPresentation() }
             if request.command == .connectionInfo, let tab = sessions.selectedTab, model.workspacePage.sessionID == tab.id { showConnectionInfo(tab) }
         }
+    }
+    private let newConnectionSize: CGFloat = 30
+    private func sessionStrip(maximumWidth: CGFloat) -> some View {
+        // Measure the entire row inside the scroll view so showing the arrows
+        // does not reduce the width used to decide whether they are needed.
+        let needsArrows = (tabContentWidth ?? .infinity) > maximumWidth
+        return ScrollViewReader { proxy in
+            HStack(spacing: 2) {
+                if needsArrows { overflowButton(forwards: false, proxy: proxy) }
+                ScrollView(.horizontal) {
+                    HStack(spacing: 4) {
+                        ForEach(sessions.tabs) { tab in
+                            WorkspaceSessionTab(tab: tab, controller: sessions, dragOwner: tabDrag, order: { sessions.tabs.map(\.id) }, active: model.workspacePage == .session(tab.id), terminalTheme: model.workspacePage.sessionID != nil, select: { model.showWorkspace(.session(tab.id)) }, close: { Task { await sessions.closeTab(tab.id) } })
+                                .workspaceChromeControl()
+                                .id(tab.id)
+                                .background(GeometryReader { geometry in Color.clear.preference(key: WorkspaceTabFrames.self, value: [tab.id: geometry.frame(in: .named("workspace.session.strip"))]) })
+                                .overlay(tabDropTarget(before: tab.id))
+                                .contextMenu {
+                                    Button("连接信息") { showConnectionInfo(tab) }
+                                    Button("重命名当前标签…") { renamePresentation = TabRenamePresentation(tab: tab) }
+                                    Divider()
+                                    Button("断开") { sessions.disconnect(tab.id) }.disabled(!tab.isReusable)
+                                    Button("重新连接") { sessions.reconnect(tab.id) }.disabled(!tab.canReconnect)
+                                    Divider()
+                                    Button("关闭") { Task { await sessions.closeTab(tab.id) } }
+                                    Button("关闭其他会话…") { requestClose(.otherSessions(tab.id)) }.disabled(sessions.tabs.count < 2 || batchClose.review != nil)
+                                    Button("关闭右侧会话…") { requestClose(.sessionsToRight(tab.id)) }.disabled(sessions.tabs.last?.id == tab.id || batchClose.review != nil)
+                                }
+                        }
+                        Text(tabDrag.isDragging ? "末尾" : "").font(.caption)
+                            .frame(width: tabDrag.isDragging ? 54 : 18, height: 34)
+                            .background(tabDrag.isDragging ? DesktopStyle.managementActive : .clear, in: RoundedRectangle(cornerRadius: 8))
+                            .contentShape(Rectangle()).accessibilityHidden(true)
+                            .overlay(tabDropTarget(before: nil))
+                    }
+                    .coordinateSpace(name: "workspace.session.strip")
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tabContentWidth = $0 }
+                }
+                .scrollIndicators(.hidden)
+                .onScrollGeometryChange(for: WorkspaceTabViewport.self) { geometry in
+                    WorkspaceTabViewport(visibleRect: geometry.visibleRect, contentWidth: geometry.contentSize.width)
+                } action: { _, value in viewport = value }
+                .onPreferenceChange(WorkspaceTabFrames.self) { value in tabFrames = value; revealActive(using: proxy, frames: value) }
+                .onChange(of: model.workspacePage) { _, _ in revealActive(using: proxy) }
+                .onChange(of: sessions.tabs.map(\.id)) { _, _ in revealActive(using: proxy) }
+                .onChange(of: viewport?.visibleRect.size) { _, _ in revealActive(using: proxy) }
+                .frame(maxWidth: .infinity)
+                if needsArrows { overflowButton(forwards: true, proxy: proxy) }
+            }
+        }
+        .frame(width: min(maximumWidth, tabContentWidth ?? maximumWidth))
     }
     private func fixedTab(_ title: String, icon: String, page: WorkspacePage, id: String) -> some View {
         Button { model.showWorkspace(page) } label: {

@@ -6,6 +6,8 @@ import Combine
 
 enum FilesSearchPane { case local, remote }
 
+private enum FilesLoginMethod { case manual, saved, interactive }
+
 /// The application keeps this view mounted; page visibility only activates local metadata once.
 struct DualPaneFilesView: View {
     @ObservedObject private var app: AppModel
@@ -19,6 +21,7 @@ struct DualPaneFilesView: View {
     @State private var hostSearch = ""
     @State private var hostFilter = "all"
     @StateObject private var initialInput = FilesInitialInputOwner()
+    @State private var selectedSavedCredentialID: UUID?
     @State private var pendingChange: FilesConnectionChangeReview?
     @State private var operationDialog: FilesDialog?
     @State private var showingLocalReports = false
@@ -31,88 +34,100 @@ struct DualPaneFilesView: View {
         _local = StateObject(wrappedValue: model.isEngineeringPreview ? model.files.localBrowser : (localRoot.map { LocalBrowserModel(root: $0) } ?? model.files.localBrowser))
     }
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "arrow.left.arrow.right").font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.accentColor).frame(width: 34, height: 34)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("文件传输").font(.system(size: 16, weight: .semibold))
-                    HStack(spacing: 6) {
-                        Circle().fill(connectionDotColor).frame(width: 6, height: 6)
-                        Text(files.state == .ready ? "已连接 · \(files.selectedHost?.name ?? "")" : "SFTP · 本地与远端")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+        reviewedContent
+            .nativeSheet(item: $dialog, onAttemptDismiss: { if let dialog { cancelDialog(dialog) }; return true }) { value in dialogView(value) }
+            .nativeSheet(item: $operationDialog) { value in
+                switch value.content {
+                case .mkdir: FilesNameEditor(model: files, entry: nil) { operationDialog = nil }
+                case .rename(let entry): FilesNameEditor(model: files, entry: entry) { operationDialog = nil }
+                case .probe(let review): FilesProbeView(model: files, review: review) { operationDialog = nil }
+                case .transferDecision(let request): FilesTransferDecisionView(model: files, request: request) { operationDialog = nil }
+                default: EmptyView()
                 }
-                Spacer()
+            }
+            .alert("更改文件连接", isPresented: Binding(get: { pendingChange != nil }, set: { if !$0 { pendingChange = nil } })) {
+                Button("取消", role: .cancel) { if let pendingChange { files.discardConnectionChange(pendingChange) }; pendingChange = nil }
+                Button("继续（可能影响共享任务）") { if let pendingChange { files.confirmConnectionChange(pendingChange) }; pendingChange = nil }
+            } message: {
+                Text("仍有 \(files.transferSnapshot.jobs.filter { $0.state.isActive }.count) 个传输任务。更改连接可能中止这些任务，是否继续？")
+            }
+    }
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Text("文件传输").font(.system(size: 18, weight: .semibold))
+            Spacer()
+            if files.selectedHost != nil || app.isEngineeringPreview {
                 Button { dialog = DualFilesDialog(content: .host) } label: {
-                    HStack(spacing: 6) {
-                        Circle().fill(connectionDotColor).frame(width: 7, height: 7)
-                        Image(systemName: "server.rack")
-                        Text(files.selectedHost?.name ?? "选择主机").lineLimit(1)
-                    }
+                    Label(files.selectedHost == nil ? "选择主机" : "更换主机", systemImage: "server.rack")
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("files.host.choose")
-                let activeTransferCount = files.transferSnapshot.jobs.filter { $0.state.isActive }.count
-                Button { files.tasksVisible = true } label: {
-                    Label("传输 \(activeTransferCount)", systemImage: "arrow.up.arrow.down")
-                }
-                .modifier(ProminentIfModifier(prominent: activeTransferCount > 0))
-                .accessibilityIdentifier("transfers.open")
-            }.padding(.horizontal, 20).padding(.vertical, 12)
-                .foregroundStyle(.primary).background(DesktopStyle.panel)
+            }
+            let activeTransferCount = files.transferSnapshot.jobs.filter { $0.state.isActive }.count
+            Button { files.tasksVisible = true } label: {
+                Label(activeTransferCount > 0 ? "传输中心 · \(activeTransferCount)" : "传输中心",
+                      systemImage: "arrow.up.arrow.down")
+            }
+            .modifier(ProminentIfModifier(prominent: activeTransferCount > 0))
+            .accessibilityIdentifier("transfers.open")
+        }.padding(.horizontal, 18).padding(.vertical, 10)
+            .foregroundStyle(.primary).background(DesktopStyle.panel)
+    }
+    private var workspace: some View {
+        VStack(spacing: 0) {
+            toolbar
             Divider().overlay(DesktopStyle.border)
             FilesPaneSplit(left: localPane, right: remotePane, defaults: app.desktopPreferencesDefaults)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
         }
         .background(DesktopStyle.background).foregroundStyle(.primary)
         .preferredColorScheme(app.settings.theme == .system ? nil : (app.settings.theme == .dark ? .dark : .light))
-        .onAppear { activateIfVisible() }
-        .onChange(of: app.workspacePage) { _, page in
-            if page != .sftp { if let dialog { cancelDialog(dialog) }; dialog = nil }
-            activateIfVisible()
-        }
-        .onChange(of: app.workspaceCommand) { _, request in
-            guard app.workspacePage == .sftp, request?.page == .sftp, request?.command == .search,
-                  request == app.workspaceCommand,
-                  dialog == nil, operationDialog == nil, pendingChange == nil,
-                  NSApp.modalWindow == nil, NSApp.mainWindow?.attachedSheet == nil else { return }
-            if activeSearchPane == .local { localSearchFocusRequest = UUID() }
-            else { remoteSearchFocusRequest = UUID() }
-        }
-        .onChange(of: files.path) { _, _ in remoteSelection = [] }
-        .onChange(of: local.path) { _, _ in files.localTransferLocationChanged() }
-        .onChange(of: local.loading) { _, loading in if loading { files.localTransferLocationChanged() } }
-        .onChange(of: files.selectedHost) { _, _ in remoteSelection = []; updateInitialInput() }
-        .onChange(of: files.initialInputEpoch) { _, _ in updateInitialInput() }
-        .onChange(of: files.visible) { _, _ in updateInitialInput() }
-        .onChange(of: local.deleteReview?.id) { _, _ in
-            if let review = local.deleteReview, app.workspacePage == .sftp { dialog = DualFilesDialog(content: .localDelete(review)) }
-        }
-        .onChange(of: files.transferCompletionRevision) { _, _ in refreshCompletedTransfers() }
-        .onChange(of: files.deleteBatchReview?.id) { _, _ in
-            if let review = files.deleteBatchReview, app.workspacePage == .sftp { dialog = DualFilesDialog(content: .remoteDelete(review)) }
-        }
-        .onChange(of: files.probeReview?.id) { _, _ in if let review = files.probeReview { operationDialog = FilesDialog(content: .probe(review)) } }
-        .onDisappear { initialInput.clear(); files.cancelTransferPlan(); if let dialog { cancelDialog(dialog) }; dialog = nil; local.deactivate() }
-        .nativeSheet(item: $dialog, onAttemptDismiss: { if let dialog { cancelDialog(dialog) }; return true }) { value in dialogView(value) }
-        .nativeSheet(item: $operationDialog) { value in
-            switch value.content {
-            case .mkdir: FilesNameEditor(model: files, entry: nil) { operationDialog = nil }
-            case .rename(let entry): FilesNameEditor(model: files, entry: entry) { operationDialog = nil }
-            case .probe(let review): FilesProbeView(model: files, review: review) { operationDialog = nil }
-            case .transferDecision(let request): FilesTransferDecisionView(model: files, request: request) { operationDialog = nil }
-            default: EmptyView()
+    }
+    private var routedContent: some View {
+        workspace
+            .onAppear { activateIfVisible() }
+            .onChange(of: app.workspacePage) { _, page in
+                if page != .sftp { if let dialog { cancelDialog(dialog) }; dialog = nil }
+                activateIfVisible()
             }
-        }
-        .alert("更改文件连接", isPresented: Binding(get: { pendingChange != nil }, set: { if !$0 { pendingChange = nil } })) {
-            Button("取消", role: .cancel) { if let pendingChange { files.discardConnectionChange(pendingChange) }; pendingChange = nil }
-            Button("继续（可能影响共享任务）") { if let pendingChange { files.confirmConnectionChange(pendingChange) }; pendingChange = nil }
-        } message: {
-            Text("仍有 \(files.transferSnapshot.jobs.filter { $0.state.isActive }.count) 个传输任务。更改连接可能中止这些任务，是否继续？")
-        }
+            .onChange(of: app.workspaceCommand) { _, request in
+                guard app.workspacePage == .sftp, request?.page == .sftp, request?.command == .search,
+                      request == app.workspaceCommand,
+                      dialog == nil, operationDialog == nil, pendingChange == nil,
+                      NSApp.modalWindow == nil, NSApp.mainWindow?.attachedSheet == nil else { return }
+                if activeSearchPane == .remote, files.state == .ready { remoteSearchFocusRequest = UUID() }
+                else { localSearchFocusRequest = UUID() }
+            }
+            .onChange(of: files.path) { _, _ in remoteSelection = [] }
+            .onChange(of: local.path) { _, _ in files.localTransferLocationChanged() }
+            .onChange(of: local.loading) { _, loading in if loading { files.localTransferLocationChanged() } }
+    }
+    private var credentialContent: some View {
+        routedContent
+            .onChange(of: files.selectedHost) { _, _ in remoteSelection = []; updateInitialInput() }
+            .onChange(of: availableSavedCredentialID) { _, id in
+                if selectedSavedCredentialID != id {
+                    selectedSavedCredentialID = nil
+                    initialInput.saved = false
+                }
+            }
+            .onChange(of: files.initialInputEpoch) { _, _ in updateInitialInput() }
+            .onChange(of: files.visible) { _, _ in updateInitialInput() }
+    }
+    private var reviewedContent: some View {
+        credentialContent
+            .onChange(of: local.deleteReview?.id) { _, _ in
+                if let review = local.deleteReview, app.workspacePage == .sftp { dialog = DualFilesDialog(content: .localDelete(review)) }
+            }
+            .onChange(of: files.transferCompletionRevision) { _, _ in refreshCompletedTransfers() }
+            .onChange(of: files.deleteBatchReview?.id) { _, _ in
+                if let review = files.deleteBatchReview, app.workspacePage == .sftp { dialog = DualFilesDialog(content: .remoteDelete(review)) }
+            }
+            .onChange(of: files.probeReview?.id) { _, _ in if let review = files.probeReview { operationDialog = FilesDialog(content: .probe(review)) } }
+            .onDisappear { initialInput.clear(); files.cancelTransferPlan(); if let dialog { cancelDialog(dialog) }; dialog = nil; local.deactivate() }
     }
     private func refreshCompletedTransfers() {
         let jobs = files.latestCompletedBatchJobs
@@ -143,18 +158,10 @@ struct DualPaneFilesView: View {
         remoteSort.apply(files.entries.filter { (remoteHidden || $0.name.bytes.first != 46) && (remoteFilter.isEmpty || FileDisplay.name($0.name).localizedStandardContains(remoteFilter)) })
     }
     private var selectedRemote: [DirectoryEntry] { remoteRows.filter { remoteSelection.contains($0.name) } }
-    private var connectionDotColor: Color {
-        switch files.state {
-        case .ready: DesktopStyle.statusGreen
-        case .preparing, .awaitingTrust, .authenticating, .closing: DesktopStyle.statusAmber
-        case .failed: DesktopStyle.statusRed
-        case .disconnected: .secondary.opacity(0.5)
-        }
-    }
     private var localPane: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
-                paneHeader(title: "本地", subtitle: local.path == nil ? "尚未读取" : "\(local.visibleEntries.count) 项" + (local.showsHidden ? " · 含隐藏项" : ""), filter: $local.filter, hidden: $local.showsHidden, localSide: true)
+                paneHeader(title: "本地文件", subtitle: nil, filter: $local.filter, hidden: $local.showsHidden, localSide: true)
                 FilesNavigationBar(path: local.path, back: local.history.backward != nil, forward: local.history.forward != nil,
                     up: local.canGoUp, enabled: !local.loading, prefix: "files.local", go: local.go, backward: local.back,
                     forwardAction: local.forward, parent: local.up, refresh: local.refresh, navigate: { local.navigate($0) },
@@ -167,78 +174,126 @@ struct DualPaneFilesView: View {
     }
     private var remotePane: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                paneHeader(title: files.selectedHost?.name ?? "远端", subtitle: files.selectedHost.map { $0.username + "@" + $0.address + ":" + String($0.port) } ?? "未选择主机", filter: $remoteFilter, hidden: $remoteHidden, localSide: false)
-                if files.state == .ready {
+            if files.state == .ready {
+                VStack(spacing: 0) {
+                    paneHeader(title: files.selectedHost?.name ?? "远端文件",
+                        subtitle: files.selectedHost.map { $0.username + "@" + $0.vaultEndpoint },
+                        filter: $remoteFilter, hidden: $remoteHidden, localSide: false)
                     FilesNavigationBar(path: files.path, back: files.navigationHistory.backward != nil, forward: files.navigationHistory.forward != nil,
                         up: files.path != .root, enabled: !files.busy, prefix: "files.remote", go: files.go,
                         backward: files.back, forwardAction: files.forward, parent: { files.browse(files.path.parent) },
                         refresh: { files.browse(files.path) }, navigate: files.browse, onActivate: { activeSearchPane = .remote })
-                }
-            }.background(DesktopStyle.panel)
-            Divider().overlay(DesktopStyle.border)
-            if files.state == .ready {
+                }.background(DesktopStyle.panel)
+                Divider().overlay(DesktopStyle.border)
                 browserTable(localSide: false)
             } else {
                 ScrollView {
-                    VStack(spacing: 16) {
-                        Image(systemName: files.selectedHost == nil ? "server.rack" : "externaldrive.connected.to.line.below")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 52, height: 52)
-                            .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 13))
-                        VStack(spacing: 4) {
-                            Text(files.selectedHost == nil ? "连接到主机" : status)
-                                .font(.system(size: 16, weight: .semibold))
-                            if let host = files.selectedHost {
-                                Text(verbatim: host.username + "@" + host.address + ":" + String(host.port))
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Text("本地浏览保持可用；远端连接独立于 SSH 标签和终端目录。")
-                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        if app.isEngineeringPreview {
-                            Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary)
-                        } else if files.selectedHost == nil {
-                            Button("选择主机") { dialog = DualFilesDialog(content: .host) }
-                                .buttonStyle(.borderedProminent).controlSize(.large)
-                                .accessibilityIdentifier("files.remote.empty.choose")
-                        } else if files.canConnect {
-                            VStack(alignment: .leading, spacing: 10) {
-                                SecureField(files.selectedHost?.authentication.needsKey == true ? "本次私钥口令（无口令可留空）" : "本次密码", text: $initialInput.secret)
-                                    .textFieldStyle(.plain)
-                                    .onSubmit { connectInitial() }
-                                    .padding(.horizontal, 10).padding(.vertical, 7)
-                                    .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 8))
-                                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DesktopStyle.border))
-                                    .accessibilityIdentifier("files.initial.secret")
-                                Toggle("本次使用已保存凭据", isOn: $initialInput.saved).toggleStyle(.checkbox).font(.caption)
-                                if files.selectedHost?.authentication.needsKey == false {
-                                    Toggle("仅交互认证", isOn: $initialInput.keyboardOnly).toggleStyle(.checkbox).font(.caption)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            NativeButton(title: "连接 SFTP", id: "files.connect", enabled: files.canConnect && !files.busy, isProminent: true) { connectInitial() }
-                                .fixedSize()
-                        } else {
-                            ProgressView().controlSize(.small)
-                        }
-                        if files.busy { Button("取消连接") { requestChange(nil, disconnect: true) }.buttonStyle(.bordered) }
-                    }
-                    .padding(26)
-                    .frame(maxWidth: 380)
-                    .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DesktopStyle.border))
-                    .padding(24)
-                    .frame(maxWidth: .infinity, minHeight: 340)
+                    connectionPanel
+                        .padding(16)
+                        .frame(maxWidth: .infinity)
                 }
+                .defaultScrollAnchor(.center, for: .alignment)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            browserFooter(localSide: false)
+            if files.state == .ready || files.issue != nil || files.transferPreparationIssue != nil || !files.lastDeleteReports.isEmpty {
+                browserFooter(localSide: false)
+            }
         }.background(DesktopStyle.background)
     }
-    private func paneHeader(title: String, subtitle: String, filter: Binding<String>, hidden: Binding<Bool>, localSide: Bool) -> some View {
+    private var connectionPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: "externaldrive.connected.to.line.below")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 40, height: 40)
+                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(files.selectedHost?.name ?? "连接远端主机")
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(2)
+                    if let host = files.selectedHost {
+                        let endpoint = host.username + "@" + host.vaultEndpoint
+                        Text(verbatim: endpoint).font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(endpoint)
+                    }
+                }
+            }
+            if app.isEngineeringPreview {
+                Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.callout).foregroundStyle(.secondary)
+            } else if files.selectedHost == nil {
+                Text("从保险箱选择主机，浏览远端文件。").font(.callout).foregroundStyle(.secondary)
+                Button("选择主机") { dialog = DualFilesDialog(content: .host) }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("files.remote.empty.choose")
+            } else if let host = files.selectedHost {
+                Divider()
+                if files.state == .failed {
+                    Label(status, systemImage: "exclamationmark.circle")
+                        .font(.callout.weight(.medium)).foregroundStyle(DesktopStyle.statusRed)
+                }
+                if files.canConnect {
+                    connectionForm(host)
+                } else {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        if files.state != .failed { Text(status).font(.callout) }
+                        Spacer(minLength: 4)
+                        if files.busy && files.state != .closing {
+                            Button("取消连接") { requestChange(nil, disconnect: true) }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(DesktopStyle.border) }
+    }
+    private var availableSavedCredentialID: UUID? {
+        guard let host = files.selectedHost else { return nil }
+        if host.authentication.needsKey {
+            return app.keys.first { $0.id == host.keyRef }?.passphraseCredentialRef
+        }
+        return host.savePasswordAuthorized ? host.credentialRef : nil
+    }
+    private func connectionForm(_ host: HostConfiguration) -> some View {
+        let credentialID = availableSavedCredentialID
+        let method = Binding<FilesLoginMethod>(
+            get: {
+                if initialInput.keyboardOnly { return .interactive }
+                if initialInput.saved, let credentialID, selectedSavedCredentialID == credentialID { return .saved }
+                return .manual
+            },
+            set: { choice in
+                initialInput.secret = ""
+                selectedSavedCredentialID = choice == .saved ? credentialID : nil
+                initialInput.saved = selectedSavedCredentialID != nil
+                initialInput.keyboardOnly = choice == .interactive
+            })
+        return VStack(alignment: .leading, spacing: 12) {
+            if host.authentication.needsKey && credentialID == nil {
+                Label("SSH 密钥", systemImage: "key").font(.callout).foregroundStyle(.secondary)
+            } else {
+                Picker("认证方式", selection: method) {
+                    Text(host.authentication.needsKey ? "SSH 密钥" : "输入密码").tag(FilesLoginMethod.manual)
+                    if credentialID != nil { Text("使用已保存凭据").tag(FilesLoginMethod.saved) }
+                    if !host.authentication.needsKey { Text("仅交互认证").tag(FilesLoginMethod.interactive) }
+                }.pickerStyle(.menu)
+            }
+            if method.wrappedValue == .manual {
+                SecureField(host.authentication.needsKey ? "本次私钥口令（无口令可留空）" : "本次密码", text: $initialInput.secret)
+                    .textFieldStyle(.roundedBorder).controlSize(.large)
+                    .onSubmit { connectInitial() }
+                    .accessibilityIdentifier("files.initial.secret")
+            }
+            NativeButton(title: files.state == .failed ? "重新连接 SFTP" : "连接 SFTP", id: "files.connect",
+                         enabled: files.canConnect && !files.busy, isProminent: true) { connectInitial() }
+                .fixedSize()
+        }
+    }
+    private func paneHeader(title: String, subtitle: String?, filter: Binding<String>, hidden: Binding<Bool>, localSide: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: localSide ? "desktopcomputer" : "server.rack")
@@ -251,15 +306,15 @@ struct DualPaneFilesView: View {
                         Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                         if !localSide {
                             DesktopBadge(
-                                text: files.state == .ready ? "已连接" : "未连接",
-                                color: files.state == .ready ? DesktopStyle.statusGreen : .secondary,
-                                fill: files.state == .ready ? DesktopStyle.statusGreen.opacity(0.13) : DesktopStyle.separator
+                                text: "已连接", color: DesktopStyle.statusGreen,
+                                fill: DesktopStyle.statusGreen.opacity(0.13)
                             )
                         }
                     }
-                    Text(verbatim: subtitle)
-                        .font(.system(size: 11, design: localSide ? .default : .monospaced))
-                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(subtitle)
+                    if let subtitle {
+                        Text(verbatim: subtitle).font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(subtitle)
+                    }
                 }
                 Spacer(minLength: 4)
                 Menu {
@@ -278,7 +333,7 @@ struct DualPaneFilesView: View {
                     Label("操作", systemImage: "ellipsis.circle")
                         .font(.system(size: 12))
                 }.menuStyle(.borderlessButton).fixedSize()
-            }
+            }.frame(minHeight: 32)
             HStack(spacing: 8) {
                 DesktopSearchField(
                     placeholder: "筛选当前目录",
@@ -316,7 +371,7 @@ struct DualPaneFilesView: View {
                     case .failed(let hasSnapshot):
                         Image(systemName: "exclamationmark.folder").font(.title)
                         Text("目录读取失败")
-                        Text(hasSnapshot ? "仍保留上次成功位置；不能将此次失败当作空目录。" : "尚未成功读取目录；没有可用的目录快照。").font(.caption).foregroundStyle(.secondary)
+                        if hasSnapshot { Text("已保留上次打开的位置。").font(.caption).foregroundStyle(.secondary) }
                         Button("重试读取") { if localSide { local.refresh() } else { files.browse(files.path) } }
                     case .notLoaded:
                         Text("尚未读取目录")
@@ -324,7 +379,6 @@ struct DualPaneFilesView: View {
                     case .empty, .filteredEmpty:
                         Image(systemName: "folder").font(.title)
                         Text(content == .empty ? "空目录" : "没有匹配项")
-                        Text("筛选和隐藏项开关不会更改文件。").font(.caption).foregroundStyle(.secondary)
                         if content == .filteredEmpty { Button("显示全部项目") { if localSide { local.filter = ""; local.showsHidden = true } else { remoteFilter = ""; remoteHidden = true } } }
                         Button("刷新") { if localSide { local.refresh() } else { files.browse(files.path) } }
                     default: EmptyView()
@@ -337,20 +391,11 @@ struct DualPaneFilesView: View {
     private func browserFooter(localSide: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().overlay(DesktopStyle.border)
-            HStack(spacing: 8) {
-                let rows = localSide ? local.selectedEntries : selectedRemote
-                let readyToTransfer = files.canTransfer && !rows.isEmpty && local.path != nil
-                Text("\(rows.count) 项已选 / \((localSide ? local.entries : files.entries).count) 项")
-                    .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-                Spacer()
-                Button(localSide ? "上传 →" : "← 下载") { transfer(localSide: localSide) }
-                    .modifier(ProminentIfModifier(prominent: readyToTransfer))
-                    .controlSize(.small)
-                    .disabled(!readyToTransfer)
-                    .accessibilityIdentifier(localSide ? "files.upload.selected" : "files.download.selected")
+            if localSide || files.state == .ready {
+                selectionFooter(localSide: localSide)
             }
-            if localSide ? local.readFailed : files.readFailed {
-                Text("目录读取失败；下方内容仍是上次成功位置的快照，请刷新重试。").font(.caption).foregroundStyle(DesktopStyle.statusAmber)
+            if (localSide ? local.readFailed : files.readFailed) && (localSide ? !local.visibleEntries.isEmpty : files.state == .ready && !remoteRows.isEmpty) {
+                Text("读取失败，正在显示上次读取的内容。").font(.caption).foregroundStyle(DesktopStyle.statusAmber)
             }
             let reports = localSide ? local.deleteReports : files.lastDeleteReports
             if !reports.isEmpty {
@@ -373,6 +418,22 @@ struct DualPaneFilesView: View {
             }
         }.padding(.horizontal, 12).padding(.vertical, 8).background(DesktopStyle.panel)
     }
+    private func selectionFooter(localSide: Bool) -> some View {
+        let visible = localSide ? local.visibleEntries : remoteRows
+        let selection = localSide ? local.selection : remoteSelection
+        let selectedCount = visible.count { selection.contains($0.name) }
+        let readyToTransfer = files.canTransfer && selectedCount > 0 && local.path != nil
+        return HStack(spacing: 8) {
+            Text(selectedCount == 0 ? "\(visible.count) 项" : "已选 \(selectedCount) / \(visible.count) 项")
+                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+            Spacer()
+            Button(localSide ? "上传 →" : "← 下载") { transfer(localSide: localSide) }
+                .modifier(ProminentIfModifier(prominent: readyToTransfer))
+                .controlSize(.small)
+                .disabled(!readyToTransfer)
+                .accessibilityIdentifier(localSide ? "files.upload.selected" : "files.download.selected")
+        }
+    }
     private func deleteResult(_ state: DeleteItemResult.State) -> String {
         switch state { case .succeeded: "已删除"; case .failed(let error): "失败 · " + error.kind.rawValue; case .notAttempted(let error): "未执行 · " + error.kind.rawValue }
     }
@@ -382,6 +443,12 @@ struct DualPaneFilesView: View {
     private func connectInitial() {
         guard files.canConnect, !files.busy, app.allowSensitivePreviewAction() else { return }
         updateInitialInput()
+        if initialInput.saved && (selectedSavedCredentialID == nil || selectedSavedCredentialID != availableSavedCredentialID) {
+            initialInput.saved = false
+            selectedSavedCredentialID = nil
+            return
+        }
+        selectedSavedCredentialID = nil
         if let value = initialInput.take() { files.connect(value) }
     }
     private func chooseLocalDirectory() {
@@ -521,18 +588,37 @@ struct DualPaneFilesView: View {
 
     private var hostChooserDialog: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("选择远端主机").font(.title2).bold()
-                Spacer()
-                Button { dialog = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
-            }
+            Text("选择远端主机").font(.title2.weight(.semibold))
             DesktopSearchField(placeholder: "搜索名称、地址或用户名", id: "files.host.search", text: $hostSearch)
             Picker("范围", selection: $hostFilter) { Text("全部").tag("all"); Text("收藏").tag("favorites"); Text("最近").tag("recent") }.pickerStyle(.segmented)
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(filteredHosts, id: \.id) { host in hostChooserRow(host) }
+            let matches = filteredHosts
+            Group {
+                if !app.didLoad && app.isLoading {
+                    ProgressView("正在读取主机")
+                } else if !app.didLoad && app.issue != nil {
+                    VStack(spacing: 8) {
+                        Text("无法读取主机列表").font(.headline)
+                        Button("重试") { Task { _ = await app.reload() } }
+                    }
+                } else if matches.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: app.connectionHosts.isEmpty ? "server.rack" : "magnifyingglass")
+                            .font(.title2).foregroundStyle(.secondary)
+                        Text(app.connectionHosts.isEmpty ? "保险箱中尚无主机" : "没有匹配的主机").font(.headline)
+                        if app.connectionHosts.isEmpty {
+                            Text("在保险箱中新建主机后，即可在这里选择。").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Button("显示所有主机") { hostFilter = "all"; hostSearch = "" }
+                        }
+                    }
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(matches, id: \.id) { host in hostChooserRow(host) }
+                        }
+                    }
                 }
-            }.frame(height: 300)
+            }.frame(maxWidth: .infinity).frame(height: 250)
             HStack { Spacer(); Button("取消") { dialog = nil }.keyboardShortcut(.cancelAction) }
         }.padding(22).frame(width: 480).background(DesktopStyle.background)
     }
@@ -548,7 +634,7 @@ struct DualPaneFilesView: View {
                     .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(host.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                    Text("\(host.username)@\(host.address):\(host.port)")
+                    Text(verbatim: host.username + "@" + host.vaultEndpoint)
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
@@ -571,7 +657,7 @@ struct DualPaneFilesView: View {
         return hostFilter == "recent" ? hosts.sorted { ($0.lastConnectedAt ?? .distantPast) > ($1.lastConnectedAt ?? .distantPast) } : hosts
     }
     private var status: String {
-        switch files.state { case .disconnected: "未连接"; case .preparing: "准备连接"; case .awaitingTrust: "等待主机身份确认"; case .authenticating: "等待认证"; case .ready: "已连接"; case .closing: "正在清理连接"; case .failed: "连接或操作失败" }
+        switch files.state { case .disconnected: "未连接"; case .preparing: "准备连接"; case .awaitingTrust: "等待主机身份确认"; case .authenticating: "正在认证"; case .ready: "已连接"; case .closing: "正在断开连接"; case .failed: "连接失败" }
     }
 }
 
