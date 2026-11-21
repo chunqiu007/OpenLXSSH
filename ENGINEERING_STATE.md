@@ -1,5 +1,12 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-21　2.0.3 发布包
+
+- 应用版本 2.0.3，构建号 6，包含提交 `ceb157d` 的主机工作区、SFTP 连接面板和标签栏改动。中英文 README 已同步更新下载地址。
+- 本轮复核同日 UI 回归的 xcresult 和实测材料，78 项通过、0 失败、0 跳过。发布时未重复运行该组 Debug 测试，未连接真实 SSH/SFTP 服务器。
+- 本机构建 arm64 Release 主程序和 askpass 并剥离调试符号，使用 Developer ID 离线签名。挂载最终 LZMA 只读镜像后复核版本、架构、资源、签名、调试段和发布入口。未经 Apple 公证。
+- `OpenLXSSH-2.0.3-arm64.dmg` 共 7,377,165 字节，SHA-256 为 `de3c1122490df6c90f850edd3a558db3d2cce84ad9182903eed45d634fa338b2`。
+
 ## 2026-11-21 主机工作区、SFTP 与标签栏布局
 
 - 本次为独立的本地 UI 改动。UI-VAULT、UI-SFTP、UI-TABS 三项均已审查。实现在 `VaultWorkspacePage.swift`、`VaultHostList.swift`、`DualPaneFilesView.swift` 和 `WorkspaceTabsView.swift`。
