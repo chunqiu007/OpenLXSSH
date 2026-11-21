@@ -4,11 +4,11 @@
 
 OpenLXSSH is a lightweight, native **SSH and SFTP client for Apple Silicon Macs**. It runs on M-series chips with **macOS 26 or later**. The desktop app uses SwiftUI and AppKit, with no Electron runtime or cloud account required.
 
-## Download Release 2.0.3
+## Download Release 2.0.4
 
-[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.0.3/OpenLXSSH-2.0.3-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.0.3)
+[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.0.4/OpenLXSSH-2.0.4-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.0.4)
 
-Open the DMG, drag OpenLXSSH into Applications, and launch it from there. The image contains app version **2.0.3 (build 6)**. It is signed offline with Developer ID and has not been notarized by Apple.
+Open the DMG, drag OpenLXSSH into Applications, and launch it from there. The image contains app version **2.0.4 (build 7)**. It is signed offline with Developer ID and has not been notarized by Apple.
 
 ## Memory usage
 
@@ -23,7 +23,7 @@ On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–11
 
 ## Help test OpenLXSSH
 
-1. Install and launch Release 2.0.3 on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
+1. Install and launch Release 2.0.4 on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
 2. Open and switch between terminal tabs. If you use a jump host, try your regular nested SSH workflow.
 3. Upload and download a small test file in SFTP. Try a same-name transfer and check that **Cancel**, **Replace**, and **Keep Both** behave as you expect.
 
