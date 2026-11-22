@@ -1,125 +1,54 @@
-# OpenLXSSH V1.0 — 技术架构与验证约束
+# OpenLXSSH 架构说明
 
-状态：技术方向已确认，具体版本和实现仍需实测。本文不代表组件已验证可用。
+OpenLXSSH 是面向 Apple Silicon（arm64）与 macOS 26+ 的轻量原生 SSH / SFTP 桌面应用，采用模块化单体结构，使用 Swift 6、SwiftUI + AppKit 构建，原生传输层静态链接 `libssh2 + OpenSSL`，无需独立辅助进程或外部运行时动态库。
 
-## 2026-11-04 便捷执行策略
+> 架构演进细节见 [ADR-20261122](adr/20261122-streamline-and-modern-keychain.md) 及 `docs/adr/` 下的专题决策记录；产品范围见 [需求说明](requirements.md)。
 
-普通App的TransferManager使用direct策略：技术限制由TransferPolicy直接接受，不创建waitingRisk UI状态；通用包strict策略仍可用于显式审查型调用及原有安全边界测试。App在点击/拖放时冻结目标和冲突偏好，自动准备、确认同一不可变清单；后续浏览不重新解释输入。任务冲突策略在入队时固定，后改偏好不改变已有任务的覆盖授权。默认自动改名仍用exclusive/noReplace提交，竞争只进行有界重新选名，不使用检查不存在后覆盖式rename。覆盖保留原有目标摘要/变化检测；它只作用于明确覆盖，不影响常规自动改名上传的流式路径。
+## 1. 模块划分
 
-能力缓存属于engine，键为服务serverBinding和原始父目录，最多256条、5分钟，只缓存检查和清理成功的证据；新连接身份不可命中。UI根持有38pt状态条和按需196pt详情，页面隐藏不拥有任务。独立NSHostingView通过可观察外观对象同步scheme，不通过重建页面适配外观。
-
-## 0. 当前桌面UX重构约束（2026-10-30）
-
-本轮以完整UX规格及handoff为产品界面基线。工作区页面路由与资源owner分离：AppModel持有固定Vault/SFTP/实际session(id)选择，SessionController继续每标签独立driver/终端，FilesController/TransferManager仍为App级独立owner；隐藏页面只影响可见性/焦点，不取消连接或丢弃搜索/路径/队列。固定页不进入可关闭会话数组。
-
-连接复用使用非秘密连接参数快照（端点/用户/认证/密钥凭据引用与授权/保活），展示name/folder/favorite/recent不参与；现有SQLite和Keychain引用保护不放宽。UI只两种认证不意味着可关闭KI；可靠初始秘密上下文不足时先真实最小探针及ADR，再复用成熟后端适配，不扩首masked自动投递白名单。
-
-首次信任必须加入真正会话级临时授权或同握手精确授权，持久库仍为唯一长期真源；无临时库冒永久记录。SSH/SFTP都校验各自真实握手，变化拒绝。双栏本地浏览仅元数据按需，不隐含读真实文件内容、自动远端编辑或录制历史。
-
-本轮不新增依赖、不改变技术方向或认证核心，除非后续有明确实证/ADR和影响复验；当前这些是架构边界，不是通过证明。原实现调查见 `docs/ux/u0-app-inventory.md`。
-
-## 1. 架构与候选组件
-
-采用模块化单体，职责分离，不为了两位用户的规模引入微服务或插件平台。
-
-| 职责 | 既定方向 / 首选候选 | 验证重点 |
+| 模块 | 路径 | 职责 |
 | --- | --- | --- |
-| 窗口、主机列表、设置 | SwiftUI + AppKit | 原生交互、窗口关闭、输入法、状态同步 |
-| SSH 传输 | 系统 OpenSSH | 受控参数与配置、认证交互、取消、版本差异 |
-| 终端 | PTY + SwiftTerm | TUI、缩放、粘贴、历史、输出背压、释放 |
-| 认证桥接 | 专用 Askpass 辅助程序 + App 认证协调器 | 会话归属、秘密流转、多轮挑战、签名与打包 |
-| SFTP | 优先验证 libssh2，经 RemoteFileService 隔离 | 认证组合、流式读写、取消、文件操作、打包依赖 |
-| 持久化 | SQLite + GRDB | 迁移、事务、崩溃一致性、引用删除 |
-| 秘密存储 | Security.framework / Keychain | 用户授权、禁用同步、错误处理、升级访问 |
-| 私钥 | App 专属目录中的 OpenSSH 标准文件 | 权限、导入、Ed25519 生成、解锁口令 |
-| 依赖 | Swift Package Manager，必要时封装原生库 | 锁定版本、原生传递依赖、可重复构建 |
-| 验证 | XCTest + Instruments 等可用系统工具 | 行为、泄漏、性能、Release 实际运行 |
+| 桌面应用 | `Application/OpenLXSSH` | 多窗口管理、工作区路由、终端分屏、双栏 SFTP UI、安全与信任管理页面 |
+| 数据与模型 | `Packages/OpenLXSSHCore` | SQLite + GRDB 持久化（主机、分组、标签、收藏、偏好、凭据/私钥引用与迁移） |
+| 身份与信任 | `Packages/OpenLXSSHTrust` | SSH 主机/用户名校验（支持 JumpServer `#` 格式）、SHA-256 指纹与 `HostTrustStore` |
+| 凭据与私钥 | `Packages/OpenLXSSHSecurity` | 现代 `LAContext`/Data Protection Keychain v2 与 App 专属目录私钥管理 |
+| 传输与文件 | `Packages/OpenLXSSHFiles` | `COpenLXSSHFiles`（静态 `libssh2 + OpenSSL`）、事件驱动 `NativeShellSession`、SFTP 服务与安全传输引擎 |
+| 终端视图 | `Packages/OpenLXSSHTransport` | 基于 SwiftTerm 的纯 Swift 6 `NativeTerminalView`、主题调色板、输入与背压适配 |
 
-SwiftTerm 1.19.x 是起始评估候选，不是已通过验收或必须永久使用的版本。比较当前可用稳定候选与 2.x API/性能变化，按同一套测试择优固定；不把主分支文档直接套用到旧版本。SwiftTerm 满足要求时不再引入第二套终端引擎。
+## 2. 应用层状态与资源所有权
 
-用户允许自主调整候选实现，但仍需证据。核心变更必须写入 ADR：问题与复现、候选对比、功能/安全/许可证/构建影响、迁移成本、最终决定及复验结果。不能把改用不安全模式称为技术替换。
+应用入口由 `AppDelegate` 管理多个 `ManagedWorkspaceWindow` 实例，并共享进程级底层服务，避免重复打开数据库或竞争本地资源：
 
-## 2. 职责与资源所有权
+- **进程共享资源**：`AppRepository`（SQLite）、`SecurityCoordinator`（Keychain 与私钥协调）、`SessionEnvironment`（信任库与运行时路径）。
+- **单窗口独立状态（`@Observable`）**：每个窗口拥有独立的 `AppModel`，下挂工作区路由（固定保险箱 / 固定 SFTP / 动态终端会话标签）、`SessionController`、`FilesController`、`LocalBrowserModel`、`VaultDesktopModel`、`SecurityViewModel` 与 `WorkspaceWindowChromeState`（仅 AppKit 标签拖拽协调器 `WorkspaceTabDragOwner` 为兼容同步拖拽单测保留 `ObservableObject`）。
+- **页面与资源解耦**：切换保险箱、SFTP 或终端标签只改变可见性与焦点，不中断已有 SSH 会话、不取消 SFTP 连接或丢弃传输队列。固定管理页不进入可关闭会话列表。
+- **关闭与退出保护**：关闭单个窗口或退出应用（`⌘Q`）时，逐窗审查未保存的编辑器草稿与进行中的 SFTP 传输；用户可选择继续保留窗口，或取消活跃传输并等待安全清理完成后关闭。
 
-建议按功能组织目录，项目和产品模块以 OpenLXSSH 为名；不要求为了分层而拆成多个独立包。
+## 3. 原生 SSH 终端与分屏
 
-| 组件 | 拥有的资源 | 边界 |
-| --- | --- | --- |
-| HostRepository | 主机、分组、设置及凭据引用 | 不存储秘密，不持有会话 |
-| CredentialStore / KeyStore | Keychain 引用、私钥管理操作 | 不把秘密放入可序列化 UI 状态 |
-| HostTrustStore | App 可信主机记录与决策 | SSH/SFTP 共用信任策略与身份标识 |
-| AuthenticationCoordinator | 当前直接连接的认证请求与取消 | 不接管远端嵌套 SSH，不扫描普通输出 |
-| SSHSession | 最外层 ssh 进程、PTY、I/O、尺寸和状态 | 标签关闭后清理自己；不持有传输管理器 |
-| TerminalSessionModel | 渲染视图、有限历史、输入适配 | 切标签不重建；关闭后不被传输对象引用 |
-| RemoteFileService | 独立 SFTP 会话、远程操作 | 可替换后端，不依赖 SSH 标签 |
-| TransferManager | 队列、进度、临时文件、取消、必要的 SFTP 会话 | 用主机/任务 ID 关联，不强引用终端 |
-| ApplicationLifecycleCoordinator | 窗口关闭、退出与资源协调 | 保护传输，避免后台遗留连接 |
+- **事件驱动连接**：原生 SSH 直接经由 `COpenLXSSHFiles` / `libssh2` 建立 TCP 与加密会话，启用 `TCP_NODELAY` 与系统内核 TCP Keepalive（`SO_KEEPALIVE` / `TCP_KEEPALIVE` / `TCP_KEEPINTVL` / `TCP_KEEPCNT`），不开启额外辅助 SSH 通道。
+- **kqueue 调度**：`NativeShellSession` 使用独立 `dup` 描述符注册 `DispatchSourceRead` / `DispatchSourceWrite` / `DispatchSourceTimer`，实现无轮询 I/O、即时取消唤醒与关闭前完整排空；C 层 `rf_allocation` 使用 O(1) 双向链表追踪内存所有权。
+- **终端渲染与分屏**：`NativeTerminalView` 封装 SwiftTerm，内存滚动历史有界（默认 10,000 行，上限 50,000 行），不落盘持久化终端输出。`TerminalAttachmentRegistry` 确保同一 `NativeTerminalView` 在单标签视图与左右/上下 `HSplitView`/`VSplitView` 分屏容器之间重挂载时永不重建或丢失历史。
+- **直连边界**：App 只管理最外层直连 SSH 的主机验证与认证流程；用户在远端终端中手动执行的嵌套 `ssh`、`sudo` 等交互完全留在终端流内，绝不扫描终端输出或自动投递本机凭据。
 
-关键状态转换必须可测试。SSH 至少区分准备、连接、等待信任、认证、已连接、断开、失败、关闭；SFTP 和传输分别建模，不用一个布尔值代表所有状态。异步回调携带会话代次或等价身份，拒绝旧认证回答、重连后旧输出和已关闭对象的迟到回调。
+## 4. 主机信任、凭据与私钥安全
 
-## 3. SSH、PTY 与认证桥接
+- **主机信任（`HostTrustStore`）**：SSH 与 SFTP 共用 App 专属信任库，按主机、端口与密钥类型识别服务端公钥并展示完整 SHA-256 指纹。首次连接需用户明确确认；已知主机密钥变化默认拒绝，绝不静默降级或覆盖。
+- **凭据存储（Keychain v2）**：`CredentialStore` 使用服务命名空间 `org.openlxssh.credentials.v2`，每次调用创建独立的非交互 `LAContext`（`interactionNotAllowed = true`）并设置 `kSecAttrSynchronizable = false`。初始化时通过零写入 `SecItemUpdate` 探测 Data Protection entitlement：有授权时启用 `kSecUseDataProtectionKeychain = true` 与 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`；在未签名或 ad-hoc 构建缺授权时自动回退至标准本机 Keychain（仍保持非交互、不同步）。OTP 等一次性验证码从不持久化；Keychain 不可读时回退为人工输入。
+- **私钥管理**：导入的 OpenSSH 私钥（RSA / Ed25519）与生成的 Ed25519 私钥均以受限权限存放在 App 专属目录中，不修改用户原始文件；配置数据库仅保存稳定引用，不存放明文密码或私钥口令。
 
-- 直接启动受控可执行文件与参数数组，不经 Shell 拼接主机字段；App 生成受控配置和专属 known_hosts 路径，隔离用户 SSH 配置的额外指令。
-- 参数、配置值、路径与别名均验证边界，包括换行、引号、前导选项及 IPv6，不把“未使用 Shell”当成免除配置注入检查。
-- 系统 OpenSSH 是运行依赖，记录 macOS 中实际版本；系统组件不能像 SPM 包一样固定版本，操作系统升级后应有认证、终端和签名回归。
-- PTY 管理输入输出、控制终端、窗口尺寸和关闭；先调查 SwiftTerm 已有进程封装是否满足要求，避免重复管理同一 PTY。
-- Askpass 只作为受控认证输入入口，不假设它提供完整的密码/OTP 类型信息。对不明确挑战人工输入；自动提供长期凭据必须有可验证的会话与认证上下文。
-- 认证辅助程序采用与 App 配套打包的受控通信路径。验证来源、会话归属和请求有效期；并发会话不能串用回答。具体 IPC 在原型中决定，不把秘密存入环境变量、参数或可被其他进程读取的普通临时文件。
-- 验证直接连接失败、用户取消、审批等待、零输入提示和多次挑战；UI 保持响应，取消能解除等待与结束辅助进程。
-- 普通终端输出与认证控制面分离。远端执行的内层 ssh、sudo 或其他程序的提示一律不触发自动秘密投递。
-- 不向模型、日志或截图暴露真实凭据。凭据只在必要范围使用；不能承诺 Swift 中所有副本都可被彻底擦除，应减少复制和驻留。
+## 5. SFTP 与安全文件传输
 
-## 4. 主机信任
+- **独立连接与认证复用**：SFTP 通过 `RemoteFileService` / `LibSSH2FileService` 与目标服务器直接建立连接，不依赖已打开的终端标签。连接时默认沿用所选主机已授权的密码或关联私钥，并支持仅对本次连接覆盖密码、口令或响应服务器交互式认证（Keyboard-Interactive / MFA）。
+- **流式传输与调度**：`SafeTransferEngine` 与 `TransferManager` 负责目录扫描清单、冲突决策冻结与传输队列。并发闸门 `AsyncGate` 基于无轮询 FIFO `CheckedContinuation` 队列并接入 `CancellationToken`；默认 SFTP 读写块大小为 256 KiB。
+- **数据安全策略**：
+  - 上传与下载先写入唯一临时文件，完成后再原子提交；默认冲突策略为“每次询问”（取消 / 替换 / 都保留），自动改名采用独占提交与有界重选，避免竞态误覆盖。
+  - 目录传输支持安全保留目录内相对符号链接（校验防绝对路径、越界 `..`、悬空与循环链接），并按依赖拓扑顺序创建；拒绝不安全路径逃逸与特殊文件。
+  - 传输中心采用全宽 Master-Detail 视图，按项报告成功、跳过、失败与残留临时文件路径。
 
-- SSH 与 SFTP 按主机身份、端口和密钥类型正确识别信任记录，非默认端口、多种服务器密钥和地址编辑必须有测试。
-- 可采用 App 专属 OpenSSH known_hosts 兼容记录；具体文件读写与并发同步方式由 ADR 固定，不能让两个后端互相覆盖记录。
-- 初次连接展示主机身份、算法与指纹，由用户决定；密钥变化默认拒绝，不能自动将新值当首次连接。
-- 私钥是用户身份；服务器 Host Key 是服务器身份。二者的存储与管理不可混用。
-- 信任记录仅负责 App 的直接连接。内层 SSH 由远端 ssh 处理，其提示正常交给终端用户。
+## 6. 构建、校验与分发约束
 
-## 5. SFTP 后端与数据安全
-
-- RemoteFileService 提供结构化的列目录、属性、读写流、创建目录、重命名、删除、取消和关闭能力。错误携带操作上下文，不能泄露秘密。
-- libssh2 原生库、加密后端、密钥格式、Keyboard-Interactive 和组合认证需一起验证。C/Swift 内存所有权与非阻塞重试由适配层封装，避免阻塞主线程。
-- 系统 sftp 可用于对照；若作为 GUI 后端候选，必须证明目录/错误/进度解析对特殊文件名与交互认证可靠，不能靠解析人类可读 `ls` 输出就宣布完成。
-- V1.0 不需要 ProxyJump、隧道或经跳板传输，后端评估不得自行把这些能力列为必选。
-- 暂定每主机串行控制性文件操作、全局有界传输并发，参数经实测确定。先保证取消与文件正确性，不做无限并行。
-- 上传与下载先写同目录或合适安全位置的唯一临时文件，流式完成后再提交。校验测试环境内传输前后内容摘要；普通 SFTP 不保证远端提供任意哈希命令，不强迫使用远端 Shell。
-- 安全覆盖依据服务器能力决定：不能先删除原文件再开始上传，不承诺文件夹批量传输具有整体事务。逐项报告成功、跳过、失败，保留可追踪临时文件。
-- 处理冲突决定与实际提交间的竞争，不能误覆盖新出现的文件；跨文件系统、权限不足和不支持的重命名行为需要明确反馈。
-- 文件名保持精确含义，不任意归一化；下载防路径逃逸，递归删除不跟随链接越界。符号链接策略、元数据保存范围和不支持项在验证后写入 ADR 与说明。
-
-## 6. 数据、私钥与凭据
-
-- 数据库存主机、文件夹、收藏排序、最近连接时间、认证/密钥引用、保活和界面设置；不为已排除的跳板机和端口转发建立 V1.0 必填模型。
-- 密码和私钥口令以稳定引用关联 Keychain；配置数据库事务与 Keychain 操作不具备同一个事务，需要处理新增失败、删除重试和孤立条目。
-- 私钥导入先验证格式、权限和唯一身份；建立 App 副本，不改原件。生成 Ed25519 时提供公钥显示/复制，秘密不进入测试日志。
-- 数据迁移、异常中断、重复启动和文件权限需验证；不开发备份功能，但不能以此省略数据库升级一致性。
-- 构建身份与 Keychain 可访问性要覆盖升级、重新安装和两台 Mac；分别使用各机本地凭据，不同步秘密。
-
-## 7. 性能与关闭
-
-- 历史、解析队列、待渲染队列与传输块均有界；持续输出时采用背压并保持字节顺序，不任意截断 UTF-8 或控制序列以“降内存”。
-- 隐藏标签减少重绘，但仍正确消费输出和维护终端状态；断线保留历史只持续到该标签关闭，不持久化终端输出。
-- 关闭流程幂等：先标记关闭并取消待认证/输入任务，停止 I/O，结束并回收所属进程，关闭 PTY/描述符，移除观察者并解除引用。超时升级终止仅作用于自身资源，不误杀其他 SSH 会话。
-- 崩溃后不恢复会话；能够识别自身遗留临时传输文件并安全提示，不能扫描并删除用户不相关文件。
-- 性能以 Release 构建和固定负载记录 App、ssh 与辅助子进程；同时关注描述符、CPU、Swap、任务数及内存随时间的趋势，不能只报告单次 RSS。
-
-## 8. 发布约束应提前验证
-
-- 阶段 0 调查签名、原生动态库、辅助程序打包及 Sandbox 约束；阶段 1～3 做最小运行探针，阶段 8 才完成正式交付。
-- `.app` 中包含运行所需的非系统依赖与辅助程序；朋友的 Mac 不应因为缺少开发机 Homebrew 库而启动失败。
-- Sandbox 与 Hardened Runtime、签名、公证是不同事项，不混为一谈。Sandbox 不可行时记录证据与风险；在用户授权范围内选择可行方案，不能通过关闭系统保护解决。
-- 确认 Developer ID 身份、团队、Bundle ID、证书和访问条件；不得读取或外传签名私钥。公证会向 Apple 上传构建产物，实施前确认授权，详见执行计划。
-
-## 9. 依据与更新责任
-
-以下为方案审查时核对的上游资料，实施前核对选定版本及本机系统手册；引用不代表原型已经通过。
-
-- [OpenSSH ssh 手册](https://man.openbsd.org/ssh.1)
-- [OpenSSH Askpass 上游实现](https://github.com/openssh/openssh-portable/blob/master/readpass.c)
-- [SwiftTerm 仓库与版本 API 说明](https://github.com/migueldeicaza/SwiftTerm)
-- [libssh2 交互认证](https://libssh2.org/libssh2_userauth_keyboard_interactive_ex.html)
-- [libssh2 重命名语义](https://libssh2.org/libssh2_sftp_rename_ex.html)
-- [Apple Sandbox 辅助程序](https://developer.apple.com/documentation/xcode/embedding-a-helper-tool-in-a-sandboxed-app)
-- [Apple Developer ID 签名与公证](https://developer.apple.com/developer-id/)
+- **单一原生产物**：`Scripts/build-app.sh` 固定锁定 SPM 依赖与 `COpenLXSSHFiles` 静态库（`libssh2` + `OpenSSL`），产出仅含 `arm64`、最低部署目标 `macOS 26.0`、启用 Hardened Runtime 的 `OpenLXSSH.app`，并将全部第三方许可证与 `NOTICE.txt` 打包进 `Contents/Resources/`。
+- **构建与打包校验**：
+  - `Scripts/verify-app.sh` 验证 Debug/Release 构建、Mach-O 架构与 `minos 26.0`、零非系统动态库依赖、零 `Contents/Helpers` 残留、依赖锁定哈希与许可证完整性。
+  - `Scripts/package-release-candidate.py` 负责 Release 应用复制与符号剥离（`strip -x`）、元数据/二进制/许可证复核、可选 Developer ID 签名（默认离线 `--timestamp=none`）、生成带 `/Applications` 链接的 LZMA 只读 `.dmg`、执行 `hdiutil verify` 并输出 SHA-256 校验和。

@@ -12,14 +12,16 @@ Open the DMG, drag OpenLXSSH into Applications, and launch it from there. The im
 
 ## Memory usage
 
-On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–111 MiB** of resident memory (RSS) at idle. With **five simultaneous SSH sessions**, the app and its SSH processes averaged **125.1 MiB** combined. The peak was **135.4 MiB** while producing terminal output and switching tabs. These measurements are from the October 30, 2026 build. [Measurement details](docs/reports/mac26-takeover.md)
+On an Apple Silicon Mac, the earlier **1.0.0 build 3** measured about **107–111 MiB** of resident memory (RSS) at idle. With **five simultaneous SSH sessions**, the app and its SSH processes averaged **125.1 MiB** combined. The peak was **135.4 MiB** while producing terminal output and switching tabs. These measurements are from the October 30, 2026 build (full historical report archived at Git tag `v2.0.4`).
 
 ## What you can do
 
-- Organize hosts with groups, tags, and favorites, and keep independent SSH sessions open in tabs.
-- Sign in with a password or SSH key and respond to server prompts such as MFA. Save supported credentials in macOS Keychain and verify host fingerprints when connecting.
+- Organize hosts with groups, tags, and favorites, and keep independent SSH sessions open in tabs. The current `main` branch source (unreleased) also adds native terminal split panes (`⌘D` / `⇧⌘D`) and multi-window workspaces (`⌘N`).
+- Sign in with a password or SSH key and respond to server prompts such as MFA. Save supported credentials in the local macOS Keychain (upgraded to modern `LAContext` / Data Protection Keychain v2 on `main`) and verify host fingerprints when connecting.
 - Browse local and remote folders side by side over SFTP, transfer files and folders, and manage progress and name conflicts.
 - Connect to a jump host and run a second `ssh` command manually in its terminal. The SFTP browser connects directly to its target server.
+
+See [User Guide](docs/user-guide.md) and [Architecture](docs/architecture.md) (Chinese) for full details.
 
 ## Help test OpenLXSSH
 
