@@ -150,6 +150,7 @@ public final class OpenLXSSHDatabase: Sendable {
     public func deleteCredential(id: UUID) throws { try apply([.deleteCredential(id)]) }
     public func deleteKey(id: UUID) throws { try apply([.deleteKey(id)]) }
     public func saveSettings(_ value: AppSettings) throws { try apply([.saveSettings(value)]) }
+    public func mergeSettings(edited: AppSettings, base: AppSettings) throws { try apply([.mergeSettings(edited: edited, base: base)]) }
     public func setFavorite(hostID: UUID, isFavorite: Bool, order: Int = 0) throws { try apply([.setFavorite(hostID, isFavorite, order: order)]) }
     public func markConnected(hostID: UUID, at date: Date) throws { try apply([.markConnected(hostID, date)]) }
     public func scheduleOrphanCleanup(_ resource: ExternalResource) throws { try apply([.scheduleOrphanCleanup(resource)]) }
@@ -329,6 +330,10 @@ public final class OpenLXSSHDatabase: Sendable {
             try deleteResource(ExternalResource(kind: .privateKey, id: id), db: db)
         case .saveSettings(let value):
             try value.validate(); try value.update(db)
+        case .mergeSettings(let edited, let base):
+            guard let current = try AppSettings.fetchOne(db, key: 1) else { throw RepositoryError.notFound }
+            let merged = AppSettings.merging(edited: edited, base: base, onto: current)
+            try merged.validate(); try merged.update(db)
         case .setFavorite(let id, let favorite, let order):
             guard (-1_000_000_000...1_000_000_000).contains(order) else { throw RepositoryError.invalidField("favoriteOrder") }
             guard try HostConfiguration.fetchOne(db, key: id) != nil else { throw RepositoryError.notFound }

@@ -32,6 +32,7 @@ struct VaultHostEditor: View {
     private let transientConnection: VaultTransientConnectionHandler?
     let dismiss: () -> Void
     private let forFiles: Bool
+    private let isNewHost: Bool
     init(app: AppModel, vault: VaultDesktopModel, host: HostConfiguration?, folderID: UUID?, forFiles: Bool = false,
          transientConnection: VaultTransientConnectionHandler? = nil,
          closeRequest: Binding<(@MainActor () -> Bool)?> = .constant(nil),
@@ -42,6 +43,7 @@ struct VaultHostEditor: View {
          completeWindowCloseReview: (@MainActor (WindowCloseReviewRequest) -> Void)? = nil,
          dismiss: @escaping () -> Void) {
         self.forFiles = forFiles
+        self.isNewHost = host == nil
         self.app = app; self.vault = vault; self.transientConnection = transientConnection; self.dismiss = dismiss
         self.registerClose = registerClose; self.clearClose = clearClose
         self.registerWindowCloseReview = registerWindowCloseReview; self.clearWindowCloseReview = clearWindowCloseReview
@@ -54,10 +56,13 @@ struct VaultHostEditor: View {
         let editor = VaultHostEditorModel(draft: VaultHostDraft(host: host, settings: app.settings, folderID: folderID,
             tagIDs: host.flatMap { vault.snapshot?.hostTagIDs[$0.id] } ?? []), ownsPresentation: ownsPresentation)
         _editor = State(initialValue: editor)
-        _closeReview = State(initialValue: VaultHostCloseReview(editor: editor, dismiss: {
-            dismiss()
-            if forFiles { app.showWorkspace(.sftp) }
-        }, complete: completeWindowCloseReview))
+        let afterCloseWithoutSave: (@MainActor () -> Void)? = forFiles ? { @MainActor in app.showWorkspace(.sftp) } : nil
+        _closeReview = State(initialValue: VaultHostCloseReview(
+            editor: editor,
+            dismiss: { dismiss() },
+            afterCloseWithoutSave: afterCloseWithoutSave,
+            complete: completeWindowCloseReview
+        ))
     }
     private var canConnect: Bool { !editor.hasTransientInput || transientConnection != nil }
     private func input<Value>(_ key: ReferenceWritableKeyPath<VaultHostEditorModel, Value>) -> Binding<Value> {
@@ -320,8 +325,21 @@ struct VaultHostEditor: View {
         guard sheets.item == nil else { return }
         closeReview.begin()
     }
+    private var postSaveAfterDismiss: (@MainActor (HostConfiguration) -> Void)? {
+        if forFiles {
+            return { saved in
+                vault.choose(saved.id)
+                app.selectedHostID = saved.id
+                app.showWorkspace(.sftp)
+            }
+        }
+        if isNewHost {
+            return { saved in vault.choose(saved.id) }
+        }
+        return nil
+    }
     private func closePrompt(_ prompt: VaultHostCloseReview.Prompt) -> some View {
-        VaultHostClosePrompt(prompt: prompt, editor: editor, review: closeReview, security: app.security, vault: vault)
+        VaultHostClosePrompt(prompt: prompt, editor: editor, review: closeReview, security: app.security, vault: vault, afterDismiss: postSaveAfterDismiss)
     }
     private func clearPassword() { editor.clearInput() }
     @MainActor private func save(connect: Bool) async -> Bool {
@@ -345,14 +363,7 @@ struct VaultHostEditor: View {
         } else { prepareConnection = nil }
         let afterDismiss: (@MainActor (HostConfiguration) -> Void)?
         if connect && !usesTransient { afterDismiss = { saved in app.requestSession(hostID: saved.id, mode: .newSession) } }
-        else if forFiles {
-            afterDismiss = { saved in
-                vault.choose(saved.id)
-                app.selectedHostID = saved.id
-                app.showWorkspace(.sftp)
-            }
-        }
-        else if !connect && draft.isNew { afterDismiss = { saved in vault.choose(saved.id) } }
+        else if !connect { afterDismiss = postSaveAfterDismiss }
         else { afterDismiss = nil }
         return await editor.saveAndFinish(security: app.security, vault: vault, prepareConnection: prepareConnection,
             dismiss: { closeReview.cancelPending(); dismiss() }, afterDismiss: afterDismiss)
@@ -405,6 +416,7 @@ private struct VaultHostClosePrompt: View {
     let review: VaultHostCloseReview
     let security: SecurityCoordinator
     let vault: VaultDesktopModel
+    let afterDismiss: (@MainActor (HostConfiguration) -> Void)?
     private var title: String {
         if prompt.kind == .writing { return "正在保存主机" }
         return editor.committedAwaitingRefresh ? "主机已保存，待刷新" : "保存对主机的更改？"
@@ -428,7 +440,7 @@ private struct VaultHostClosePrompt: View {
                     Spacer()
                     Button(editor.committedAwaitingRefresh ? "刷新后继续关闭" : "保存") {
                         Task {
-                            _ = await review.save(prompt.id, security: security, vault: vault)
+                            _ = await review.save(prompt.id, security: security, vault: vault, afterDismiss: afterDismiss)
                         }
                     }.disabled(editor.writing || review.saving || (!editor.committedAwaitingRefresh && !editor.validForSave))
                         .accessibilityIdentifier("host.close.save")

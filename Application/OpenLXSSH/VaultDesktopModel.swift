@@ -751,10 +751,13 @@ struct VaultHostDraft: Equatable, Identifiable {
     @ObservationIgnored private var request: WindowCloseReviewRequest?
     @ObservationIgnored private var invalidated = false
     private let dismiss: @MainActor () -> Void
+    private let afterCloseWithoutSave: (@MainActor () -> Void)?
     private let complete: (@MainActor (WindowCloseReviewRequest) -> Void)?
     init(editor: VaultHostEditorModel, dismiss: @escaping @MainActor () -> Void,
+         afterCloseWithoutSave: (@MainActor () -> Void)? = nil,
          complete: (@MainActor (WindowCloseReviewRequest) -> Void)? = nil) {
-        self.editor = editor; self.dismiss = dismiss; self.complete = complete
+        self.editor = editor; self.dismiss = dismiss
+        self.afterCloseWithoutSave = afterCloseWithoutSave; self.complete = complete
     }
     func begin(_ request: WindowCloseReviewRequest? = nil) {
         guard let editor, editor.isCurrent else { request?.resolve(false); return }
@@ -788,7 +791,12 @@ struct VaultHostDraft: Equatable, Identifiable {
         guard matches(id), !saving, editor?.canClose == true else { return }
         finish()
     }
-    @discardableResult func save(_ id: UUID, security: SecurityCoordinator, vault: VaultDesktopModel) async -> Bool {
+    @discardableResult func save(
+        _ id: UUID,
+        security: SecurityCoordinator,
+        vault: VaultDesktopModel,
+        afterDismiss: (@MainActor (HostConfiguration) -> Void)? = nil
+    ) async -> Bool {
         guard matches(id), !saving, let editor, editor.canClose, prompt?.kind != .writing else { return false }
         saving = true
         let success: Bool
@@ -797,15 +805,23 @@ struct VaultHostDraft: Equatable, Identifiable {
         saving = false
         guard !invalidated else { prompt = nil; return false }
         guard matches(id), success else { return false }
-        finish(); return true
+        let saved = editor.draft.configuration
+        finish(saved: saved, afterDismiss: afterDismiss); return true
     }
-    private func finish() {
+    private func finish(saved: HostConfiguration? = nil, afterDismiss: (@MainActor (HostConfiguration) -> Void)? = nil) {
         guard let editor, editor.canClose, !invalidated, request?.result != false else { request?.resolve(false); return }
         let request = self.request
         self.request = nil; prompt = nil
         editor.clearInput()
         if let request, let complete { complete(request) }
-        else { dismiss(); request?.resolve(true) }
+        else {
+            dismiss()
+            request?.resolve(true)
+            if request == nil {
+                if let saved, let afterDismiss { afterDismiss(saved) }
+                else { afterCloseWithoutSave?() }
+            }
+        }
     }
     func cancelPending() {
         invalidated = true; request?.resolve(false); request = nil

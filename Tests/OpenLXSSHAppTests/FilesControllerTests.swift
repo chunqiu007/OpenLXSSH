@@ -6,7 +6,7 @@ import os
 import SwiftUI
 import XCTest
 import OpenLXSSHCore
-import OpenLXSSHFiles
+@testable import OpenLXSSHFiles
 import OpenLXSSHSecurity
 import OpenLXSSHTrust
 
@@ -891,6 +891,62 @@ import OpenLXSSHTrust
         await model.waitUntilCurrentWorkCompletes()
         XCTAssertNil(model.keyboardPrompt)
         await model.closeForWindow()
+    }
+
+    func testHighFrequencyTransferSnapshotsAccumulateSpeedAcrossSub50msIntervals() async throws {
+        let (_, _, model) = try local()
+        addTeardownBlock { await model.closeForWindow() }
+
+        let jobID = TransferJobID()
+        let generation = UUID()
+        let request = TransferRequest(
+            hostID: UUID().uuidString,
+            batchID: TransferBatchID(),
+            source: .init(serviceID: UUID(), path: try RemotePath("/source.bin")),
+            destination: .init(serviceID: UUID(), path: try RemotePath("/dest.bin")),
+            kind: .file,
+            conflictPolicy: .ask,
+            preserveRelativeLinks: false
+        )
+
+        func push(bytes: UInt64, state: TransferJobState = .running) {
+            let job = TransferJobSnapshot(
+                id: jobID,
+                generation: generation,
+                retryOf: nil,
+                request: request,
+                state: state,
+                transferredBytes: bytes,
+                cancellationRequested: false,
+                pendingDecision: nil,
+                error: nil,
+                items: []
+            )
+            model.applySnapshot(TransferManagerSnapshot(jobs: [job], isClosed: false))
+        }
+
+        // Send rapid snapshots every 15ms (< 50ms each) over ~120ms.
+        let chunkBytes: UInt64 = 262_144
+        push(bytes: 0)
+        XCTAssertNil(model.currentTransferSpeed(jobID))
+
+        var accumulated: UInt64 = 0
+        for _ in 0..<8 {
+            try await Task.sleep(for: .milliseconds(15))
+            accumulated += chunkBytes
+            push(bytes: accumulated)
+        }
+
+        let speed = try XCTUnwrap(model.currentTransferSpeed(jobID), "Rapid <50ms snapshots must still produce a valid transfer speed")
+        // Expected rate is ~256 KiB / 15ms (~17 MB/s); verify it is in a sensible positive range.
+        XCTAssertGreaterThan(speed, 1_000_000)
+        XCTAssertLessThan(speed, 200_000_000)
+
+        // Completion clears speed and sample state cleanly.
+        push(bytes: accumulated, state: .succeeded)
+        XCTAssertNil(model.currentTransferSpeed(jobID))
+        XCTAssertNil(model.transferSpeeds[jobID])
+        XCTAssertNil(model.transferSamples[jobID])
     }
 }
 

@@ -867,6 +867,50 @@ final class OpenLXSSHCoreTests: XCTestCase {
             XCTAssertTrue(try Row.fetchAll($0, sql: "PRAGMA foreign_key_check").isEmpty)
         }
     }
+
+    func testAtomicMergeSettingsPreservesConcurrentUnrelatedFieldsAndCoversAllFields() throws {
+        let base = try database.settings()
+        var writerA = base
+        writerA.historyLines = 25_000
+        writerA.fontName = "Menlo-Regular"
+        writerA.fontSize = 16
+        writerA.theme = .dark
+        writerA.foregroundColor = "#112233"
+        writerA.backgroundColor = "#445566"
+        writerA.cursorColor = "#778899"
+
+        var writerB = base
+        writerB.keepaliveInterval = 45
+        writerB.keepaliveCountMax = 5
+        writerB.cursorShape = .bar
+        writerB.cursorBlink = false
+        writerB.startupPage = .sftp
+        writerB.fileConflictPolicy = .overwrite
+
+        try database.mergeSettings(edited: writerA, base: base)
+        try database.mergeSettings(edited: writerB, base: base)
+
+        let merged = try database.settings()
+        XCTAssertEqual(merged.historyLines, 25_000)
+        XCTAssertEqual(merged.fontName, "Menlo-Regular")
+        XCTAssertEqual(merged.fontSize, 16)
+        XCTAssertEqual(merged.theme, .dark)
+        XCTAssertEqual(merged.foregroundColor, "#112233")
+        XCTAssertEqual(merged.backgroundColor, "#445566")
+        XCTAssertEqual(merged.cursorColor, "#778899")
+        XCTAssertEqual(merged.keepaliveInterval, 45)
+        XCTAssertEqual(merged.keepaliveCountMax, 5)
+        XCTAssertEqual(merged.cursorShape, .bar)
+        XCTAssertEqual(merged.cursorBlink, false)
+        XCTAssertEqual(merged.startupPage, .sftp)
+        XCTAssertEqual(merged.fileConflictPolicy, .overwrite)
+
+        // Invalid merged edit is rejected atomically without modifying persisted settings.
+        var invalid = merged
+        invalid.fontSize = 999
+        expect(.invalidField("fontSize")) { try database.mergeSettings(edited: invalid, base: merged) }
+        XCTAssertEqual(try database.settings(), merged)
+    }
 }
 
 private final class LockedErrors: @unchecked Sendable {

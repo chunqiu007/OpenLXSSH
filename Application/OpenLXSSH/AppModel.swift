@@ -407,6 +407,7 @@ struct AppIssue: Identifiable, Equatable {
     @ObservationIgnored private var metadataObservation: Task<Void, Never>?
     @ObservationIgnored private var observingMetadata = false
     @ObservationIgnored private var workspaceNavigationGuard: (owner: UUID, action: @MainActor () -> Bool)?
+    @ObservationIgnored var onOpenSettings: (@MainActor (PreferencesCategory?) -> Void)?
     private let windowCloseReviews = WindowCloseReviewRegistry()
     func registerWindowCloseReview(owner: UUID, begin: @escaping @MainActor (WindowCloseReviewRequest) -> Void,
                                    cancel: @escaping @MainActor () -> Void) {
@@ -614,21 +615,7 @@ struct AppIssue: Identifiable, Equatable {
         await write { _ = try await repository.copyFolder(id: id) }
     }
     static func mergedSettings(edited: AppSettings, base: AppSettings, onto latest: AppSettings) -> AppSettings {
-        var result = latest
-        if edited.historyLines != base.historyLines { result.historyLines = edited.historyLines }
-        if edited.fontName != base.fontName { result.fontName = edited.fontName }
-        if edited.fontSize != base.fontSize { result.fontSize = edited.fontSize }
-        if edited.theme != base.theme { result.theme = edited.theme }
-        if edited.foregroundColor != base.foregroundColor { result.foregroundColor = edited.foregroundColor }
-        if edited.backgroundColor != base.backgroundColor { result.backgroundColor = edited.backgroundColor }
-        if edited.cursorColor != base.cursorColor { result.cursorColor = edited.cursorColor }
-        if edited.keepaliveInterval != base.keepaliveInterval { result.keepaliveInterval = edited.keepaliveInterval }
-        if edited.keepaliveCountMax != base.keepaliveCountMax { result.keepaliveCountMax = edited.keepaliveCountMax }
-        if edited.cursorShape != base.cursorShape { result.cursorShape = edited.cursorShape }
-        if edited.cursorBlink != base.cursorBlink { result.cursorBlink = edited.cursorBlink }
-        if edited.startupPage != base.startupPage { result.startupPage = edited.startupPage }
-        if edited.fileConflictPolicy != base.fileConflictPolicy { result.fileConflictPolicy = edited.fileConflictPolicy }
-        return result
+        AppSettings.merging(edited: edited, base: base, onto: latest)
     }
 
     @discardableResult func saveSettings(_ value: AppSettings, base: AppSettings? = nil) async -> Bool {
@@ -647,16 +634,24 @@ struct AppIssue: Identifiable, Equatable {
         var committed = value
         do {
             if let base {
-                let latest = try await repository.loadSettings()
-                committed = Self.mergedSettings(edited: value, base: base, onto: latest)
+                try await repository.apply([.mergeSettings(edited: value, base: base)])
+                if let persisted = try? await repository.loadSettings() {
+                    committed = persisted
+                } else {
+                    committed = AppSettings.merging(edited: value, base: base, onto: settings)
+                }
+            } else {
+                try await repository.apply([.saveSettings(value)])
             }
-            try await repository.apply([.saveSettings(committed)])
             // A committed preference is usable even if the later catalog refresh fails.
             settings = committed; sessions.updateSettings(committed); files.updateTransferPreference(committed.fileConflictPolicy)
             _ = await reload()
             return true
         } catch is AppStorageFailure {
             // The preference transaction committed; repeating Save cannot repair ACL.
+            if let base {
+                committed = AppSettings.merging(edited: value, base: base, onto: settings)
+            }
             settings = committed; sessions.updateSettings(committed); files.updateTransferPreference(committed.fileConflictPolicy)
             issue = .sanitized(AppStorageFailure.committedStorageUnsafe)
             return true
@@ -729,6 +724,10 @@ struct AppIssue: Identifiable, Equatable {
         }
     }
     @discardableResult func sendWorkspaceCommand(_ command: WorkspaceCommand) -> Bool {
+        if command == .settings || command == .diagnostics, let onOpenSettings {
+            onOpenSettings(command == .diagnostics ? .privacy : nil)
+            return true
+        }
         if command == .search {
             guard canSearchWorkspace else { return false }
             switch workspacePage {
@@ -1036,11 +1035,12 @@ struct PublicDiagnosticSnapshot: Equatable {
         self.version = version; self.build = build; self.operatingSystem = operatingSystem
         self.hostCount = hostCount; self.keyCount = keyCount; self.sessionCount = sessionCount; self.settings = settings
     }
-    @MainActor init(model: AppModel) {
+    @MainActor init(model: AppModel, sessionCountOverride: Int? = nil) {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         self.init(version: DesktopHelp.version, build: DesktopHelp.build,
             operatingSystem: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · arm64",
-            hostCount: model.connectionHosts.count, keyCount: model.keys.count, sessionCount: model.sessions.tabs.count, settings: model.settings)
+            hostCount: model.connectionHosts.count, keyCount: model.keys.count,
+            sessionCount: sessionCountOverride ?? model.sessions.tabs.count, settings: model.settings)
     }
     func preview(categories: Set<DiagnosticCategory>) -> String {
         guard !categories.isEmpty else { return "未选择任何诊断项目。" }

@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 import OpenLXSSHCore
 import OpenLXSSHTransport
@@ -402,12 +403,20 @@ import OpenLXSSHTransport
     }
 }
 
+@Observable @MainActor final class WorkspaceWindowRegistry {
+    var windows: [ManagedWorkspaceWindow] = []
+    var totalSessionCount: Int {
+        windows.reduce(0) { $0 + $1.model.sessions.tabs.count }
+    }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     let sharedRepository: AppRepository
     let sharedSecurity: SecurityCoordinator
     let sharedEnvironment: SessionEnvironment
 
-    private(set) var windows: [ManagedWorkspaceWindow] = []
+    private let windowRegistry = WorkspaceWindowRegistry()
+    var windows: [ManagedWorkspaceWindow] { windowRegistry.windows }
     private(set) var settingsWindow: ManagedSettingsWindow?
     private var terminating = false
     private var terminationReplyPending = false
@@ -464,6 +473,9 @@ import OpenLXSSHTransport
             location: .applicationSupport,
             preferencesDefaults: .standard
         )
+        model.onOpenSettings = { [weak self] category in
+            _ = self?.openSettingsWindow(category: category)
+        }
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720),
@@ -505,7 +517,7 @@ import OpenLXSSHTransport
             recoverWindowFrame(window)
         }
 
-        windows.append(managed)
+        windowRegistry.windows.append(managed)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         Task { await model.reload() }
@@ -541,11 +553,13 @@ import OpenLXSSHTransport
         window.center()
 
         let managed = ManagedSettingsWindow(window: window, model: model, editor: editor)
+        let registry = windowRegistry
         window.contentView = NSHostingView(rootView: SettingsEditor(
             model: model,
             editor: editor,
             presentationHeightOverride: 620,
-            registersWindowCloseReview: false
+            registersWindowCloseReview: false,
+            sessionCountProvider: { registry.totalSessionCount }
         ) { [weak self, weak managed] in
             guard let self, let managed, self.settingsWindow === managed else { return }
             managed.approveAndClose()
@@ -618,8 +632,8 @@ import OpenLXSSHTransport
             managedSettings.handleDidClose()
             return
         }
-        guard let index = windows.firstIndex(where: { $0.window === sender }) else { return }
-        let managed = windows.remove(at: index)
+        guard let index = windowRegistry.windows.firstIndex(where: { $0.window === sender }) else { return }
+        let managed = windowRegistry.windows.remove(at: index)
         managed.handleDidClose(terminating: terminating)
     }
 

@@ -1680,14 +1680,18 @@ extension NativeSessionAdapterTests {
         try await wait {
             guard let sheet = window.attachedSheet as? NativeOwnedSheetWindow, let content = sheet.contentView else { return false }
             content.layoutSubtreeIfNeeded()
-            // The production Host editor's native popup explicitly assigns NSView.identifier.
-            return self.descendants(content).contains { ($0 as? NSPopUpButton)?.identifier?.rawValue == "host.folder" }
+            return self.descendants(content).contains { ($0 as? NSTextField)?.isEditable == true }
         }
         let hostSheet = try XCTUnwrap(window.attachedSheet as? NativeOwnedSheetWindow)
         XCTAssertFalse(hostSheet.preventsApplicationTerminationWhenModal,
             "The production Host presentation must allow the app's registered draft review to run")
+        let sheetContent = try XCTUnwrap(hostSheet.contentView)
+        let addressField = try XCTUnwrap(descendants(sheetContent).compactMap { $0 as? NSTextField }.first { $0.isEditable })
+        XCTAssertTrue(hostSheet.makeFirstResponder(addressField))
+        let fieldEditor = try XCTUnwrap(addressField.currentEditor())
+        fieldEditor.insertText("draft.invalid")
         let request = app.requestWindowCloseReview()
-        XCTAssertNil(request.result, "A new Host draft is dirty; registered review must wait for a choice")
+        XCTAssertNil(request.result, "A dirty new Host draft must wait for registered review")
         try await wait { hostSheet.attachedSheet is NativeOwnedSheetWindow }
         let prompt = try XCTUnwrap(hostSheet.attachedSheet as? NativeOwnedSheetWindow)
         XCTAssertTrue(prompt.sheetParent === hostSheet)

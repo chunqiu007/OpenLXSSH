@@ -33,13 +33,26 @@ extension FilesController {
         guard snapshot.serviceRevision >= observedServiceRevision else { return }
         let now = ContinuousClock.now
         for job in snapshot.jobs {
-            if let previous = transferSamples[job.id], job.transferredBytes >= previous.bytes {
-                let duration = previous.time.duration(to: now).components
-                let seconds = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
-                if seconds >= 0.05 { transferSpeeds[job.id] = job.state.isActive ? Double(job.transferredBytes - previous.bytes) / seconds : nil }
+            guard job.state.isActive else {
+                transferSpeeds[job.id] = nil
+                transferSamples[job.id] = nil
+                continue
             }
-            transferSamples[job.id] = (job.transferredBytes, now)
-            if !job.state.isActive { transferSpeeds[job.id] = nil }
+            guard let previous = transferSamples[job.id] else {
+                transferSamples[job.id] = (job.transferredBytes, now)
+                continue
+            }
+            if job.transferredBytes < previous.bytes {
+                transferSamples[job.id] = (job.transferredBytes, now)
+                transferSpeeds[job.id] = nil
+                continue
+            }
+            let duration = previous.time.duration(to: now).components
+            let seconds = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
+            if seconds >= 0.05 {
+                transferSpeeds[job.id] = Double(job.transferredBytes - previous.bytes) / seconds
+                transferSamples[job.id] = (job.transferredBytes, now)
+            }
         }
         let ids = Set(snapshot.jobs.map(\.id)); transferSamples = transferSamples.filter { ids.contains($0.key) }; transferSpeeds = transferSpeeds.filter { ids.contains($0.key) }
         let batches = Dictionary(grouping: snapshot.jobs, by: { $0.request.batchID })

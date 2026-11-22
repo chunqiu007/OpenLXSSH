@@ -1282,6 +1282,113 @@ extension OpenLXSSHAppTests {
         XCTAssertTrue(dirtyEditor.isDirty)
         XCTAssertEqual(dirtyEditor.draft.value.cursorBlink, false)
         XCTAssertEqual(dirtyEditor.draft.value.theme, persisted.theme)
+
+        // True concurrent saves via withTaskGroup: both edits must persist atomically in SQLite.
+        let concurrentBase = try await repository.loadSettings()
+        var editedA = concurrentBase
+        editedA.fileConflictPolicy = .skip
+        var editedB = concurrentBase
+        editedB.fontSize = 18
+        let finalA = editedA
+        let finalB = editedB
+
+        let results = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            group.addTask {
+                await windowA.saveSettings(finalA, base: concurrentBase)
+            }
+            group.addTask {
+                await windowB.saveSettings(finalB, base: concurrentBase)
+            }
+            var outcomes: [Bool] = []
+            for await outcome in group {
+                outcomes.append(outcome)
+            }
+            return outcomes
+        }
+        XCTAssertEqual(results, [true, true])
+
+        let concurrentPersisted = try await repository.loadSettings()
+        XCTAssertEqual(concurrentPersisted.fileConflictPolicy, .skip)
+        XCTAssertEqual(concurrentPersisted.fontSize, 18)
+    }
+
+    func testSettingsAndDiagnosticsCommandsRouteToGlobalHandlerWithoutDuplicateLocalCommand() throws {
+        let (repository, directory) = try repository()
+        let model = AppModel(repository: repository, location: .isolated(directory))
+        var openedCategories: [PreferencesCategory?] = []
+        model.onOpenSettings = { category in
+            openedCategories.append(category)
+        }
+
+        XCTAssertTrue(model.sendWorkspaceCommand(.settings))
+        XCTAssertNil(model.workspaceCommand)
+        XCTAssertTrue(model.sendWorkspaceCommand(.diagnostics))
+        XCTAssertNil(model.workspaceCommand)
+        XCTAssertEqual(openedCategories, [nil, .privacy])
+
+        // Standalone fallback without AppDelegate still publishes workspaceCommand for MainView sheet.
+        model.onOpenSettings = nil
+        XCTAssertTrue(model.sendWorkspaceCommand(.settings))
+        XCTAssertEqual(model.workspaceCommand?.command, .settings)
+        XCTAssertTrue(model.sendWorkspaceCommand(.diagnostics))
+        XCTAssertEqual(model.workspaceCommand?.command, .diagnostics)
+    }
+
+    func testDiagnosticSnapshotAggregatesLiveSessionCountAcrossMultipleWorkspaceWindows() async throws {
+        let (repository, directory) = try repository()
+        let location = AppDataLocation.isolated(directory)
+        let security = SecurityCoordinator(repository: repository, location: location, credentials: FakeCredentials())
+        let environment = SessionEnvironment(location: location)
+
+        let hostA = sample("diag-window-a")
+        let hostB = sample("diag-window-b")
+        try await repository.apply([.insertHost(hostA), .insertHost(hostB)])
+
+        let settingsModel = AppModel(repository: repository, security: security, sessionEnvironment: environment, location: location)
+        let windowA = AppModel(
+            repository: repository,
+            security: security,
+            sessionEnvironment: environment,
+            location: location,
+            sessionBuilder: WindowTabsLayoutBuilder(host: hostA)
+        )
+        let windowB = AppModel(
+            repository: repository,
+            security: security,
+            sessionEnvironment: environment,
+            location: location,
+            sessionBuilder: WindowTabsLayoutBuilder(host: hostB)
+        )
+        addTeardownBlock {
+            await settingsModel.sessions.closeAll(); await settingsModel.files.closeForWindow()
+            await windowA.sessions.closeAll(); await windowA.files.closeForWindow()
+            await windowB.sessions.closeAll(); await windowB.files.closeForWindow()
+            try await security.close()
+            try await repository.close()
+        }
+
+        XCTAssertTrue(awaiting: await settingsModel.reload())
+        XCTAssertTrue(awaiting: await windowA.reload())
+        XCTAssertTrue(awaiting: await windowB.reload())
+
+        let workspaceModels = [windowA, windowB]
+        windowA.requestSession(hostID: hostA.id, mode: .newSession)
+        windowA.requestSession(hostID: hostA.id, mode: .newSession)
+        windowB.requestSession(hostID: hostB.id, mode: .newSession)
+        XCTAssertEqual(windowA.sessions.tabs.count, 2)
+        XCTAssertEqual(windowB.sessions.tabs.count, 1)
+        XCTAssertEqual(settingsModel.sessions.tabs.count, 0)
+
+        let totalSessions = workspaceModels.reduce(0) { $0 + $1.sessions.tabs.count }
+        XCTAssertEqual(totalSessions, 3)
+
+        let aggregated = PublicDiagnosticSnapshot(model: settingsModel, sessionCountOverride: totalSessions)
+        XCTAssertEqual(aggregated.sessionCount, 3)
+        XCTAssertEqual(aggregated.hostCount, 2)
+        XCTAssertTrue(aggregated.preview(categories: [.counts]).contains("SSH 标签 3"))
+
+        let localOnly = PublicDiagnosticSnapshot(model: settingsModel)
+        XCTAssertEqual(localOnly.sessionCount, 0)
     }
 
     func testClosingSecondaryWindowLeavesPrimaryWindowSessionsSFTPAndSharedRepositoryIntact() async throws {
@@ -1539,8 +1646,15 @@ private actor PreferencesReadFailureRepository: AppRepositoryProtocol {
     private(set) var writeCount = 0
     func snapshot(query: HostQuery) throws -> AppSnapshot { throw RepositoryError.databaseBusy }
     func apply(_ changes: [RepositoryChange]) throws {
-        guard changes.count == 1, case .saveSettings(let value) = changes[0] else { throw RepositoryError.invalidField("preferencesOnly") }
-        settings = value; writeCount += 1
+        guard changes.count == 1 else { throw RepositoryError.invalidField("preferencesOnly") }
+        switch changes[0] {
+        case .saveSettings(let value):
+            settings = value; writeCount += 1
+        case .mergeSettings(let edited, let base):
+            settings = AppSettings.merging(edited: edited, base: base, onto: settings); writeCount += 1
+        default:
+            throw RepositoryError.invalidField("preferencesOnly")
+        }
     }
     func copyHost(id: UUID) throws -> HostConfiguration { throw RepositoryError.notFound }
     func copyFolder(id: UUID) throws -> HostFolder { throw RepositoryError.notFound }

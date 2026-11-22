@@ -54,6 +54,7 @@ struct SettingsEditor: View {
     private let fonts = TerminalPreferences.availableFonts()
     private let presentationHeight: CGFloat
     private let registersWindowCloseReview: Bool
+    private let sessionCountProvider: (@MainActor () -> Int)?
     var dismiss: () -> Void
     private var category: PreferencesCategory { editor.selectedCategory }
     init(
@@ -61,10 +62,13 @@ struct SettingsEditor: View {
         editor: SettingsEditorModel,
         presentationHeightOverride: CGFloat? = nil,
         registersWindowCloseReview: Bool = true,
+        sessionCountProvider: (@MainActor () -> Int)? = nil,
         dismiss: @escaping () -> Void
     ) {
         self.model = model; _editor = Bindable(wrappedValue: editor)
-        self.registersWindowCloseReview = registersWindowCloseReview; self.dismiss = dismiss
+        self.registersWindowCloseReview = registersWindowCloseReview
+        self.sessionCountProvider = sessionCountProvider
+        self.dismiss = dismiss
         if let presentationHeightOverride {
             presentationHeight = presentationHeightOverride
         } else {
@@ -341,11 +345,16 @@ struct SettingsEditor: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding(12).background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 6))
                 .accessibilityIdentifier("diagnostics.preview")
             HStack {
-                Button("刷新预览") { diagnosticSnapshot = PublicDiagnosticSnapshot(model: model); copied = false }
+                Button("刷新预览") { diagnosticSnapshot = liveDiagnosticSnapshot; copied = false }
                 Button("复制以上预览") { copied = PublicDiagnosticSnapshot.copy(diagnosticText, to: .general) }
                     .disabled(diagnosticCategories.isEmpty).accessibilityIdentifier("diagnostics.copy")
                 if copied { Text("已复制").font(.caption) }
-            }.onAppear { if diagnosticSnapshot == nil { diagnosticSnapshot = PublicDiagnosticSnapshot(model: model) } }
+            }
+            .onAppear { diagnosticSnapshot = liveDiagnosticSnapshot }
+            .onChange(of: liveDiagnosticSnapshot) { _, latest in
+                diagnosticSnapshot = latest
+                copied = false
+            }
         case .about:
             Text(DesktopHelp.versionDescription()).font(.subheadline)
             Button("关于 OpenLXSSH…") { NSApp.orderFrontStandardAboutPanel(nil) }
@@ -364,8 +373,11 @@ struct SettingsEditor: View {
         }
     }
     private var previewSettings: AppSettings? { try? editor.draft.validated() }
+    private var liveDiagnosticSnapshot: PublicDiagnosticSnapshot {
+        PublicDiagnosticSnapshot(model: model, sessionCountOverride: sessionCountProvider?())
+    }
     private var diagnosticText: String {
-        (diagnosticSnapshot ?? PublicDiagnosticSnapshot(model: model)).preview(categories: diagnosticCategories)
+        (diagnosticSnapshot ?? liveDiagnosticSnapshot).preview(categories: diagnosticCategories)
     }
     private func save(reviewID: UUID? = nil) {
         let base = editor.initial

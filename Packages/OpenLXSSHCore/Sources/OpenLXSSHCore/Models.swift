@@ -258,6 +258,26 @@ public struct AppSettings: Codable, Equatable, Sendable, FetchableRecord, Persis
         }
         try validateKeepalive(interval: keepaliveInterval, count: keepaliveCountMax)
     }
+
+    /// Field-level three-way merge: applies only fields that changed between `base` and `edited`
+    /// onto `current`, preserving concurrent edits to unrelated fields.
+    public static func merging(edited: AppSettings, base: AppSettings, onto current: AppSettings) -> AppSettings {
+        var result = current
+        if edited.historyLines != base.historyLines { result.historyLines = edited.historyLines }
+        if edited.fontName != base.fontName { result.fontName = edited.fontName }
+        if edited.fontSize != base.fontSize { result.fontSize = edited.fontSize }
+        if edited.theme != base.theme { result.theme = edited.theme }
+        if edited.foregroundColor != base.foregroundColor { result.foregroundColor = edited.foregroundColor }
+        if edited.backgroundColor != base.backgroundColor { result.backgroundColor = edited.backgroundColor }
+        if edited.cursorColor != base.cursorColor { result.cursorColor = edited.cursorColor }
+        if edited.keepaliveInterval != base.keepaliveInterval { result.keepaliveInterval = edited.keepaliveInterval }
+        if edited.keepaliveCountMax != base.keepaliveCountMax { result.keepaliveCountMax = edited.keepaliveCountMax }
+        if edited.cursorShape != base.cursorShape { result.cursorShape = edited.cursorShape }
+        if edited.cursorBlink != base.cursorBlink { result.cursorBlink = edited.cursorBlink }
+        if edited.startupPage != base.startupPage { result.startupPage = edited.startupPage }
+        if edited.fileConflictPolicy != base.fileConflictPolicy { result.fileConflictPolicy = edited.fileConflictPolicy }
+        return result
+    }
 }
 
 public enum ExternalResourceKind: String, Codable, Sendable, DatabaseValueConvertible { case credential, privateKey }
@@ -333,6 +353,7 @@ public enum RepositoryChange: Sendable {
     case updateKeyLabel(keyID: UUID, label: String)
     case deleteCredential(UUID), deleteKey(UUID)
     case saveSettings(AppSettings)
+    case mergeSettings(edited: AppSettings, base: AppSettings)
     case setFavorite(UUID, Bool, order: Int = 0)
     case markConnected(UUID, Date)
     case scheduleOrphanCleanup(ExternalResource)

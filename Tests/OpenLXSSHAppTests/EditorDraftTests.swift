@@ -542,6 +542,38 @@ import OpenLXSSHTransport
             f.review.discard(UUID()); XCTAssertEqual(f.editor.password, secret)
         }
     }
+    func testVaultHostCloseReviewSaveInvokesAfterDismissOnSheetCloseOnlyAndNotOnWindowClose() async throws {
+        // 1) Normal sheet close (request == nil): save must invoke afterDismiss with the saved host.
+        let sheetFixture = try await fixture()
+        var sheetSavedHosts: [HostConfiguration] = []
+        sheetFixture.review.begin()
+        let sheetPrompt = try XCTUnwrap(sheetFixture.review.prompt)
+        rTrue(await sheetFixture.review.save(
+            sheetPrompt.id,
+            security: sheetFixture.app.security,
+            vault: sheetFixture.vault,
+            afterDismiss: { host in sheetSavedHosts.append(host) }
+        ))
+        XCTAssertEqual(sheetSavedHosts.count, 1)
+        XCTAssertEqual(sheetSavedHosts.first?.name, "unsaved close draft")
+        XCTAssertNil(sheetFixture.owner.item)
+
+        // 2) Window-close / termination review (request != nil): save must NOT invoke afterDismiss.
+        let quitFixture = try await fixture()
+        var quitSavedHosts: [HostConfiguration] = []
+        let request = quitFixture.app.requestWindowCloseReview()
+        let quitPrompt = try XCTUnwrap(quitFixture.review.prompt)
+        rTrue(await quitFixture.review.save(
+            quitPrompt.id,
+            security: quitFixture.app.security,
+            vault: quitFixture.vault,
+            afterDismiss: { host in quitSavedHosts.append(host) }
+        ))
+        rTrue(await request.wait())
+        XCTAssertTrue(quitSavedHosts.isEmpty, "Window close / app quit save must not run post-dismiss page routing")
+        XCTAssertNil(quitFixture.owner.item)
+        quitFixture.app.finishWindowCloseReview()
+    }
 }
 
 @MainActor private struct DesktopCloseFixture {

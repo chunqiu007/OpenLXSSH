@@ -177,10 +177,10 @@ public actor CredentialStore {
         }
     }
 
-    private func legacyDeleteQuery(_ reference: CredentialReference, legacyService: String) -> [String: Any] {
+    private func standardDeleteQuery(_ reference: CredentialReference, service: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: legacyService,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: reference.account,
             kSecAttrSynchronizable as String: false,
             kSecUseAuthenticationContext as String: Self.nonInteractiveContext()
@@ -188,27 +188,36 @@ public actor CredentialStore {
     }
 
     /// Only Core can decide that no host/key still references this item.
-    /// Deletes from the current v2 namespace and, when a matching legacy v1 namespace exists,
-    /// also attempts exact deletion from standard Keychain v1 so "Forget" never silently leaves
-    /// an old v1 secret behind. Never reads or migrates legacy v1 items.
+    /// Deletes from the current v2 backend, plus standard Keychain v2 when running in
+    /// Data Protection mode (in case an earlier unsigned/ad-hoc build stored v2 there),
+    /// and standard Keychain legacy v1 when a matching legacy namespace exists, so
+    /// "Forget" never silently leaves a stale secret behind. Never reads or migrates legacy v1 items.
     public func deleteExact(_ reference: CredentialReference) -> CredentialDeleteResult {
         guard !closed else { return .retryRequired(.closed) }
-        let v2Status = backend.delete(baseQuery(reference))
-        guard v2Status == errSecSuccess || v2Status == errSecItemNotFound else {
-            return .retryRequired(.from(v2Status))
+        var deletedAny = false
+
+        let primaryStatus = backend.delete(baseQuery(reference))
+        guard primaryStatus == errSecSuccess || primaryStatus == errSecItemNotFound else {
+            return .retryRequired(.from(primaryStatus))
         }
-        let deletedV2 = (v2Status == errSecSuccess)
-        guard let legacyService else {
-            return deletedV2 ? .deleted : .alreadyAbsent
+        if primaryStatus == errSecSuccess { deletedAny = true }
+
+        if storageMode == .dataProtection {
+            let standardV2Status = backend.delete(standardDeleteQuery(reference, service: service))
+            guard standardV2Status == errSecSuccess || standardV2Status == errSecItemNotFound else {
+                return .retryRequired(.from(standardV2Status))
+            }
+            if standardV2Status == errSecSuccess { deletedAny = true }
         }
-        let legacyStatus = backend.delete(legacyDeleteQuery(reference, legacyService: legacyService))
-        switch legacyStatus {
-        case errSecSuccess:
-            return .deleted
-        case errSecItemNotFound:
-            return deletedV2 ? .deleted : .alreadyAbsent
-        default:
-            return .retryRequired(.from(legacyStatus))
+
+        if let legacyService {
+            let legacyStatus = backend.delete(standardDeleteQuery(reference, service: legacyService))
+            guard legacyStatus == errSecSuccess || legacyStatus == errSecItemNotFound else {
+                return .retryRequired(.from(legacyStatus))
+            }
+            if legacyStatus == errSecSuccess { deletedAny = true }
         }
+
+        return deletedAny ? .deleted : .alreadyAbsent
     }
 }
