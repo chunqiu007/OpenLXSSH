@@ -405,9 +405,28 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
 
 @MainActor private final class SessionCloseObservation<Value> { var result: Value? }
 
+enum TerminalSplitAxis: String, Equatable, Sendable {
+    case horizontal, vertical
+}
+
+struct TerminalSplitState: Equatable, Sendable {
+    var primaryTabID: UUID
+    var secondaryTabID: UUID
+    var axis: TerminalSplitAxis
+    func contains(_ tabID: UUID) -> Bool {
+        primaryTabID == tabID || secondaryTabID == tabID
+    }
+    func otherTabID(for tabID: UUID) -> UUID? {
+        if primaryTabID == tabID { return secondaryTabID }
+        if secondaryTabID == tabID { return primaryTabID }
+        return nil
+    }
+}
+
 @Observable @MainActor final class SessionController {
     private(set) var tabs: [SessionTab] = []
     private(set) var selectedTabID: UUID?
+    private(set) var split: TerminalSplitState?
     private(set) var closingAll = false
     private(set) var terminating = false
     var issue: AppIssue?
@@ -439,6 +458,71 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         self.repository = repository; self.credentials = credentials; self.builder = builder
     }
     var selectedTab: SessionTab? { tabs.first { $0.id == selectedTabID } }
+    var activeSplit: TerminalSplitState? {
+        guard let split,
+              split.primaryTabID != split.secondaryTabID,
+              let selectedTabID,
+              split.contains(selectedTabID),
+              tabs.contains(where: { $0.id == split.primaryTabID }),
+              tabs.contains(where: { $0.id == split.secondaryTabID }) else { return nil }
+        return split
+    }
+    var isSplitActive: Bool { activeSplit != nil }
+    func isTabVisible(_ tabID: UUID) -> Bool {
+        guard workspaceVisible else { return false }
+        if let activeSplit { return activeSplit.contains(tabID) }
+        return selectedTabID == tabID
+    }
+    private func syncTerminalVisibility() {
+        for tab in tabs {
+            tab.driver?.terminal.setVisible(isTabVisible(tab.id))
+        }
+    }
+    func splitWithTab(_ otherTabID: UUID, axis: TerminalSplitAxis) {
+        guard !closingAll, !terminating, !windowCleanupAdmissionClosed,
+              let primaryID = selectedTabID, primaryID != otherTabID,
+              tabs.contains(where: { $0.id == primaryID }),
+              tabs.contains(where: { $0.id == otherTabID }) else { return }
+        split = TerminalSplitState(primaryTabID: primaryID, secondaryTabID: otherTabID, axis: axis)
+        select(otherTabID)
+        tabs.first(where: { $0.id == otherTabID })?.focusTerminal()
+    }
+    @discardableResult func splitCurrentSession(axis: TerminalSplitAxis) -> SessionTab? {
+        guard !closingAll, !terminating, !windowCleanupAdmissionClosed,
+              let current = selectedTab, let host = current.host else { return nil }
+        guard let newID = open(host, mode: .newSession),
+              newID != current.id,
+              let newTab = tabs.first(where: { $0.id == newID }) else { return nil }
+        split = TerminalSplitState(primaryTabID: current.id, secondaryTabID: newID, axis: axis)
+        syncTerminalVisibility()
+        newTab.focusTerminal()
+        return newTab
+    }
+    func toggleSplitAxis() {
+        guard var current = activeSplit else { return }
+        current.axis = current.axis == .horizontal ? .vertical : .horizontal
+        split = current
+        if workspaceVisible { selectedTab?.focusTerminal() }
+    }
+    func swapSplitPanes() {
+        guard var current = activeSplit else { return }
+        swap(&current.primaryTabID, &current.secondaryTabID)
+        split = current
+        if workspaceVisible { selectedTab?.focusTerminal() }
+    }
+    func focusOtherSplitPane() {
+        guard let current = activeSplit,
+              let selectedTabID,
+              let otherID = current.otherTabID(for: selectedTabID) else { return }
+        select(otherID)
+        tabs.first(where: { $0.id == otherID })?.focusTerminal()
+    }
+    func unsplit() {
+        guard split != nil else { return }
+        split = nil
+        syncTerminalVisibility()
+        if workspaceVisible { selectedTab?.focusTerminal() }
+    }
     @discardableResult func open(_ host: HostConfiguration, mode: SessionOpenMode) -> UUID? {
         guard !closingAll, !terminating, !windowCleanupAdmissionClosed else { return nil }
         if mode == .reuse, let existing = tabs.filter({ $0.hostID == host.id && $0.host?.connectionIdentity == host.connectionIdentity && $0.isReusable }).max(by: { $0.lastActivity < $1.lastActivity }) {
@@ -524,7 +608,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         guard tabs.contains(where: { $0.id == id }) else { return }
         selectedTabID = id; activity &+= 1
         for tab in tabs {
-            tab.driver?.terminal.setVisible(workspaceVisible && tab.id == id)
+            tab.driver?.terminal.setVisible(isTabVisible(tab.id))
             if tab.id == id { tab.lastActivity = activity } else { tab.dialog = nil }
         }
         onSelectionChanged?(id)
@@ -532,7 +616,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
     func setWorkspaceVisible(_ visible: Bool) {
         workspaceVisible = visible
         for tab in tabs {
-            tab.driver?.terminal.setVisible(visible && tab.id == selectedTabID)
+            tab.driver?.terminal.setVisible(isTabVisible(tab.id))
             // Dismiss only the presentation, not the pending transport request.
             // Reopening requires a fresh, empty editor for that exact request.
             if !visible { tab.dialog = nil }
@@ -638,7 +722,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
                 installCallbacks(tab)
                 try applySettings(to: ready.driver.terminal, tab: tab)
                 installTerminalActions(tab)
-                ready.driver.terminal.setVisible(workspaceVisible && selectedTabID == tab.id)
+                ready.driver.terminal.setVisible(isTabVisible(tab.id))
                 try start(tab, configuration: ready.configuration)
             } catch {
                 guard tab.operation == operation, tab.state != .closing else { return }
@@ -792,11 +876,25 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
             if result.permitsRemoval {
                 tab.driver?.onState = nil; tab.driver?.onTrust = nil; tab.driver?.onAuthentication = nil
                 let index = tabs.firstIndex(where: { $0 === tab }) ?? 0
+                let survivingSplitTabID: UUID?
+                if let currentSplit = split, currentSplit.contains(id) {
+                    split = nil
+                    survivingSplitTabID = currentSplit.otherTabID(for: id)
+                } else {
+                    survivingSplitTabID = nil
+                }
                 tabs.removeAll { $0 === tab }
                 if selectedTabID == id {
                     selectedTabID = nil
-                    if !tabs.isEmpty { select(tabs[min(index, tabs.count - 1)].id) }
-                    else { onSelectionChanged?(nil) }
+                    if let surviving = survivingSplitTabID, tabs.contains(where: { $0.id == surviving }) {
+                        select(surviving)
+                    } else if !tabs.isEmpty {
+                        select(tabs[min(index, tabs.count - 1)].id)
+                    } else {
+                        onSelectionChanged?(nil)
+                    }
+                } else if survivingSplitTabID != nil {
+                    syncTerminalVisibility()
                 }
                 if case .retired = result {
                     issue = AppIssue(code: "session.retired", message: "连接的原生资源已关闭并封口；仍有已撤销的认证工作等待实际返回。标签已移除，未声称全部任务消失。")
@@ -839,7 +937,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
             if let result = observation.result { return result }
             return SessionCloseBatchResult(entries: tabs.map { .init(tabID: $0.id, result: .incomplete(.init(token: $0.driver?.token, reason: .legacyPending, drain: nil))) })
         }
-        closingAll = true; revokePreparedCandidates()
+        closingAll = true; split = nil; revokePreparedCandidates()
         let ids = tabs.map(\.id)
         for tab in tabs {
             tab.operation = UUID(); tab.preparation?.cancel(); revokePrimary(tab.id)

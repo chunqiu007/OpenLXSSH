@@ -284,6 +284,19 @@ import OpenLXSSHTransport
         let fontPlus = terminalMenu.addItem(withTitle: "放大字号", action: #selector(terminalAction(_:)), keyEquivalent: "=")
         fontPlus.target = self; fontPlus.representedObject = TerminalDesktopAction.increaseFont.rawValue
         fontPlus.isAlternate = true
+        terminalMenu.addItem(.separator())
+        let splitH = terminalMenu.addItem(withTitle: "左右分屏（新建同主机会话）", action: #selector(splitSessionHorizontal), keyEquivalent: "d")
+        splitH.target = self; splitH.keyEquivalentModifierMask = [.command]
+        splitH.identifier = NSUserInterfaceItemIdentifier("terminal.splitHorizontal")
+        let splitV = terminalMenu.addItem(withTitle: "上下分屏（新建同主机会话）", action: #selector(splitSessionVertical), keyEquivalent: "d")
+        splitV.target = self; splitV.keyEquivalentModifierMask = [.command, .shift]
+        splitV.identifier = NSUserInterfaceItemIdentifier("terminal.splitVertical")
+        let focusSplit = terminalMenu.addItem(withTitle: "切换分屏焦点", action: #selector(focusOtherSplitPane), keyEquivalent: "]")
+        focusSplit.target = self; focusSplit.keyEquivalentModifierMask = [.command, .option]
+        focusSplit.identifier = NSUserInterfaceItemIdentifier("terminal.focusOtherSplitPane")
+        let unsplit = terminalMenu.addItem(withTitle: "取消分屏", action: #selector(unsplitSession), keyEquivalent: "d")
+        unsplit.target = self; unsplit.keyEquivalentModifierMask = [.command, .option, .shift]
+        unsplit.identifier = NSUserInterfaceItemIdentifier("terminal.unsplit")
         let windowItem = NSMenuItem(); menu.addItem(windowItem)
         let windowMenu = NSMenu(title: "窗口"); windowItem.submenu = windowMenu; NSApp.windowsMenu = windowMenu
         windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
@@ -330,6 +343,12 @@ import OpenLXSSHTransport
         if menuItem.action == #selector(disconnectSession) { return model.workspacePage.sessionID != nil && model.sessions.selectedTab?.isReusable == true }
         if menuItem.action == #selector(reconnectSession) { return model.workspacePage.sessionID != nil && model.sessions.selectedTab?.canReconnect == true }
         if menuItem.action == #selector(connectionInfo) { return model.workspacePage.sessionID != nil }
+        if menuItem.action == #selector(splitSessionHorizontal) || menuItem.action == #selector(splitSessionVertical) {
+            return model.workspacePage.sessionID != nil && !interactionContext.isEditingText && model.sessions.selectedTab?.host != nil
+        }
+        if menuItem.action == #selector(focusOtherSplitPane) || menuItem.action == #selector(unsplitSession) {
+            return model.workspacePage.sessionID != nil && !interactionContext.isEditingText && model.sessions.isSplitActive
+        }
         return true
     }
     @objc private func newConnection() { guard allowsWorkspaceActions else { return }; showMainWindow(); model.sendWorkspaceCommand(.newConnection) }
@@ -383,6 +402,22 @@ import OpenLXSSHTransport
     }
     @objc private func disconnectSession() { guard allowsWorkspaceActions else { return }; if let id = model.workspacePage.sessionID { model.sessions.disconnect(id) } }
     @objc private func reconnectSession() { guard allowsWorkspaceActions else { return }; if let id = model.workspacePage.sessionID { model.sessions.reconnect(id) } }
+    @objc private func splitSessionHorizontal() {
+        guard allowsWorkspaceActions, !interactionContext.isEditingText, model.workspacePage.sessionID != nil else { return }
+        model.sessions.splitCurrentSession(axis: .horizontal)
+    }
+    @objc private func splitSessionVertical() {
+        guard allowsWorkspaceActions, !interactionContext.isEditingText, model.workspacePage.sessionID != nil else { return }
+        model.sessions.splitCurrentSession(axis: .vertical)
+    }
+    @objc private func focusOtherSplitPane() {
+        guard allowsWorkspaceActions, !interactionContext.isEditingText, model.workspacePage.sessionID != nil, model.sessions.isSplitActive else { return }
+        model.sessions.focusOtherSplitPane()
+    }
+    @objc private func unsplitSession() {
+        guard allowsWorkspaceActions, !interactionContext.isEditingText, model.workspacePage.sessionID != nil, model.sessions.isSplitActive else { return }
+        model.sessions.unsplit()
+    }
     @objc private func closeWorkspace() {
         guard !terminating, transferClosePrompt == nil else { return }
         if let sheet = mainWindow?.attachedSheet {

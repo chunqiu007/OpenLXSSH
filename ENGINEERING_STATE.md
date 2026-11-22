@@ -1,5 +1,29 @@
 # OpenLXSSH — 工程状态
 
+## 2026-11-22 架构重构与原生终端分屏（main 本地提交，未推送远程）
+
+- 围绕“轻量、顺手、好维护的个人日常 SSH + SFTP 工具”目标，按用户授权直接在 `main` 上分 4 个里程碑完成重构与功能增强（保留 `libssh2 + OpenSSL`、`SwiftTerm`、`GRDB/SQLite`、`HostTrustStore` 与既有 file-based Keychain 兼容，零破坏已有 2.0.4 用户数据）：
+  - **M1 底层事件驱动与 SFTP 性能**（`46557f3`）：
+    - `Bridge.c` / `COpenLXSSHFiles.h`：将 `rf_allocation` 升级为 O(1) 双向链表，启用 `TCP_NODELAY`，暴露 `rf_connection_socket`。
+    - `NativeShellSession.swift` & `NativeSessionDriver.swift`：以基于独立 `dup` FD 的 kqueue `DispatchSourceRead`/`Write`/`Timer` 替代 5ms 轮询（空闲等待从 0.25s 提至 60s，取消即时唤醒，关闭前完整排空 FD）；保留离线脚本泵测试接口。
+    - `SafeTransferEngine.swift` & `RemoteFileService.swift`：`AsyncGate` 改为无轮询 FIFO `CheckedContinuation` 队列并接入 `CancellationToken` 观察回调；默认 SFTP 块大小从 64 KiB 提升至 256 KiB。
+  - **M2 架构大瘦身**（`f097943`，净删 83,455 行）：
+    - 移除废弃的 OpenSSH/Askpass 后端（`DirectSSHSession`、`AskpassBroker`、`COpenLXSSHAskpass`、`openlxssh-askpass` helper 及打包签名步骤），`OpenLXSSHTransport` 精简为纯 Swift 6 的 `NativeTerminalView` 与会话基础类型。
+    - 从 `Application/OpenLXSSH/` 移除全部 8 个内嵌测试/探针文件（~1.15 万行）与 `HOST_PROBE`/`PREVIEW_ISOLATED`/`LOCAL_CANDIDATE` 宏分支，清理 `Experiments/`、16 个历史 `Tests/*Acceptance` 目录与废弃探针脚本，`OpenLXSSHApp.swift` 回归简洁入口。
+  - **M3A 状态层现代化与大文件拆分**（`1ea1f4b`）：
+    - 将 `AppModel`、`FilesController`、`LocalBrowserModel`、`SessionController`/`SessionTab`/`SessionBatchCloseOwner`、`VaultDesktopModel`/`PresentationOwner`、`SecurityViewModel`、`WorkspaceWindowChromeState` 等核心状态全面迁移至 macOS 26 `@Observable`（移除 `objectWillChange.send()` 与多余 Combine 依赖；仅保留 `WorkspaceTabDragOwner` 以兼容其 AppKit 同步/延迟发布单测）。
+    - 将 `FilesController`（1,452 行）拆为 `FilesController` + `FilesController+Browsing` + `FilesController+Transfers`；`DualPaneFilesView`（955 行）拆为 `DualPaneFilesView` + `FilesConnectionPanelView` + `FilesBrowserPaneView`；`VaultWorkspacePage`（706 行）拆为 `VaultWorkspacePage` + `VaultSidebarView` + `VaultInspectorView`。
+  - **M3B 原生终端分屏**（本轮提交）：
+    - 在 `SessionController`、`SessionViews`、`WorkspaceTabsView`、`OpenLXSSHApp` 与 `DesktopHelp` 新增原生终端分屏：支持 `⌘D` 左右分屏（新建同主机会话）、`⇧⌘D` 上下分屏、`⌥⌘]` 切换分屏焦点、`⇧⌥⌘D` 取消分屏、标签右键与已有会话分屏/取消分屏、分屏顶栏方向切换/交换/关闭及标签栏分屏图标。
+    - 引入 `TerminalAttachmentRegistry` 保证 `NativeTerminalView` 在单标签 `NativeWorkspacePage` 与 `HSplitView`/`VSplitView` 间无缝重挂载且永不重建或丢失历史。
+- **验证结果（macOS 26.7.1 / Xcode 26.3 / arm64，Swift 6 严格并发 + Warnings-as-Errors）**：
+  - `Scripts/build-app.sh Debug build` & `Release build` & `Scripts/verify-app.sh build`：全部通过，0 警告、0 错误。
+  - 5 个 Swift Package 测试：`OpenLXSSHCore` 82/82、`OpenLXSSHTrust` 59/59、`OpenLXSSHSecurity` 46/46、`OpenLXSSHTransport` 13/13、`OpenLXSSHFiles` 离线核心组（含新增 `IOPerformanceTests` 4 项）77/77 通过。
+  - App 测试：`SessionControllerTests` 44/44（含 6 项新增分屏与真实隔离 `NSWindow` 重挂载测试）、`NativeSessionAdapterTests` 104/104、`DualPaneFilesTests` 20/20、`FilesControllerTests` 37/37、`FilesTransferTests` 19/19、`FilesAuthenticationTests` 21/21、`VaultDesktopTests` 9/9、`OpenLXSSHAppTests` 41/41（不含已知无宿主 `NSApp.currentEvent` 单测）全部通过。
+- **已知限制 / 既有历史失败（未改绿）**：
+  - 未连接真实远端 SSH/SFTP 服务器，也未新打签名/公证 DMG 发布包；未直接启动未隔离的 `OpenLXSSH.app` 以免触碰本机真实 Application Support 数据，界面重挂载通过隔离 `NSWindow` 实测。
+  - 历史既有失败原样保留：`InitialDirectoryTests.testNativeOwnerWithoutSFTPDoesNotResolveOrSendAnyBytes`（1 项，始于 `9e405ad`）、`DualPaneFilesTests` 中 4 项旧计划审查用例，以及无宿主环境下的 `testWindowTabsMiddleClickBelongsOnlyToExactNativeTargetAndNoModifierOrEditor`。
+
 ## 2026-11-22　2.0.4 发布包
 
 - 应用版本 2.0.4，构建号 7，包含提交 `6a984d7`。SFTP 连接默认沿用所选主机已授权的凭据，并支持仅对本次连接输入密码或私钥口令。

@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import SwiftUI
 import XCTest
 import OpenLXSSHCore
 import OpenLXSSHFiles
@@ -983,6 +984,297 @@ extension SessionControllerTests {
         XCTAssertEqual(f.app.sessions.tabs.map(\.id), [tab.id]); XCTAssertEqual(f.app.workspacePage, .session(tab.id))
         let reads = await f.credentials.readCount, saves = await f.credentials.saveCount
         XCTAssertEqual(reads, 0); XCTAssertEqual(saves, 0)
+    }
+
+    func testSplitCurrentSessionHorizontalAndVerticalCreatesPairedSecondTab() async throws {
+        let (repo, _, builder, directory) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let model = AppModel(repository: repo, location: .isolated(directory), sessionBuilder: builder)
+        _ = await model.reload()
+        XCTAssertNil(model.sessions.splitCurrentSession(axis: .horizontal))
+
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let first = try XCTUnwrap(model.sessions.selectedTab)
+        await first.preparation?.value
+        let firstTerminal = try XCTUnwrap(first.driver?.terminal)
+        firstTerminal.feed(text: "SPLIT-PRIMARY-KEEP\r\n")
+
+        let second = try XCTUnwrap(model.sessions.splitCurrentSession(axis: .horizontal))
+        await second.preparation?.value
+        let secondTerminal = try XCTUnwrap(second.driver?.terminal)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(model.sessions.tabs.map(\.id), [first.id, second.id])
+        XCTAssertEqual(model.sessions.selectedTabID, second.id)
+        XCTAssertEqual(model.workspacePage, .session(second.id))
+        XCTAssertEqual(model.sessions.activeSplit, TerminalSplitState(primaryTabID: first.id, secondaryTabID: second.id, axis: .horizontal))
+        XCTAssertTrue(model.sessions.isSplitActive)
+        XCTAssertNotNil(second.terminalFocusRequest)
+        XCTAssertFalse(firstTerminal.isHidden)
+        XCTAssertFalse(secondTerminal.isHidden)
+        XCTAssertTrue(first.driver?.terminal === firstTerminal)
+        XCTAssertTrue(firstTerminal.text.contains("SPLIT-PRIMARY-KEEP"))
+
+        let third = try XCTUnwrap(model.sessions.splitCurrentSession(axis: .vertical))
+        await third.preparation?.value
+        let thirdTerminal = try XCTUnwrap(third.driver?.terminal)
+        XCTAssertEqual(model.sessions.tabs.map(\.id), [first.id, second.id, third.id])
+        XCTAssertEqual(model.sessions.selectedTabID, third.id)
+        XCTAssertEqual(model.workspacePage, .session(third.id))
+        XCTAssertEqual(model.sessions.activeSplit, TerminalSplitState(primaryTabID: second.id, secondaryTabID: third.id, axis: .vertical))
+        XCTAssertTrue(firstTerminal.isHidden)
+        XCTAssertFalse(secondTerminal.isHidden)
+        XCTAssertFalse(thirdTerminal.isHidden)
+        XCTAssertEqual(builder.drivers.count, 3)
+
+        await model.sessions.closeAll(); await model.files.closeForWindow(); try await repo.close()
+    }
+
+    func testSplitWithExistingTabFocusesSecondaryToggleSwapAndUnsplitKeepBothTabs() async throws {
+        let (repo, _, builder, directory) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let model = AppModel(repository: repo, location: .isolated(directory), sessionBuilder: builder)
+        _ = await model.reload()
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let first = try XCTUnwrap(model.sessions.selectedTab); await first.preparation?.value
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let second = try XCTUnwrap(model.sessions.selectedTab); await second.preparation?.value
+        let firstTerminal = try XCTUnwrap(first.driver?.terminal)
+        let secondTerminal = try XCTUnwrap(second.driver?.terminal)
+        firstTerminal.feed(text: "PANE-ONE\r\n")
+        secondTerminal.feed(text: "PANE-TWO\r\n")
+
+        model.showWorkspace(.session(first.id))
+        model.sessions.splitWithTab(first.id, axis: .horizontal)
+        XCTAssertNil(model.sessions.split, "Splitting a tab with itself must be a no-op")
+        model.sessions.splitWithTab(UUID(), axis: .horizontal)
+        XCTAssertNil(model.sessions.split, "Splitting with a missing tab must be a no-op")
+
+        model.sessions.splitWithTab(second.id, axis: .horizontal)
+        XCTAssertEqual(model.sessions.activeSplit, TerminalSplitState(primaryTabID: first.id, secondaryTabID: second.id, axis: .horizontal))
+        XCTAssertEqual(model.sessions.selectedTabID, second.id)
+        XCTAssertEqual(model.workspacePage, .session(second.id))
+        XCTAssertNotNil(second.terminalFocusRequest)
+        XCTAssertFalse(firstTerminal.isHidden)
+        XCTAssertFalse(secondTerminal.isHidden)
+
+        model.sessions.toggleSplitAxis()
+        XCTAssertEqual(model.sessions.activeSplit?.axis, .vertical)
+        model.sessions.toggleSplitAxis()
+        XCTAssertEqual(model.sessions.activeSplit?.axis, .horizontal)
+
+        model.sessions.swapSplitPanes()
+        XCTAssertEqual(model.sessions.activeSplit, TerminalSplitState(primaryTabID: second.id, secondaryTabID: first.id, axis: .horizontal))
+        XCTAssertEqual(model.sessions.selectedTabID, second.id)
+
+        let previousFirstFocus = first.terminalFocusRequest
+        model.sessions.focusOtherSplitPane()
+        XCTAssertEqual(model.sessions.selectedTabID, first.id)
+        XCTAssertEqual(model.workspacePage, .session(first.id))
+        XCTAssertNotEqual(first.terminalFocusRequest, previousFirstFocus)
+        XCTAssertNotNil(first.terminalFocusRequest)
+
+        model.sessions.unsplit()
+        XCTAssertNil(model.sessions.split)
+        XCTAssertNil(model.sessions.activeSplit)
+        XCTAssertFalse(model.sessions.isSplitActive)
+        XCTAssertEqual(model.sessions.tabs.map(\.id), [first.id, second.id])
+        XCTAssertEqual(model.sessions.selectedTabID, first.id)
+        XCTAssertEqual(model.workspacePage, .session(first.id))
+        XCTAssertFalse(firstTerminal.isHidden)
+        XCTAssertTrue(secondTerminal.isHidden)
+        XCTAssertTrue(first.driver?.terminal === firstTerminal)
+        XCTAssertTrue(second.driver?.terminal === secondTerminal)
+        XCTAssertTrue(firstTerminal.text.contains("PANE-ONE"))
+        XCTAssertTrue(secondTerminal.text.contains("PANE-TWO"))
+        XCTAssertTrue(builder.drivers.allSatisfy { $0.connectCount == 1 })
+
+        await model.sessions.closeAll(); await model.files.closeForWindow(); try await repo.close()
+    }
+
+    func testClosingSplitTabClearsSplitAndSelectsSurvivingPane() async throws {
+        let (repo, _, builder, directory) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let model = AppModel(repository: repo, location: .isolated(directory), sessionBuilder: builder)
+        _ = await model.reload()
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let first = try XCTUnwrap(model.sessions.selectedTab); await first.preparation?.value
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let middle = try XCTUnwrap(model.sessions.selectedTab); await middle.preparation?.value
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let last = try XCTUnwrap(model.sessions.selectedTab); await last.preparation?.value
+
+        // Pair first and last (non-adjacent) so closing last must select first, not middle.
+        model.showWorkspace(.session(first.id))
+        model.sessions.splitWithTab(last.id, axis: .horizontal)
+        XCTAssertEqual(model.sessions.selectedTabID, last.id)
+        XCTAssertTrue(model.sessions.isSplitActive)
+
+        await model.sessions.closeTab(last.id)
+        XCTAssertNil(model.sessions.split)
+        XCTAssertFalse(model.sessions.isSplitActive)
+        XCTAssertEqual(model.sessions.selectedTabID, first.id)
+        XCTAssertEqual(model.workspacePage, .session(first.id))
+        XCTAssertFalse(try XCTUnwrap(first.driver?.terminal.isHidden))
+        XCTAssertTrue(try XCTUnwrap(middle.driver?.terminal.isHidden))
+
+        // Pair first and middle, then close the unfocused pane (first); middle stays selected and split clears.
+        model.sessions.splitWithTab(middle.id, axis: .vertical)
+        XCTAssertEqual(model.sessions.selectedTabID, middle.id)
+        await model.sessions.closeTab(first.id)
+        XCTAssertNil(model.sessions.split)
+        XCTAssertEqual(model.sessions.selectedTabID, middle.id)
+        XCTAssertEqual(model.workspacePage, .session(middle.id))
+        XCTAssertFalse(try XCTUnwrap(middle.driver?.terminal.isHidden))
+
+        await model.sessions.closeAll(); await model.files.closeForWindow(); try await repo.close()
+    }
+
+    func testSelectingThirdTabTemporarilyHidesSplitAndReturningRestoresIt() async throws {
+        let (repo, _, builder, directory) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let model = AppModel(repository: repo, location: .isolated(directory), sessionBuilder: builder)
+        _ = await model.reload()
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let first = try XCTUnwrap(model.sessions.selectedTab); await first.preparation?.value
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let second = try XCTUnwrap(model.sessions.selectedTab); await second.preparation?.value
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let third = try XCTUnwrap(model.sessions.selectedTab); await third.preparation?.value
+        let firstTerminal = try XCTUnwrap(first.driver?.terminal)
+        let secondTerminal = try XCTUnwrap(second.driver?.terminal)
+        let thirdTerminal = try XCTUnwrap(third.driver?.terminal)
+
+        model.showWorkspace(.session(first.id))
+        model.sessions.splitWithTab(second.id, axis: .horizontal)
+        XCTAssertTrue(model.sessions.isSplitActive)
+        XCTAssertFalse(firstTerminal.isHidden)
+        XCTAssertFalse(secondTerminal.isHidden)
+        XCTAssertTrue(thirdTerminal.isHidden)
+
+        // Switching to the third tab temporarily hides the split while retaining the pairing.
+        model.showWorkspace(.session(third.id))
+        XCTAssertNotNil(model.sessions.split)
+        XCTAssertNil(model.sessions.activeSplit)
+        XCTAssertFalse(model.sessions.isSplitActive)
+        XCTAssertTrue(firstTerminal.isHidden)
+        XCTAssertTrue(secondTerminal.isHidden)
+        XCTAssertFalse(thirdTerminal.isHidden)
+
+        // Returning to either paired tab restores the split view and shows both panes again.
+        model.showWorkspace(.session(first.id))
+        XCTAssertEqual(model.sessions.activeSplit, TerminalSplitState(primaryTabID: first.id, secondaryTabID: second.id, axis: .horizontal))
+        XCTAssertTrue(model.sessions.isSplitActive)
+        XCTAssertFalse(firstTerminal.isHidden)
+        XCTAssertFalse(secondTerminal.isHidden)
+        XCTAssertTrue(thirdTerminal.isHidden)
+
+        await model.sessions.closeAll(); await model.files.closeForWindow(); try await repo.close()
+    }
+
+    func testCloseAllClearsSplitState() async throws {
+        let (repo, controller, builder, _) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let firstID = try XCTUnwrap(controller.open(host, mode: .newSession))
+        await controller.selectedTab?.preparation?.value
+        let second = try XCTUnwrap(controller.splitCurrentSession(axis: .horizontal))
+        await second.preparation?.value
+        XCTAssertEqual(controller.activeSplit, TerminalSplitState(primaryTabID: firstID, secondaryTabID: second.id, axis: .horizontal))
+        XCTAssertEqual(builder.drivers.count, 2)
+
+        await controller.closeAll()
+        XCTAssertNil(controller.split)
+        XCTAssertNil(controller.activeSplit)
+        XCTAssertFalse(controller.isSplitActive)
+        XCTAssertTrue(controller.tabs.isEmpty)
+        XCTAssertNil(controller.selectedTabID)
+        try await repo.close()
+    }
+
+    func testSplitPaneLiveWindowReparentsRetainedTerminalsWithoutRecreation() async throws {
+        _ = NSApplication.shared
+        let (repo, _, builder, directory) = try fixture(); let host = host()
+        try await repo.apply([.insertHost(host)])
+        let suite = "OpenLXSSH.SplitPaneLive.Tests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(repository: repo, location: .isolated(directory), sessionBuilder: builder, preferencesDefaults: defaults)
+        _ = await model.reload()
+
+        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 1120, height: 720),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: MainView(model: model))
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+
+        func settleUntil(_ label: String, _ condition: () -> Bool) async throws {
+            let deadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < deadline {
+                window.contentView?.layoutSubtreeIfNeeded()
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(15))
+            }
+            window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertTrue(condition(), "Timed out at \(label)")
+        }
+
+        model.requestSession(hostID: host.id, mode: .newSession)
+        let first = try XCTUnwrap(model.sessions.selectedTab)
+        await first.preparation?.value
+        let firstTerminal = try XCTUnwrap(first.driver?.terminal)
+        firstTerminal.feed(text: "LIVE-SPLIT-A\r\n")
+        try await settleUntil("initial single pane (w=\(firstTerminal.window === window), hid=\(firstTerminal.isHiddenOrHasHiddenAncestor), frame=\(firstTerminal.frame))") {
+            firstTerminal.window === window && !firstTerminal.isHiddenOrHasHiddenAncestor && firstTerminal.frame.width > 400
+        }
+
+        // Enter horizontal split (HSplitView)
+        let second = try XCTUnwrap(model.sessions.splitCurrentSession(axis: .horizontal))
+        await second.preparation?.value
+        let secondTerminal = try XCTUnwrap(second.driver?.terminal)
+        secondTerminal.feed(text: "LIVE-SPLIT-B\r\n")
+        try await settleUntil("horizontal split") {
+            firstTerminal.window === window && secondTerminal.window === window
+                && !firstTerminal.isHiddenOrHasHiddenAncestor && !secondTerminal.isHiddenOrHasHiddenAncestor
+                && firstTerminal.frame.width >= 200 && secondTerminal.frame.width >= 200
+                && firstTerminal.frame.height >= 120 && secondTerminal.frame.height >= 120
+        }
+        XCTAssertTrue(first.driver?.terminal === firstTerminal)
+        XCTAssertTrue(second.driver?.terminal === secondTerminal)
+        XCTAssertTrue(firstTerminal.text.contains("LIVE-SPLIT-A"))
+        XCTAssertTrue(secondTerminal.text.contains("LIVE-SPLIT-B"))
+
+        // Toggle to vertical split (VSplitView)
+        model.sessions.toggleSplitAxis()
+        try await settleUntil("vertical split") {
+            firstTerminal.window === window && secondTerminal.window === window
+                && !firstTerminal.isHiddenOrHasHiddenAncestor && !secondTerminal.isHiddenOrHasHiddenAncestor
+                && firstTerminal.frame.width >= 400 && secondTerminal.frame.width >= 400
+                && firstTerminal.frame.height >= 100 && secondTerminal.frame.height >= 100
+        }
+
+        // Swap panes & focus other pane
+        model.sessions.swapSplitPanes()
+        model.sessions.focusOtherSplitPane()
+        XCTAssertEqual(model.sessions.selectedTabID, first.id)
+        XCTAssertEqual(model.workspacePage, .session(first.id))
+        try await settleUntil("swap+focus") {
+            firstTerminal.window === window && secondTerminal.window === window
+                && !firstTerminal.isHiddenOrHasHiddenAncestor && !secondTerminal.isHiddenOrHasHiddenAncestor
+        }
+
+        // Unsplit back to single-tab NativeWorkspacePage
+        model.sessions.unsplit()
+        try await settleUntil("unsplit") {
+            firstTerminal.window === window && !firstTerminal.isHiddenOrHasHiddenAncestor
+                && firstTerminal.frame.width > 600 && secondTerminal.isHiddenOrHasHiddenAncestor
+        }
+        XCTAssertTrue(first.driver?.terminal === firstTerminal)
+        XCTAssertTrue(second.driver?.terminal === secondTerminal)
+        XCTAssertTrue(firstTerminal.text.contains("LIVE-SPLIT-A"))
+        XCTAssertTrue(secondTerminal.text.contains("LIVE-SPLIT-B"))
+        XCTAssertEqual(builder.drivers.count, 2)
+
+        await model.sessions.closeAll(); await model.files.closeForWindow(); try await repo.close()
     }
 }
 

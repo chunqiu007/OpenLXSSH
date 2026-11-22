@@ -338,7 +338,7 @@ struct WorkspaceTabBar: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 4) {
                         ForEach(sessions.tabs) { tab in
-                            WorkspaceSessionTab(tab: tab, controller: sessions, dragOwner: tabDrag, order: { sessions.tabs.map(\.id) }, active: model.workspacePage == .session(tab.id), terminalTheme: model.workspacePage.sessionID != nil, select: { model.showWorkspace(.session(tab.id)) }, close: { Task { await sessions.closeTab(tab.id) } })
+                            WorkspaceSessionTab(tab: tab, controller: sessions, dragOwner: tabDrag, order: { sessions.tabs.map(\.id) }, active: model.workspacePage == .session(tab.id), terminalTheme: model.workspacePage.sessionID != nil, splitAxis: sessions.split?.contains(tab.id) == true ? sessions.split?.axis : nil, splitActive: sessions.activeSplit?.contains(tab.id) == true, select: { model.showWorkspace(.session(tab.id)); if sessions.isSplitActive { tab.focusTerminal() } }, close: { Task { await sessions.closeTab(tab.id) } })
                                 .workspaceChromeControl()
                                 .id(tab.id)
                                 .background(GeometryReader { geometry in Color.clear.preference(key: WorkspaceTabFrames.self, value: [tab.id: geometry.frame(in: .named("workspace.session.strip"))]) })
@@ -346,6 +346,14 @@ struct WorkspaceTabBar: View {
                                 .contextMenu {
                                     Button("连接信息") { showConnectionInfo(tab) }
                                     Button("重命名当前标签…") { renamePresentation = TabRenamePresentation(tab: tab) }
+                                    Divider()
+                                    Button("左右分屏显示") { splitFromTabMenu(tab, axis: .horizontal) }
+                                        .disabled(tab.id == sessions.selectedTabID && tab.host == nil)
+                                    Button("上下分屏显示") { splitFromTabMenu(tab, axis: .vertical) }
+                                        .disabled(tab.id == sessions.selectedTabID && tab.host == nil)
+                                    if sessions.isSplitActive {
+                                        Button("取消分屏") { sessions.unsplit() }
+                                    }
                                     Divider()
                                     Button("断开") { sessions.disconnect(tab.id) }.disabled(!tab.isReusable)
                                     Button("重新连接") { sessions.reconnect(tab.id) }.disabled(!tab.canReconnect)
@@ -409,6 +417,17 @@ struct WorkspaceTabBar: View {
         guard batchClose.review == nil, let review = sessions.batchCloseReview(scope: scope) else { return }
         if sessions.currentActiveCount(in: review) > 0 { batchClose.present(review) }
         else { Task { for id in review.tabIDs { await sessions.closeTab(id) } } }
+    }
+    private func splitFromTabMenu(_ tab: SessionTab, axis: TerminalSplitAxis) {
+        if model.workspacePage.sessionID == nil, let anchor = sessions.selectedTabID ?? Optional(tab.id) {
+            model.showWorkspace(.session(anchor))
+        }
+        guard model.workspacePage.sessionID != nil else { return }
+        if tab.id != sessions.selectedTabID {
+            sessions.splitWithTab(tab.id, axis: axis)
+        } else {
+            sessions.splitCurrentSession(axis: axis)
+        }
     }
     private func showConnectionInfo(_ tab: SessionTab) {
         guard let window = NSApp.mainWindow, window.attachedSheet == nil else { return }
@@ -478,6 +497,8 @@ private struct WorkspaceSessionTab: View {
     let order: () -> [UUID]
     let active: Bool
     let terminalTheme: Bool
+    let splitAxis: TerminalSplitAxis?
+    let splitActive: Bool
     let select: () -> Void
     let close: () -> Void
     @State private var hovered = false
@@ -522,6 +543,12 @@ private struct WorkspaceSessionTab: View {
                         .font(.system(size: 12, weight: active ? .semibold : .medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if let splitAxis {
+                        Image(systemName: splitAxis == .horizontal ? "rectangle.split.2x1" : "rectangle.split.1x2")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(splitActive ? Color.accentColor : DesktopStyle.barSecondary.opacity(0.75))
+                            .accessibilityLabel("已分屏")
+                    }
                 }
                 HStack(spacing: 4) {
                     Circle()

@@ -5,6 +5,16 @@ import OpenLXSSHSecurity
 
 struct SessionWorkspaceView: View {
     let controller: SessionController
+    private var splitPair: (axis: TerminalSplitAxis, primary: SessionTab, secondary: SessionTab)? {
+        guard let activeSplit = controller.activeSplit,
+              let primary = controller.tabs.first(where: { $0.id == activeSplit.primaryTabID }),
+              let secondary = controller.tabs.first(where: { $0.id == activeSplit.secondaryTabID }) else { return nil }
+        return (activeSplit.axis, primary, secondary)
+    }
+    private var singleTabs: [SessionTab] {
+        guard let pair = splitPair else { return controller.tabs }
+        return controller.tabs.filter { $0.id != pair.primary.id && $0.id != pair.secondary.id }
+    }
     var body: some View {
         VStack(spacing: 0) {
             IssueView(issue: controller.issue) { controller.issue = nil }.padding(.horizontal, 10)
@@ -33,14 +43,198 @@ struct SessionWorkspaceView: View {
                     .background(DesktopStyle.terminalBackground)
                     .environment(\.colorScheme, .dark)
                 }
-                ForEach(controller.tabs) { tab in
+                ForEach(singleTabs) { tab in
                     NativeWorkspacePage(id: "workspace.session." + tab.id.uuidString,
                                         isVisible: controller.workspaceVisible && controller.selectedTabID == tab.id, appearance: .darkAqua) {
-                        SessionDetailView(tab: tab, controller: controller)
+                        SessionDetailView(tab: tab, controller: controller, isFocused: controller.selectedTabID == tab.id)
                     }
+                }
+                if let pair = splitPair {
+                    SessionSplitContainerView(controller: controller, axis: pair.axis, primary: pair.primary, secondary: pair.secondary)
                 }
             }
         }
+    }
+}
+
+private struct SessionSplitContainerView: View {
+    let controller: SessionController
+    let axis: TerminalSplitAxis
+    let primary: SessionTab
+    let secondary: SessionTab
+    var body: some View {
+        Group {
+            if axis == .horizontal {
+                HSplitView {
+                    SessionSplitPaneView(tab: primary, controller: controller, axis: axis)
+                        .id(primary.id)
+                    SessionSplitPaneView(tab: secondary, controller: controller, axis: axis)
+                        .id(secondary.id)
+                }
+            } else {
+                VSplitView {
+                    SessionSplitPaneView(tab: primary, controller: controller, axis: axis)
+                        .id(primary.id)
+                    SessionSplitPaneView(tab: secondary, controller: controller, axis: axis)
+                        .id(secondary.id)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DesktopStyle.terminalBackground)
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+private struct SessionSplitPaneView: View {
+    let tab: SessionTab
+    let controller: SessionController
+    let axis: TerminalSplitAxis
+    private var isActive: Bool { controller.selectedTabID == tab.id }
+    private var statusDotColor: Color {
+        switch tab.state {
+        case .connected: DesktopStyle.statusGreen
+        case .awaitingTrust, .authenticating, .preparing, .connectionPending: DesktopStyle.statusAmber
+        case .failed: DesktopStyle.statusRed
+        case .idle, .disconnected, .closing, .closed: .secondary
+        }
+    }
+    private func activate() {
+        if controller.selectedTabID != tab.id {
+            controller.select(tab.id)
+        }
+        tab.focusTerminal()
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(statusDotColor)
+                        .frame(width: 7, height: 7)
+                    Text(controller.displayTitle(for: tab))
+                        .font(.system(size: 11, weight: isActive ? .semibold : .medium))
+                        .foregroundStyle(isActive ? DesktopStyle.barForeground : DesktopStyle.barSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { activate() }
+
+                HStack(spacing: 2) {
+                    SplitHeaderIconButton(
+                        symbol: axis == .horizontal ? "rectangle.split.1x2" : "rectangle.split.2x1",
+                        help: axis == .horizontal ? "切换为上下分屏" : "切换为左右分屏",
+                        id: "split.toggleAxis." + tab.id.uuidString
+                    ) { controller.toggleSplitAxis() }
+                    SplitHeaderIconButton(
+                        symbol: "arrow.left.arrow.right",
+                        help: "交换分屏位置",
+                        id: "split.swap." + tab.id.uuidString
+                    ) { controller.swapSplitPanes() }
+                    SplitHeaderIconButton(
+                        symbol: "rectangle",
+                        help: "取消分屏（保留两个标签）",
+                        id: "split.unsplit." + tab.id.uuidString
+                    ) { controller.unsplit() }
+                    SplitHeaderIconButton(
+                        symbol: "xmark",
+                        help: "关闭此会话",
+                        id: "split.close." + tab.id.uuidString
+                    ) { Task { await controller.closeTab(tab.id) } }
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(DesktopStyle.terminalChrome)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(isActive ? Color.accentColor : Color.clear)
+                    .frame(height: 2)
+            }
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(DesktopStyle.border)
+                    .frame(height: 1)
+            }
+
+            SessionDetailView(tab: tab, controller: controller, isFocused: isActive)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    if !isActive {
+                        UnfocusedPaneClickOverlay(onActivate: activate)
+                            .accessibilityHidden(true)
+                    }
+                }
+        }
+        .frame(minWidth: 240, maxWidth: .infinity, minHeight: 160, maxHeight: .infinity)
+        .overlay(
+            Rectangle()
+                .strokeBorder(isActive ? Color.accentColor.opacity(0.65) : DesktopStyle.border, lineWidth: 1)
+                .allowsHitTesting(false)
+        )
+        .accessibilityIdentifier("split.pane." + tab.id.uuidString)
+    }
+}
+
+private struct SplitHeaderIconButton: View {
+    let symbol: String
+    let help: String
+    let id: String
+    let action: () -> Void
+    @State private var hovered = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(hovered ? DesktopStyle.barForeground : DesktopStyle.barSecondary.opacity(0.85))
+                .frame(width: 22, height: 20)
+                .background(hovered ? Color.white.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+        .accessibilityIdentifier(id)
+    }
+}
+
+private struct UnfocusedPaneClickOverlay: NSViewRepresentable {
+    let onActivate: () -> Void
+    func makeNSView(context: Context) -> UnfocusedPaneClickView {
+        let view = UnfocusedPaneClickView()
+        view.onActivate = onActivate
+        return view
+    }
+    func updateNSView(_ view: UnfocusedPaneClickView, context: Context) {
+        view.onActivate = onActivate
+    }
+    static func dismantleNSView(_ view: UnfocusedPaneClickView, coordinator: ()) {
+        view.onActivate = nil
+    }
+}
+
+@MainActor private final class UnfocusedPaneClickView: NSView {
+    var onActivate: (() -> Void)?
+    override var acceptsFirstResponder: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard onActivate != nil,
+              let event = NSApp.currentEvent,
+              event.type == .leftMouseDown || event.type == .rightMouseDown,
+              let window, event.window === window,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              !isHiddenOrHasHiddenAncestor,
+              bounds.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        onActivate?()
     }
 }
 private struct SessionTabButton: View {
@@ -57,6 +251,7 @@ private struct SessionTabButton: View {
 private struct SessionDetailView: View {
     @Bindable var tab: SessionTab
     let controller: SessionController
+    var isFocused: Bool = true
     @State private var ownerWindow: NSWindow?
     @State private var showsDiagnostic = false
     var body: some View {
@@ -188,7 +383,7 @@ private struct SessionDetailView: View {
                 .background(DesktopStyle.terminalChrome)
             }
             if let driver = tab.driver {
-                RetainedTerminalView(terminal: driver.terminal, focusRequest: tab.terminalFocusRequest)
+                RetainedTerminalView(terminal: driver.terminal, focusRequest: tab.terminalFocusRequest, isFocused: isFocused)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
@@ -319,35 +514,131 @@ struct ChallengeWindowObserver: NSViewRepresentable {
     }
 }
 
-/// Each page keeps the same transport-owned NSView mounted until the tab closes.
-struct RetainedTerminalView: NSViewRepresentable {
-    let terminal: NativeTerminalView
-    var focusRequest: UUID? = nil
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSView {
-        let container = TerminalContainerView()
-        container.clipsToBounds = true
-        terminal.removeFromSuperview()
-        terminal.frame = container.bounds; terminal.autoresizingMask = [.width, .height]
-        container.addSubview(terminal)
-        return container
+/// Coordinates sole active container ownership when a transport-owned NativeTerminalView
+/// moves between single-tab NativeWorkspacePage and HSplitView/VSplitView containers.
+/// Prevents a retiring container's late updateNSView or dismantleNSView from reclaiming
+/// or detaching a terminal already claimed by the new container.
+@MainActor private final class TerminalAttachmentRegistry {
+    static let shared = TerminalAttachmentRegistry()
+    private struct WeakContainer { weak var view: TerminalContainerView? }
+    private var owners: [ObjectIdentifier: WeakContainer] = [:]
+
+    func claim(_ terminal: NativeTerminalView, for container: TerminalContainerView) {
+        owners = owners.filter { $0.value.view != nil }
+        if let previous = container.terminal, previous !== terminal {
+            release(previous, from: container)
+        }
+        let key = ObjectIdentifier(terminal)
+        owners[key] = WeakContainer(view: container)
+        container.terminal = terminal
+        attachIfOwned(terminal, to: container)
     }
-    func updateNSView(_ view: NSView, context: Context) {
-        if terminal.superview !== view { terminal.removeFromSuperview(); view.addSubview(terminal) }
-        terminal.frame = view.bounds
-        if let focusRequest, context.coordinator.focusRequest != focusRequest {
-            context.coordinator.focusRequest = focusRequest
-            Task { @MainActor [weak terminal] in
-                guard let terminal, !terminal.isHiddenOrHasHiddenAncestor,
-                      let window = terminal.window, window.attachedSheet == nil else { return }
-                _ = window.makeFirstResponder(terminal)
+
+    func attachIfOwned(_ terminal: NativeTerminalView, to container: TerminalContainerView) {
+        let key = ObjectIdentifier(terminal)
+        guard owners[key]?.view === container else { return }
+        container.terminal = terminal
+        if terminal.superview !== container {
+            terminal.removeFromSuperview()
+            terminal.autoresizingMask = [.width, .height]
+            terminal.frame = container.bounds
+            container.addSubview(terminal)
+            terminal.needsLayout = true
+            terminal.needsDisplay = true
+        } else if terminal.frame != container.bounds {
+            terminal.frame = container.bounds
+        }
+    }
+
+    func release(_ terminal: NativeTerminalView, from container: TerminalContainerView) {
+        let key = ObjectIdentifier(terminal)
+        if owners[key]?.view === container {
+            owners.removeValue(forKey: key)
+            if terminal.superview === container {
+                terminal.removeFromSuperview()
             }
         }
     }
-    final class Coordinator { var focusRequest: UUID? }
 }
-@MainActor private final class TerminalContainerView: NSView {
-    override func layout() { super.layout(); subviews.first?.frame = bounds }
+
+/// Each page keeps the same transport-owned NSView mounted until the tab closes,
+/// and safely reparents it when moving between single-tab and split-pane containers.
+struct RetainedTerminalView: NSViewRepresentable {
+    let terminal: NativeTerminalView
+    var focusRequest: UUID? = nil
+    var isFocused: Bool = true
+    func makeNSView(context: Context) -> TerminalContainerView {
+        let container = TerminalContainerView()
+        container.clipsToBounds = true
+        TerminalAttachmentRegistry.shared.claim(terminal, for: container)
+        container.requestFocus(focusRequest, active: isFocused)
+        return container
+    }
+    func updateNSView(_ view: TerminalContainerView, context: Context) {
+        if view.terminal !== terminal {
+            TerminalAttachmentRegistry.shared.claim(terminal, for: view)
+        } else {
+            TerminalAttachmentRegistry.shared.attachIfOwned(terminal, to: view)
+        }
+        view.requestFocus(focusRequest, active: isFocused)
+    }
+    static func dismantleNSView(_ view: TerminalContainerView, coordinator: ()) {
+        if let terminal = view.terminal {
+            TerminalAttachmentRegistry.shared.release(terminal, from: view)
+        }
+        view.terminal = nil
+    }
+}
+@MainActor final class TerminalContainerView: NSView {
+    weak var terminal: NativeTerminalView?
+    private var requestedFocus: UUID?
+    private var appliedFocus: UUID?
+    private var focusScheduled = false
+
+    override func layout() {
+        super.layout()
+        if let terminal {
+            TerminalAttachmentRegistry.shared.attachIfOwned(terminal, to: self)
+        }
+        scheduleFocus()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, let terminal {
+            TerminalAttachmentRegistry.shared.attachIfOwned(terminal, to: self)
+        }
+        scheduleFocus()
+    }
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        scheduleFocus()
+    }
+    func requestFocus(_ request: UUID?, active: Bool) {
+        guard active else {
+            requestedFocus = request
+            appliedFocus = request
+            return
+        }
+        requestedFocus = request
+        scheduleFocus()
+    }
+    private func scheduleFocus() {
+        guard requestedFocus != nil, requestedFocus != appliedFocus, !focusScheduled else { return }
+        focusScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.focusScheduled = false
+            guard let request = self.requestedFocus, request != self.appliedFocus,
+                  let terminal = self.terminal, terminal.superview === self,
+                  !terminal.isHiddenOrHasHiddenAncestor,
+                  let window = terminal.window, window.attachedSheet == nil,
+                  NSApp.modalWindow == nil,
+                  NSApp.keyWindow == nil || NSApp.keyWindow === window else { return }
+            if window.makeFirstResponder(terminal) {
+                self.appliedFocus = request
+            }
+        }
+    }
 }
 
 private struct TrustChallengeView: View {
