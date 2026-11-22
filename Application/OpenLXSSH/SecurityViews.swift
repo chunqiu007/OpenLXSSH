@@ -47,7 +47,7 @@ struct SecurityManagerView: View {
                         Button("导入 RSA / Ed25519…") { chooseImport() }
                     } label: { Label("添加密钥", systemImage: "plus") }
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.busy || app.isEngineeringPreview)
+                        .disabled(model.busy)
                     Button { Task { await model.load() } } label: { Image(systemName: "arrow.clockwise") }.help("刷新").disabled(model.busy)
                     if !embedded { Button("完成", action: dismiss).disabled(model.busy) }
                 }
@@ -56,15 +56,14 @@ struct SecurityManagerView: View {
                     Button { descending.toggle() } label: { Label("名称", systemImage: descending ? "arrow.down" : "arrow.up") }.fixedSize()
                 }
             }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
-            if app.isEngineeringPreview { Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary).padding(12) }
             if model.busy { ProgressView().controlSize(.small).padding(.bottom, 8) }
             if model.metadata.keys.isEmpty && model.metadata.credentials.isEmpty {
                 ContentUnavailableView {
                     Label("添加密钥与凭据", systemImage: "key")
-                } description: { Text(app.isEngineeringPreview ? "隔离预览未加载任何真实密钥或系统凭据；导入与生成不可用。" : "导入或生成 SSH 密钥。配置只保存在本机，秘密由系统 Keychain 按明确授权管理。") }
+                } description: { Text("导入或生成 SSH 密钥。配置只保存在本机，秘密由系统 Keychain 按明确授权管理。") }
                 actions: {
-                    Button("生成 Ed25519…") { presentCreation(.generate) }.disabled(app.isEngineeringPreview)
-                    Button("导入密钥…") { chooseImport() }.disabled(app.isEngineeringPreview)
+                    Button("生成 Ed25519…") { presentCreation(.generate) }
+                    Button("导入密钥…") { chooseImport() }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HSplitView {
@@ -108,7 +107,7 @@ struct SecurityManagerView: View {
                                     Button("复制公钥指纹") { _ = model.copyFingerprint(key.id) }
                                     Button("查看引用") { selection.select(key) }
                                     Divider()
-                                    Button("删除…", role: .destructive) { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.deletion(key.id)) }.disabled(app.isEngineeringPreview)
+                                    Button("删除…", role: .destructive) { _ = presentations.present(.deletion(key.id)) }
                                 }
                             }
                             savedCredentials
@@ -125,7 +124,7 @@ struct SecurityManagerView: View {
                 HStack {
                     Text("待恢复或清理 \(model.pendingCount) 项，其中创建结果待核实 \(model.uncertainCount) 项。").font(.caption)
                     Spacer()
-                    Button("重试精确清理") { guard app.allowSensitivePreviewAction() else { return }; Task { await model.retry() } }.disabled(model.busy || app.isEngineeringPreview)
+                    Button("重试精确清理") { Task { await model.retry() } }.disabled(model.busy)
                 }.padding(12)
             }
             if let notice = model.copyNotice { Text(notice).font(.caption).foregroundStyle(.secondary).padding(8) }
@@ -152,7 +151,6 @@ struct SecurityManagerView: View {
         }
     }
     private func presentCreation(_ creation: KeyCreation) {
-        guard app.allowSensitivePreviewAction() else { return }
         model.clearCreationResult(); _ = presentations.present(.creation(creation))
     }
     private func keyDetail(_ key: ManagedKeyReference) -> some View {
@@ -226,12 +224,12 @@ struct SecurityManagerView: View {
                         }
                     }
                     if !model.hostReferences(key.id).isEmpty {
-                        Button("处理并解除主机引用…") { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.unlink(key.id)) }.disabled(model.busy || app.isEngineeringPreview)
+                        Button("处理并解除主机引用…") { _ = presentations.present(.unlink(key.id)) }.disabled(model.busy)
                     }
                     if key.passphraseCredentialRef != nil {
-                        Button("忘记已记住口令") { guard app.allowSensitivePreviewAction() else { return }; Task { _ = await model.forgetKeyPassphrase(key.id); _ = await app.reload() } }.disabled(model.busy || app.isEngineeringPreview)
+                        Button("忘记已记住口令") { Task { _ = await model.forgetKeyPassphrase(key.id); _ = await app.reload() } }.disabled(model.busy)
                     }
-                    Button("删除密钥…", role: .destructive) { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.deletion(key.id)) }.disabled(model.busy || app.isEngineeringPreview)
+                    Button("删除密钥…", role: .destructive) { _ = presentations.present(.deletion(key.id)) }.disabled(model.busy)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -246,7 +244,7 @@ struct SecurityManagerView: View {
         VStack(alignment: .leading, spacing: 10) {
             Divider(); Text("密码与口令关联").font(.headline)
             ForEach(model.metadata.hosts.filter { $0.credentialRef != nil }) { host in
-                HStack { Text(host.name).lineLimit(1); Spacer(); Button("忘记此主机密码") { guard app.allowSensitivePreviewAction() else { return }; Task { _ = await model.forget(host.id); _ = await app.reload() } }.disabled(model.busy || app.isEngineeringPreview) }
+                HStack { Text(host.name).lineLimit(1); Spacer(); Button("忘记此主机密码") { Task { _ = await model.forget(host.id); _ = await app.reload() } }.disabled(model.busy) }
             }
             ForEach(model.metadata.credentials) { credential in
                 let hostCount = model.metadata.hosts.filter { $0.credentialRef == credential.id }.count
@@ -257,7 +255,7 @@ struct SecurityManagerView: View {
                         Text("\(hostCount) 台主机 · \(keyCount) 个密钥引用").font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("删除未使用关联") { guard app.allowSensitivePreviewAction() else { return }; Task { _ = await model.deleteCredential(credential.id) } }.disabled(model.busy || app.isEngineeringPreview || hostCount + keyCount > 0)
+                    Button("删除未使用关联") { Task { _ = await model.deleteCredential(credential.id) } }.disabled(model.busy || hostCount + keyCount > 0)
                 }
             }
             Text("这里只列 App 拥有的引用，不枚举系统 Keychain。忘记共享凭据时只解除当前主机或密钥的授权。").font(.caption).foregroundStyle(.secondary)
@@ -270,13 +268,12 @@ struct SecurityManagerView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(review.intent.kind.rawValue + " · " + review.id.uuidString.prefix(8)).font(.caption.monospaced())
                     Text(recoveryStatus(review)).font(.caption).foregroundStyle(.secondary)
-                    Button("核对恢复记录…") { guard app.allowSensitivePreviewAction() else { return }; _ = presentations.present(.recovery(review)) }.disabled(model.busy || app.isEngineeringPreview)
+                    Button("核对恢复记录…") { _ = presentations.present(.recovery(review)) }.disabled(model.busy)
                 }
             }
         }
     }
     private func chooseImport() {
-        guard app.allowSensitivePreviewAction() else { return }
         let panel = NSOpenPanel(); panel.title = "选择标准 OpenSSH 私钥（创建 App 副本）"
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         let ticket = presentations.capture()
@@ -310,7 +307,7 @@ private struct SecurityKeyDeletionView: View {
             HStack {
                 NativeButton(title: "取消", id: "key.delete.cancel") { dismiss() }.fixedSize()
                 NativeButton(title: "删除", id: "key.delete.confirm", enabled: !model.busy && model.hostReferences(keyID).isEmpty) {
-                    Task { guard app.allowSensitivePreviewAction(), ownsPresentation() else { return }; if await model.deleteKey(keyID) { if ownsPresentation() { dismiss() }; await app.reload() } }
+                    Task { guard ownsPresentation() else { return }; if await model.deleteKey(keyID) { if ownsPresentation() { dismiss() }; await app.reload() } }
                 }.fixedSize()
             }
         }.padding(24).frame(width: 430)
@@ -339,7 +336,7 @@ private struct SecurityKeyUnlinkView: View {
             HStack {
                 Spacer(); Button("取消", action: dismiss).keyboardShortcut(.cancelAction).disabled(model.busy)
                 Button("更改认证并解除 \(selected.count) 项关联") {
-                    Task { guard app.allowSensitivePreviewAction(), ownsPresentation() else { return }; if await model.unlinkKey(keyID, hostIDs: selected) { _ = await app.reload(); if ownsPresentation() { dismiss() } } }
+                    Task { guard ownsPresentation() else { return }; if await model.unlinkKey(keyID, hostIDs: selected) { _ = await app.reload(); if ownsPresentation() { dismiss() } } }
                 }.disabled(model.busy || selected.isEmpty || !acknowledged)
             }
         }.padding(24).frame(width: 540)
@@ -379,7 +376,7 @@ private struct SecurityRecoveryView: View {
             HStack {
                 NativeButton(title: "取消", id: "recovery.cancel") { dismiss() }.fixedSize()
                 NativeButton(title: "仅丢弃恢复记录，不删除任何文件/Keychain", id: "recovery.discard", enabled: !model.busy && review.canDiscard) {
-                    Task { guard !AppModel.engineeringPreviewBuild else { model.issue = AppModel.engineeringPreviewUnavailableIssue; return }; if await model.discardPrepared(review) { dismiss() } }
+                    Task { if await model.discardPrepared(review) { dismiss() } }
                 }.fixedSize()
             }
         }.padding(24).frame(width: 620)
@@ -474,7 +471,7 @@ struct KeyCreationEditor: View {
                 if generating { NativeSecureField(id: "key.confirm", placeholder: "再次输入口令", text: $confirm).frame(height: 26).disabled(working) }
                 Toggle("记住口令", isOn: $remember).toggleStyle(.checkbox).disabled(working).accessibilityIdentifier("key.remember")
             }
-        }.disabled(AppModel.engineeringPreviewBuild)
+        }
     }
     private var editorActions: some View {
         HStack {
@@ -495,7 +492,6 @@ struct KeyCreationEditor: View {
         }
     }
     private func submit() {
-        guard !AppModel.engineeringPreviewBuild else { model.issue = AppModel.engineeringPreviewUnavailableIssue; return }
         guard ownsPresentation(), !working else { return }
         let alreadyCreated = editor.created != nil
         guard alreadyCreated || !encrypted || (!passphrase.isEmpty && (!generating || passphrase == confirm)) else {

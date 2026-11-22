@@ -27,7 +27,6 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT = "OpenLXSSH"
 BUNDLE_ID = "org.openlxssh.OpenLXSSH"
-HELPER = "Contents/Helpers/openlxssh-askpass"
 MIN_OS = (26, 0, 0)
 MACH_MAGICS = {bytes.fromhex(value) for value in (
     "feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca",
@@ -185,16 +184,11 @@ def preflight_build_paths(root):
         no_symlink_ancestors(path, root)
         require(path.is_file() and path.stat().st_nlink == 1, "build-script-input",
                 "An existing build/plugin-verification script is missing, linked or not regular.")
-    write_roots = (root / "DerivedData/Release", root / "DerivedData/Askpass-Release",
-                   root / "DerivedData/SourcePackages")
+    write_roots = (root / "DerivedData/Release", root / "DerivedData/SourcePackages")
     fixed_paths = (
         "DerivedData/Release/Build/Products/Release/OpenLXSSH.app/Contents/MacOS/OpenLXSSH",
-        "DerivedData/Release/Build/Products/Release/OpenLXSSH.app/Contents/Helpers/openlxssh-askpass",
         "DerivedData/Release/Build/Products/Release/OpenLXSSH.app/Contents/Resources",
         "DerivedData/Release/Build/Intermediates.noindex/BuildToolPluginIntermediates",
-        "DerivedData/Askpass-Release/arm64-apple-macosx/release/openlxssh-askpass",
-        "DerivedData/Askpass-Release/checkouts", "DerivedData/Askpass-Release/plugins",
-        "DerivedData/Askpass-Release/plugins/outputs", "DerivedData/Askpass-Release/plugins/cache",
         "DerivedData/SourcePackages/checkouts", "DerivedData/SourcePackages/repositories",
         "DerivedData/SourcePackages/artifacts",
         "OpenLXSSH.xcodeproj/project.pbxproj",
@@ -210,8 +204,7 @@ def preflight_build_paths(root):
         for notice in notices.iterdir():
             no_symlink_ancestors(notice, root)
             no_symlink_ancestors(root / "DerivedData/Release/Build/Products/Release/OpenLXSSH.app/Contents/Resources" / notice.name, root)
-    checkouts = (root / "DerivedData/SourcePackages/checkouts", root / "DerivedData/Askpass-Release/checkouts")
-    alias = root / "DerivedData/Askpass-Release/release"
+    checkouts = (root / "DerivedData/SourcePackages/checkouts",)
     for build_root in write_roots:
         no_symlink_ancestors(build_root, root)
         if not build_root.exists():
@@ -227,13 +220,6 @@ def preflight_build_paths(root):
                         resolved = path.resolve(strict=True)
                     except (OSError, RuntimeError):
                         raise PackagingError("symlink-parent", "Build input/output has a dangling or cyclic symlink.") from None
-                    # SwiftPM's sole normal output alias is allowed only at its exact
-                    # location and only to the actual, independently scanned build dir.
-                    if path == alias:
-                        require(target == "arm64-apple-macosx/release" and resolved == alias.parent / target
-                                and resolved.is_dir(), "symlink-parent", "SwiftPM release alias does not target its known internal output directory.")
-                        no_symlink_ancestors(resolved, root)
-                        continue
                     # Upstream clean checkouts contain legitimate relative source
                     # links. They must stay inside their own checkout, never a sibling
                     # checkout, build/plugin output or an external directory.
@@ -290,7 +276,7 @@ def inspect_bundle(app):
     """Scan before copying and again after signing. Do not silently strip bad inputs."""
     info = read_bundle_info(app)
     require({item.name for item in app.iterdir()} == {"Contents"}, "bundle-layout", "Unexpected files at the App root.")
-    allowed = {"Info.plist", "PkgInfo", "MacOS", "Helpers", "Frameworks", "Resources", "_CodeSignature"}
+    allowed = {"Info.plist", "PkgInfo", "MacOS", "Frameworks", "Resources", "_CodeSignature"}
     require(all(item.name in allowed for item in (app / "Contents").iterdir()),
             "bundle-layout", "Unsupported Contents layout; add explicit code-path support rather than hiding it with deep signing.")
     require(not any((app / "Contents" / name).is_symlink() for name in allowed),
@@ -298,10 +284,6 @@ def inspect_bundle(app):
     require((app / "Contents/MacOS").is_dir() and
             {item.name for item in (app / "Contents/MacOS").iterdir()} == {PRODUCT},
             "bundle-layout", "Contents/MacOS must contain only the shipping executable.")
-    require((app / HELPER).is_file() and not (app / HELPER).is_symlink(),
-            "missing-helper", "Required Contents/Helpers/openlxssh-askpass is not integrated. No substitute helper will be manufactured.")
-    require({item.name for item in (app / "Contents/Helpers").iterdir()} == {"openlxssh-askpass"},
-            "bundle-layout", "Unexpected helper or fixture in Contents/Helpers.")
     root = app.resolve()
     code = []
     for parent, dirs, files in os.walk(app, followlinks=False):
@@ -335,8 +317,8 @@ def inspect_bundle(app):
             require(rel.parts[:2] != ("Contents", "Frameworks") or path.suffix != ".plist"
                     or name == "Info.plist", "bundle-layout", "Unexpected framework configuration file.")
             if is_macho(path):
-                known = rel.as_posix() in {"Contents/MacOS/OpenLXSSH", HELPER} or rel.parts[:2] == ("Contents", "Frameworks")
-                require(known, "unknown-code-path", "Executable code outside MacOS/Helpers/Frameworks is not supported.")
+                known = rel.as_posix() == "Contents/MacOS/OpenLXSSH" or rel.parts[:2] == ("Contents", "Frameworks")
+                require(known, "unknown-code-path", "Executable code outside MacOS/Frameworks is not supported.")
                 code.append(path.resolve())
             else:
                 require(not metadata.st_mode & 0o111, "unexpected-executable", "App contains a non-Mach-O executable or script.")
@@ -347,9 +329,9 @@ def inspect_bundle(app):
                         require(re.search(rb"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|openssh-key-v1\x00", sample) is None,
                                 "secret-content", "App resource contains private-key material.")
                         previous = sample[-128:]
-    required = {app / "Contents/MacOS/OpenLXSSH", app / HELPER}
+    required = {app / "Contents/MacOS/OpenLXSSH"}
     require(all(item.resolve() in code and item.stat().st_mode & 0o111 for item in required),
-            "bundle-layout", "The App and askpass helper must both be executable Mach-O files.")
+            "bundle-layout", "The App binary must be an executable Mach-O file.")
     return info, sorted(set(code))
 
 
@@ -454,7 +436,7 @@ def parse_macho(path, architectures, load_commands):
             raise PackagingError("minimum-os", "Legacy/non-macOS deployment metadata is not supported for this macOS 26 product.")
     require(len(versions) == 1 and version_tuple(versions[0][0]) == MIN_OS,
             "minimum-os", "Every embedded Mach-O must have minimum macOS 26.0.")
-    entry = path.name in {PRODUCT, "openlxssh-askpass"} and path.parent.name in {"MacOS", "Helpers"}
+    entry = path.name == PRODUCT and path.parent.name == "MacOS"
     header = inspect_macho_header(path, 2 if entry else 6)
     return MachInfo(path.resolve(), tuple(dependencies), tuple(rpaths), *versions[0],
                     "MH_EXECUTE" if header.filetype == 2 else "MH_DYLIB", header.entry_point)
@@ -481,7 +463,7 @@ def verify_dependency_graph(app, infos):
     """Resolve each executable's actual loader/runpath closure, including inherited rpaths."""
     app = app.resolve()
     mapping = {item.path: item for item in infos}
-    roots = ((app / "Contents/MacOS/OpenLXSSH").resolve(), (app / HELPER).resolve())
+    roots = ((app / "Contents/MacOS/OpenLXSSH").resolve(),)
     visited, reached, edges = set(), set(), set()
 
     def visit(path, executable, inherited):
@@ -639,8 +621,6 @@ def apply_and_verify_signatures(app, code, runner, mode, identity=None, allow_ti
                     "--timestamp" if mode == "developer-id" else "--timestamp=none"]
             if target == app:
                 args += ["--identifier", BUNDLE_ID]
-            elif target == app / HELPER:
-                args += ["--identifier", "org.openlxssh.askpass"]
             runner.checked(args + [target], timeout=120)
     strict = runner.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=2", app], timeout=120)
     if mode != "unsigned":
@@ -729,8 +709,6 @@ def runtime_code_sources(app, code):
     owners = {
         "Contents/MacOS/OpenLXSSH": {"owner": "OpenLXSSH", "sourcePath": "Application/OpenLXSSH",
                                     "buildProduct": "OpenLXSSH"},
-        HELPER: {"owner": "OpenLXSSHTransport", "sourcePath": "Packages/OpenLXSSHTransport/Sources/OpenLXSSHAskpassHelper",
-                 "buildProduct": "openlxssh-askpass"},
     }
     root = app.resolve()
     sources = {}

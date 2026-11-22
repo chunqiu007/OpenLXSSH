@@ -54,15 +54,9 @@ struct VaultHostEditor: View {
         _editor = StateObject(wrappedValue: editor)
         _closeReview = StateObject(wrappedValue: VaultHostCloseReview(editor: editor, dismiss: { dismiss() }, complete: completeWindowCloseReview))
     }
-    private var canConnect: Bool { !app.isEngineeringPreview && (!editor.hasTransientInput || transientConnection != nil) }
+    private var canConnect: Bool { !editor.hasTransientInput || transientConnection != nil }
     private func input<Value>(_ key: ReferenceWritableKeyPath<VaultHostEditorModel, Value>) -> Binding<Value> {
         Binding(get: { editor[keyPath: key] }, set: { value in editor.edit { $0[keyPath: key] = value } })
-    }
-    private func sensitiveInput<Value>(_ key: ReferenceWritableKeyPath<VaultHostEditorModel, Value>) -> Binding<Value> {
-        Binding(get: { editor[keyPath: key] }, set: { value in
-            guard app.allowSensitivePreviewAction() else { return }
-            editor.edit { $0[keyPath: key] = value }
-        })
     }
     private var draftInput: Binding<VaultHostDraft> { input(\.draft) }
     private var draft: VaultHostDraft {
@@ -128,8 +122,7 @@ struct VaultHostEditor: View {
                                     if let key, let fingerprint = security.fingerprints[key.id] { Text(fingerprint).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(2) }
                                 }
                                 Spacer()
-                                Button("选择或添加…") { guard app.allowSensitivePreviewAction() else { return }; _ = sheets.present(.keys) }
-                                    .disabled(app.isEngineeringPreview)
+                                Button("选择或添加…") { _ = sheets.present(.keys) }
                                     .accessibilityIdentifier("host.key.choose")
                             }
                             fieldError("key")
@@ -138,7 +131,7 @@ struct VaultHostEditor: View {
                                 HStack {
                                     Label("已保存密码", systemImage: "checkmark.shield").font(.caption)
                                     Spacer()
-                                    Button("保存时忘记此关联") { guard app.allowSensitivePreviewAction() else { return }; forgetExisting = true }.font(.caption).disabled(app.isEngineeringPreview)
+                                    Button("保存时忘记此关联") { forgetExisting = true }.font(.caption)
                                 }
                                 Text("不会读取或填入已保存密码；输入新密码时，明确勾选记住才替换保存。").font(.caption).foregroundStyle(.secondary)
                             } else if forgetExisting {
@@ -146,22 +139,18 @@ struct VaultHostEditor: View {
                             }
                             HStack {
                                 Group {
-                                    if showPassword { TextField("本次密码", text: sensitiveInput(\.password)) }
-                                    else { SecureField("本次密码", text: sensitiveInput(\.password)) }
-                                }.textFieldStyle(.roundedBorder).focused($focusedField, equals: "password").accessibilityIdentifier("host.password").disabled(app.isEngineeringPreview)
+                                    if showPassword { TextField("本次密码", text: input(\.password)) }
+                                    else { SecureField("本次密码", text: input(\.password)) }
+                                }.textFieldStyle(.roundedBorder).focused($focusedField, equals: "password").accessibilityIdentifier("host.password")
                                     .onSubmit { Task { _ = await save(connect: false) } }
-                                Button { guard app.allowSensitivePreviewAction() else { return }; showPassword.toggle(); focusedField = "password" } label: { Image(systemName: showPassword ? "eye.slash" : "eye") }
-                                    .buttonStyle(.plain).accessibilityLabel(showPassword ? "隐藏密码" : "临时显示密码").disabled(app.isEngineeringPreview)
+                                Button { showPassword.toggle(); focusedField = "password" } label: { Image(systemName: showPassword ? "eye.slash" : "eye") }
+                                    .buttonStyle(.plain).accessibilityLabel(showPassword ? "隐藏密码" : "临时显示密码")
                             }
-                            Toggle("记住密码", isOn: sensitiveInput(\.remember)).toggleStyle(.checkbox).accessibilityIdentifier("host.remember").disabled(app.isEngineeringPreview)
+                            Toggle("记住密码", isOn: input(\.remember)).toggleStyle(.checkbox).accessibilityIdentifier("host.remember")
                             if remember && password.isEmpty { Text("记住新密码需要输入非空密码。").font(.caption).foregroundStyle(.red) }
                             Text("仅保存且不记住：关闭后丢弃输入。保存并连接：本次密码只交给新会话，重连不会复用。").font(.caption).foregroundStyle(.secondary)
                         }
-                        if app.isEngineeringPreview {
-                            Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Text("附加验证按服务器实际提示人工回答；不会把本次密码自动填入附加问题。").font(.caption2).foregroundStyle(.secondary)
-                        }
+                        Text("附加验证按服务器实际提示人工回答；不会把本次密码自动填入附加问题。").font(.caption2).foregroundStyle(.secondary)
                     }
                     DisclosureGroup(isExpanded: $advanced) {
                         VStack(alignment: .leading, spacing: 10) {
@@ -196,7 +185,7 @@ struct VaultHostEditor: View {
                     }.padding(16)
                         .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
-                    if !canConnect && !app.isEngineeringPreview { Text("当前编辑器暂时无法发起连接。可先保存配置后从主机列表连接；未记住的本次输入会在关闭后清除。").font(.caption).foregroundStyle(.secondary) }
+                    if !canConnect { Text("当前编辑器暂时无法发起连接。可先保存配置后从主机列表连接；未记住的本次输入会在关闭后清除。").font(.caption).foregroundStyle(.secondary) }
                     IssueView(issue: issue) { issue = nil }
                 }.padding(20).disabled(!editor.canEdit)
             }.frame(minHeight: 0, maxHeight: .infinity)
@@ -262,23 +251,18 @@ struct VaultHostEditor: View {
         }
     }
     private var validForSave: Bool {
-        editor.validForSave && !editor.committedAwaitingRefresh && (!app.isEngineeringPreview ||
-            (!editor.hasTransientInput && !remember && !forgetExisting && draft.configuration.keyRef == nil && draft.configuration.credentialRef == nil && !draft.configuration.savePasswordAuthorized))
+        editor.validForSave && !editor.committedAwaitingRefresh
     }
     private func requestClose() {
         guard sheets.item == nil else { return }
         closeReview.begin()
     }
     private func closePrompt(_ prompt: VaultHostCloseReview.Prompt) -> some View {
-        VaultHostClosePrompt(prompt: prompt, editor: editor, review: closeReview, security: app.security, vault: vault,
-                             preview: app.isEngineeringPreview)
+        VaultHostClosePrompt(prompt: prompt, editor: editor, review: closeReview, security: app.security, vault: vault)
     }
     private func clearPassword() { editor.clearInput() }
     @MainActor private func save(connect: Bool) async -> Bool {
         guard editor.canEdit, !connect || canConnect else { return false }
-        if app.isEngineeringPreview && (connect || editor.hasTransientInput || remember || forgetExisting || draft.configuration.keyRef != nil || draft.configuration.credentialRef != nil || draft.configuration.savePasswordAuthorized) {
-            issue = AppModel.engineeringPreviewUnavailableIssue; return false
-        }
         guard validForSave else {
             showsValidationErrors = true
             focusedField = ["address", "name", "port", "username", "key", "interval", "count"].first { draft.fieldErrors[$0] != nil }
@@ -351,10 +335,6 @@ private struct VaultHostClosePrompt: View {
     @ObservedObject var review: VaultHostCloseReview
     let security: SecurityCoordinator
     let vault: VaultDesktopModel
-    let preview: Bool
-    private var allowsSave: Bool {
-        !preview || (!editor.hasTransientInput && !editor.remember && !editor.forgetExisting && editor.draft.configuration.keyRef == nil && editor.draft.configuration.credentialRef == nil && !editor.draft.configuration.savePasswordAuthorized)
-    }
     private var title: String {
         if prompt.kind == .writing { return "正在保存主机" }
         return editor.committedAwaitingRefresh ? "主机已保存，待刷新" : "保存对主机的更改？"
@@ -378,10 +358,9 @@ private struct VaultHostClosePrompt: View {
                     Spacer()
                     Button(editor.committedAwaitingRefresh ? "刷新后继续关闭" : "保存") {
                         Task {
-                            guard allowsSave else { editor.issue = AppModel.engineeringPreviewUnavailableIssue; return }
                             _ = await review.save(prompt.id, security: security, vault: vault)
                         }
-                    }.disabled(!allowsSave || editor.writing || review.saving || (!editor.committedAwaitingRefresh && !editor.validForSave))
+                    }.disabled(editor.writing || review.saving || (!editor.committedAwaitingRefresh && !editor.validForSave))
                         .accessibilityIdentifier("host.close.save")
                 }
             }
@@ -443,10 +422,9 @@ struct VaultKeyPicker: View {
             HStack { Text("选择 SSH 密钥").font(.title3).bold(); Spacer(); Button("关闭", action: dismiss).keyboardShortcut(.cancelAction) }
             NativeField(placeholder: "搜索标签、类型或指纹", id: "vault.key.search", text: $search).frame(height: 28)
             HStack {
-                Button("生成 Ed25519…") { guard app.allowSensitivePreviewAction() else { return }; if active && ownsPresentation() { model.clearCreationResult(); _ = creations.present(.generate) } }.disabled(app.isEngineeringPreview)
-                Button("导入…") { chooseImport() }.disabled(app.isEngineeringPreview)
+                Button("生成 Ed25519…") { if active && ownsPresentation() { model.clearCreationResult(); _ = creations.present(.generate) } }
+                Button("导入…") { chooseImport() }
             }
-            if app.isEngineeringPreview { Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.caption).foregroundStyle(.secondary) }
             ScrollView {
                 VStack(spacing: 8) {
                     ForEach(model.filteredKeys(search: search)) { key in
@@ -484,7 +462,6 @@ struct VaultKeyPicker: View {
         }
     }
     private func chooseImport() {
-        guard app.allowSensitivePreviewAction() else { return }
         let ticket = creations.capture()
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.title = "导入标准 OpenSSH 私钥"

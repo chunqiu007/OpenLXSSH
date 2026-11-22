@@ -1,149 +1,19 @@
 import AppKit
 import SwiftUI
 import OpenLXSSHTransport
-#if HOST_PROBE
-import OpenLXSSHFiles
-#endif
 
 @main enum OpenLXSSHEntry {
     @MainActor static func main() {
-        #if PREVIEW_ISOLATED
-        let previewRoot: EngineeringPreviewRoot
-        do {
-            guard let options = try EngineeringPreviewArguments.parse(Array(CommandLine.arguments.dropFirst()), mode: .isolatedPreview),
-                  Bundle.main.bundleIdentifier == EngineeringPreviewArguments.bundleID else { throw EngineeringPreviewFailure.arguments }
-            try EngineeringPreviewContract.load(options)
-            previewRoot = try EngineeringPreviewRoot.createFresh(runID: options.runID)
-        } catch {
-            FileHandle.standardError.write(Data("OpenLXSSH: explicit isolated Engineering-R2 contract required; launch refused.\n".utf8))
-            exit(64)
-        }
-        #elseif LOCAL_CANDIDATE
-        let localCandidate: LocalCandidateBootstrap
-        do { localCandidate = try LocalCandidateBootstrap.load(arguments: Array(CommandLine.arguments.dropFirst())) }
-        catch {
-            FileHandle.standardError.write(Data("OpenLXSSH: invalid local candidate identity or prepared data root; launch refused.\n".utf8))
-            exit(64)
-        }
-        #else
-        do {
-            guard !CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--local-candidate") }) else { throw EngineeringPreviewFailure.arguments }
-            #if HOST_PROBE
-            _ = try EngineeringPreviewArguments.parse(Array(CommandLine.arguments.dropFirst()), mode: .hostProbe)
-            #else
-            _ = try EngineeringPreviewArguments.parse(Array(CommandLine.arguments.dropFirst()), mode: .shipping)
-            #endif
-        } catch {
-            FileHandle.standardError.write(Data("OpenLXSSH: isolated preview flags refused.\n".utf8)); exit(64)
-        }
-        do {
-            let arguments = Array(CommandLine.arguments.dropFirst())
-            #if HOST_PROBE
-            let concurrent = try AppConcurrentArguments.parse(arguments, hostProbe: true)
-            #else
-            let concurrent = try AppConcurrentArguments.parse(arguments, hostProbe: false)
-            #endif
-            if concurrent.action == .help { print(AppConcurrentArguments.help); return }
-            if concurrent.action == .validate { print("Concurrent keyKI syntax only; no I/O."); return }
-            #if HOST_PROBE
-            let trust = try AppTrustArguments.parse(arguments, hostProbe: true)
-            #else
-            let trust = try AppTrustArguments.parse(arguments, hostProbe: false)
-            #endif
-            if trust.action == .help { print(AppTrustArguments.help); return }
-            if trust.action == .validate { print("Trust fixture syntax only; no I/O."); return }
-            #if HOST_PROBE
-            let cancel = try AppFilesCancelArguments.parse(arguments, hostProbe: true)
-            #else
-            let cancel = try AppFilesCancelArguments.parse(arguments, hostProbe: false)
-            #endif
-            if cancel.action == .help { print(AppFilesCancelArguments.help); return }
-            if cancel.action == .validate { print("Files cancel retry syntax only; no I/O."); return }
-            #if HOST_PROBE
-            let conflict = try AppFilesConflictArguments.parse(arguments, hostProbe: true)
-            #else
-            let conflict = try AppFilesConflictArguments.parse(arguments, hostProbe: false)
-            #endif
-            if conflict.action == .help { print(AppFilesConflictArguments.help); return }
-            if conflict.action == .validate { print("Files conflict syntax only; no file/network I/O."); return }
-            #if HOST_PROBE
-            let files = try AppFilesManifestArguments.parse(arguments, hostProbe: true)
-            #else
-            let files = try AppFilesManifestArguments.parse(arguments, hostProbe: false)
-            #endif
-            if files.action == .help { print(AppFilesManifestArguments.help); return }
-            if files.action == .validate { print("Files manifest fixture syntax only; no file/network I/O."); return }
-            #if HOST_PROBE
-            let mfa = try AppMFAArguments.parse(arguments, hostProbe: true)
-            #else
-            let mfa = try AppMFAArguments.parse(arguments, hostProbe: false)
-            #endif
-            if mfa.action == .help { print(AppMFAArguments.help); return }
-            if mfa.action == .validate { print("Native MFA fixture syntax only; no file/network I/O."); return }
-            #if HOST_PROBE
-            let password = try AppNativePasswordArguments.parse(arguments, hostProbe: true)
-            #else
-            let password = try AppNativePasswordArguments.parse(arguments, hostProbe: false)
-            #endif
-            if password.action == .help { print(AppNativePasswordArguments.help); return }
-            if password.action == .validate { print("Native password fixture syntax only; no file/network I/O."); return }
-            #if HOST_PROBE
-            let native = try AppNativeFiniteArguments.parse(arguments, hostProbe: true)
-            #else
-            let native = try AppNativeFiniteArguments.parse(arguments, hostProbe: false)
-            #endif
-            if native.action == .help { print(AppNativeFiniteArguments.help); return }
-            if native.action == .validate { print("Native App fixture syntax only; no file/network I/O."); return }
-            if concurrent.action == .none && trust.action == .none && cancel.action == .none && conflict.action == .none && files.action == .none && mfa.action == .none && password.action == .none && native.action == .none {
-                #if HOST_PROBE
-                let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: true)
-                #else
-                let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: false)
-                #endif
-                if real.action == .help { print(AppRealIntegrationArguments.help); return }
-                if real.action == .validate { print("Real fixture syntax only; no file/network I/O."); return }
-            }
-        } catch {
-            FileHandle.standardError.write(Data("OpenLXSSH: real fixture flags refused.\n".utf8)); exit(64)
-        }
-        #endif
         let application = NSApplication.shared
         application.setActivationPolicy(.regular)
-        let delegate: AppDelegate
-        #if PREVIEW_ISOLATED
-        delegate = AppDelegate(previewRoot: previewRoot)
-        #elseif LOCAL_CANDIDATE
-        delegate = AppDelegate(localCandidate: localCandidate)
-        #else
-        do { delegate = try AppDelegate(arguments: Array(CommandLine.arguments.dropFirst())) }
-        catch {
-            FileHandle.standardError.write(Data("OpenLXSSH: invalid isolated test arguments.\n".utf8))
-            exit(64)
-        }
-        #endif
+        let delegate = AppDelegate()
         application.delegate = delegate
         withExtendedLifetime(delegate) { application.run() }
     }
 }
 
-#if PREVIEW_ISOLATED
-private struct EngineeringPreviewBanner: View {
-    @ObservedObject var model: AppModel
-    var body: some View {
-        Text(verbatim: model.engineeringPreviewDescription)
-            .font(.caption.monospaced()).textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            .background(Color.orange.opacity(0.15))
-            .accessibilityIdentifier("engineeringPreview.identity")
-    }
-}
-#endif
-
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     let model: AppModel
-    #if LOCAL_CANDIDATE
-    private let localCandidate: LocalCandidateBootstrap
-    #endif
     private(set) var mainWindow: NSWindow?
     private var terminating = false
     private var windowClosing = false
@@ -157,143 +27,27 @@ private struct EngineeringPreviewBanner: View {
     private var transferClosePrompt: NSPanel?
     private var transferCloseReply: CheckedContinuation<Bool, Never>?
     private var retainedCleanupReply: CheckedContinuation<Void, Never>?
-    #if HOST_PROBE
-    private let smoke: NativeSmoke.Options?
-    private var realIntegration: AppRealIntegration?
-    private var nativeFiniteIntegration: AppNativeFiniteIntegration?
-    var realQuitBeforeStoresClose: ((TransferManagerSnapshot) async throws -> Void)?
-    var realQuitAfterStoresClose: (() async throws -> Void)?
-    var realQuitFailure: (() -> Void)?
-    #endif
 
-    #if PREVIEW_ISOLATED
-    init(previewRoot: EngineeringPreviewRoot) {
-        model = AppModel(engineeringPreview: previewRoot)
-        super.init()
-    }
-    #elseif LOCAL_CANDIDATE
-    init(localCandidate: LocalCandidateBootstrap) {
-        self.localCandidate = localCandidate
-        model = localCandidate.makeModel()
-        super.init()
-    }
-    #else
-    init(arguments: [String]) throws {
-        #if HOST_PROBE
-        let concurrent = try AppConcurrentArguments.parse(arguments, hostProbe: true)
-        let trust = try AppTrustArguments.parse(arguments, hostProbe: true)
-        let cancel = try AppFilesCancelArguments.parse(arguments, hostProbe: true)
-        let conflict = try AppFilesConflictArguments.parse(arguments, hostProbe: true)
-        let files = try AppFilesManifestArguments.parse(arguments, hostProbe: true)
-        let mfa = try AppMFAArguments.parse(arguments, hostProbe: true)
-        let password = try AppNativePasswordArguments.parse(arguments, hostProbe: true)
-        let native = try AppNativeFiniteArguments.parse(arguments, hostProbe: true)
-        if concurrent.action == .live || trust.action == .live || cancel.action == .live || conflict.action == .live || files.action == .live || mfa.action == .live || password.action == .live || native.action == .live {
-            let existing = cancel.action == .live ? cancel.contractPath : (conflict.action == .live ? conflict.contractPath : (files.action == .live ? files.contractPath : (mfa.action == .live ? mfa.contractPath : (password.action == .live ? password.contractPath : native.contractPath))))
-            let selected = concurrent.action == .live ? concurrent.contractPath : (trust.action == .live ? trust.contractPath : existing)
-            guard let path = selected else { throw AppNativeFiniteFailure.arguments }
-            let bootstrap = try AppNativeFiniteIntegration.bootstrap(path: path)
-            model = bootstrap.model
-            smoke = nil
-            super.init()
-            nativeFiniteIntegration = AppNativeFiniteIntegration(delegate: self, bootstrap: bootstrap)
-            return
-        }
-        let real = try AppRealIntegrationArguments.parse(arguments, hostProbe: true)
-        if real.action == .live {
-            guard let path = real.contractPath,
-                  let epoch = Bundle.main.object(forInfoDictionaryKey: "OpenLXSSHRealFixtureBuildEpoch") as? Double else { throw AppRealIntegrationFailure.contract }
-            try AppRealIntegration.validateSignature()
-            let input = try AppRealPublicMaterial.load(path, buildEpoch: epoch)
-            let store = try AppRealOwnedStore(runID: input.contract.runID)
-            let location = AppDataLocation.isolated(store.url), repository = AppRepository(location: location)
-            let credentials = AppRealNoCredentials(namespace: UUID(uuidString: input.contract.runID)!)
-            let security = SecurityCoordinator(repository: repository, location: location, credentials: credentials)
-            let environment = SessionEnvironment(location: location), facts = AppRealFilesFacts()
-            let builder = DirectSessionBuilder(repository: repository, security: security, environment: environment,
-                scanner: AppRealSystemScanner(seconds: real.scanSeconds))
-            let connector = AppRealFilesConnector(LibSSH2FilesConnector(repository: repository, security: security, environment: environment), facts: facts)
-            model = AppModel(repository: repository, security: security, location: location, sessionBuilder: builder, filesConnector: connector)
-            smoke = nil
-            super.init()
-            realIntegration = AppRealIntegration(delegate: self, options: real, input: input, store: store, facts: facts, credentials: credentials)
-            return
-        }
-        let options = try NativeSmoke.Options(arguments)
-        smoke = options
-        let location = options.map { AppDataLocation.isolated($0.directory) } ?? .applicationSupport
-        let repository = AppRepository(location: location)
-        let builder = options.map { _ in ProbeSessionBuilder(repository: repository) }
-        let filesConnector: LocalFilesProbeConnector?
-        if let options {
-            let root = options.directory.appendingPathComponent("LocalFilesFixture", isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            filesConnector = LocalFilesProbeConnector(root: root)
-        } else { filesConnector = nil }
-        let preferenceDefaults: UserDefaults? = options == nil ? .standard : nil
-        model = AppModel(repository: repository, security: SecurityCoordinator(repository: repository, location: location,
-                         credentials: SystemCredentials(testNamespace: options?.namespace)), location: location, sessionBuilder: builder, filesConnector: filesConnector,
-                         preferencesDefaults: preferenceDefaults)
-        #else
-        _ = try AppConcurrentArguments.parse(arguments, hostProbe: false)
-        _ = try AppTrustArguments.parse(arguments, hostProbe: false)
-        _ = try AppFilesCancelArguments.parse(arguments, hostProbe: false)
-        _ = try AppFilesConflictArguments.parse(arguments, hostProbe: false)
-        _ = try AppFilesManifestArguments.parse(arguments, hostProbe: false)
-        _ = try AppMFAArguments.parse(arguments, hostProbe: false)
-        _ = try AppNativePasswordArguments.parse(arguments, hostProbe: false)
-        _ = try AppNativeFiniteArguments.parse(arguments, hostProbe: false)
-        _ = try AppRealIntegrationArguments.parse(arguments, hostProbe: false)
-        guard !arguments.contains(where: { $0.hasPrefix("--self-test") }) else { throw CocoaError(.validationMissingMandatoryProperty) }
+    override init() {
         model = AppModel(repository: AppRepository(), preferencesDefaults: .standard)
-        #endif
         super.init()
     }
-    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         showMainWindow()
-        #if HOST_PROBE
-        if let nativeFiniteIntegration { nativeFiniteIntegration.start() }
-        else if let realIntegration { Task { await realIntegration.run() } }
-        else if let smoke {
-            Task { await NativeSmoke(delegate: self, options: smoke).run() }
-        }
-        #endif
     }
-
-    #if HOST_PROBE
-    func applicationWillTerminate(_ notification: Notification) {
-        nativeFiniteIntegration?.applicationWillTerminate()
-    }
-    #endif
 
     @objc func showMainWindow() {
         guard !terminating, !model.lifecycle.terminating else { return }
         if let mainWindow { mainWindow.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        #if PREVIEW_ISOLATED
-        window.title = "OpenLXSSH · Engineering-R2 · 隔离离线"
-        window.isRestorable = false
-        #elseif LOCAL_CANDIDATE
-        window.title = "OpenLXSSH · 本地体验候选"
-        window.isRestorable = false
-        #else
         window.title = "OpenLXSSH"
-        #endif
         window.identifier = NSUserInterfaceItemIdentifier("OpenLXSSH.main")
         WorkspaceWindowChrome.configure(window)
         window.isReleasedWhenClosed = false
         window.minSize = MainWindowFramePreferences.minimumSize
-        #if PREVIEW_ISOLATED
-        window.contentView = NSHostingView(rootView: VStack(spacing: 0) {
-            EngineeringPreviewBanner(model: model)
-            MainView(model: model)
-        })
-        #else
         window.contentView = NSHostingView(rootView: MainView(model: model))
-        #endif
         window.delegate = self
         window.center()
         if let name = model.mainWindowFrameAutosaveName {
@@ -392,50 +146,10 @@ private struct EngineeringPreviewBanner: View {
             }
             if closeIntent == .quit {
                 approveTermination()
-                #if HOST_PROBE
-                if let smoke, smoke.phase == "sessions-exit" {
-                    let result = ["cleanupCompleted": model.sessions.tabs.isEmpty, "selectedTabCleared": model.sessions.selectedTabID == nil]
-                    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) { try? data.write(to: smoke.directory.appendingPathComponent("termination-cleanup.json")) }
-                }
-                if let smoke, smoke.phase == "files-transfer-exit" {
-                    let final = await managerBeforeClose.snapshot()
-                    let result = ["managerClosed": final.isClosed, "allWorkDrained": !final.hasActiveWork,
-                                  "cancelledTransfer": final.jobs.contains { $0.state == .cancelled },
-                                  "sshTabsCleared": model.sessions.tabs.isEmpty,
-                                  "noRetainedTemps": final.jobs.allSatisfy { $0.retainedTemporaryPaths.isEmpty }]
-                    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) { try? data.write(to: smoke.directory.appendingPathComponent("transfer-exit-cleanup.json")) }
-                }
-                #endif
-                #if HOST_PROBE
-                if let realQuitBeforeStoresClose {
-                    do { try await realQuitBeforeStoresClose(finalTransfers) }
-                    catch {
-                        realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
-                    }
-                }
-                #endif
-                #if HOST_PROBE
-                await nativeFiniteIntegration?.beforeStoresClose(finalTransfers)
-                #endif
                 do { try await model.security.close(); try await model.repository.close() }
                 catch {
-                    #if HOST_PROBE
-                    nativeFiniteIntegration?.storesCloseFailed()
-                    if realQuitBeforeStoresClose != nil {
-                        realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
-                    }
-                    #endif
                     /* Do not log database or credential error descriptions. */
                 }
-                #if HOST_PROBE
-                await nativeFiniteIntegration?.afterStoresClose()
-                if let realQuitAfterStoresClose {
-                    do { try await realQuitAfterStoresClose() }
-                    catch {
-                        realQuitFailure?(); terminationReplyPending = false; replyToTermination(false); return
-                    }
-                }
-                #endif
                 terminationReplyPending = false; replyToTermination(true)
             } else {
                 windowCloseApproved = true; mainWindow?.performClose(nil)
@@ -635,13 +349,7 @@ private struct EngineeringPreviewBanner: View {
         showPublicHelp(title: "快捷键与鼠标", text: DesktopHelp.shortcuts)
     }
     @objc private func showLocalDataHelp() {
-        #if PREVIEW_ISOLATED
-        showPublicHelp(title: "Engineering-R2 · 隔离数据", text: model.engineeringPreviewDescription)
-        #elseif LOCAL_CANDIDATE
-        showPublicHelp(title: "本地体验候选 · 数据说明", text: DesktopHelp.versionDescription() + "\n\n" + localCandidate.dataDescription)
-        #else
         showPublicHelp(title: "版本与本地数据", text: DesktopHelp.versionDescription() + "\n\n" + DesktopHelp.localDataDescription)
-        #endif
     }
     @objc private func showDiagnostics() {
         guard allowsWorkspaceActions else { return }

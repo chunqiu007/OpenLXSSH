@@ -1195,11 +1195,11 @@ private actor AppModelFilesConnector: FilesConnecting {
     var onTrust: (([SessionTrustPrompt]) -> Void)?
     var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
     init(id: UUID) { self.id = id }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
+    func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
         let value = SessionToken(sessionID: id, generation: 1); token = value; state = .connectionPending; onState?(value, state); return value
     }
-    func accept(_ prompt: SessionTrustPrompt) async throws {}
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {}
+    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {}
+    func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws {}
     func cancel() { state = .disconnected(nil); onState?(token, state) }
     func closeTab() { state = .closed; terminal.releaseResources(); onState?(token, state) }
 }
@@ -1368,17 +1368,16 @@ private actor ControlledReloadRepository: AppRepositoryProtocol {
     var token: SessionToken?
     private(set) var state: SSHSessionState = .idle
     var canReconnect: Bool { false }
-    var usesTypedAuthentication: Bool { true }
     var onState: ((SessionToken?, SSHSessionState) -> Void)?
     var onTrust: (([SessionTrustPrompt]) -> Void)?
     var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
     init(id: UUID) { self.id = id }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
+    func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
         XCTFail("Prepared metadata regression must not start a connection")
         throw TransportError.invalidConfiguration
     }
-    func accept(_ prompt: SessionTrustPrompt) async throws {}
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {}
+    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {}
+    func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws {}
     func cancel() { state = .disconnected(nil) }
     func closeTab() { state = .closed; terminal.releaseResources() }
 }

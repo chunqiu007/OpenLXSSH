@@ -1,6 +1,0 @@
-# Dedicated to these disposable containers. Never install this on the host.
-# Password verification and interactive stages both use the same mature module;
-# pam_fixture checks OpenSSH's prior-auth metadata, not prompt text heuristics.
-auth requisite /lib/security/pam_python.so /opt/openlxssh-fixture/pam_fixture.py
-account required pam_permit.so
-session required pam_permit.so

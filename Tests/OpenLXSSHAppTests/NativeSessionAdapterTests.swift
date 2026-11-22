@@ -1264,10 +1264,6 @@ private final class RetirementTestDrain: SessionDrainObserving, @unchecked Senda
     private(set) var maximumConcurrentResizes = 0
     private var resizeReplies: [CheckedContinuation<Void, any Error>] = []
     private var writeReplies: [CheckedContinuation<Void, any Error>] = []
-    #if HOST_PROBE
-    var rendererGeometryDidResize: ((NativeShellSize) -> Void)?
-    var rendererGeometryWillWrite: ((Data) -> Void)?
-    #endif
     func receive(maxBytes: Int, wait: TimeInterval, token: CancellationToken) async throws -> NativeShellReceive {
         try token.check(); receiveLimits.append(maxBytes); maximumConcurrentReceives = max(maximumConcurrentReceives, receiveReply == nil ? 1 : 2)
         return try await withCheckedThrowingContinuation { reply in
@@ -1276,18 +1272,12 @@ private final class RetirementTestDrain: SessionDrainObserving, @unchecked Senda
     }
     func write(_ bytes: Data, token: CancellationToken) async throws {
         try token.check()
-        #if HOST_PROBE
-        rendererGeometryWillWrite?(bytes)
-        #endif
         try await withCheckedThrowingContinuation { (reply: CheckedContinuation<Void, any Error>) in writeReplies.append(reply) }
     }
     func resize(_ size: NativeShellSize, token: CancellationToken) async throws {
         try token.check(); sizes.append(size); maximumConcurrentResizes = max(maximumConcurrentResizes, resizeReplies.count + 1)
         try await withCheckedThrowingContinuation { (reply: CheckedContinuation<Void, any Error>) in
             resizeReplies.append(reply)
-            #if HOST_PROBE
-            rendererGeometryDidResize?(size)
-            #endif
         }
     }
     func releaseReceive(_ value: NativeShellReceive) { let reply = receiveReply; receiveReply = nil; reply?.resume(returning: value) }
@@ -2305,110 +2295,7 @@ private struct ColdUIFDReceipt: Codable {
     }
 }
 
-#if HOST_PROBE
-// The process-wide SwiftTerm observer owns only this synchronized scalar counter.
-// It remains installed through the original weak-release assertions.
-private final class VisibleTerminalACKFrameCount: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    var value: Int { lock.withLock { count } }
-    func presented() { lock.withLock { count += 1 } }
-}
-private struct VisibleTerminalACKFDPoint: Codable {
-    let stage: String
-    let values: ColdUIFDValues
-}
-#endif
-
 extension NativeSessionAdapterTests {
-    #if HOST_PROBE
-    func testColdVisibleTrustSheetFDIdentityTimeline() async throws {
-        let timeline = ColdUIFDTimeline()
-        var returned = false
-        defer { timeline.emit(exerciseReturned: returned) }
-        try await weakVisibleTrustReproduction(requiresTrust: true) { stage in
-            if stage == .checkDeadline { try timeline.checkpoint() }
-            else { try timeline.record(stage) }
-        }
-        try timeline.checkpoint()
-        returned = true
-    }
-    func testVisibleTerminalSendACKFrameThenWeakRelease() async throws {
-        let frames = VisibleTerminalACKFrameCount(), sampler = ColdUIFDTimeline()
-        guard NativeTerminalView.onFramePresented == nil else {
-            XCTFail("The single-terminal frame observer is already owned; do not replace another observer")
-            return
-        }
-        NativeTerminalView.onFramePresented = { [frames] in frames.presented() }
-        defer { NativeTerminalView.onFramePresented = nil } // Only this observer, after weak assertions or failure.
-        var sampledStages: [String] = []
-        func record(_ stage: String) throws {
-            try sampler.checkpoint()
-            let values = sampler.sampleValues()
-            sampledStages.append(stage)
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(VisibleTerminalACKFDPoint(stage: stage, values: values))
-            print("visible-terminal-ack-fd-json " + String(decoding: data, as: UTF8.self))
-            print("visible-terminal-ack-fd-coverage stage=\(stage) fullCoverage=\(values.limitComplete) observedComplete=\(values.unknown.isEmpty)")
-            XCTAssertTrue(values.unknown.isEmpty, "Observed scalar FD range contains unknown or changing slots; full-table coverage is reported separately")
-            try sampler.checkpoint()
-        }
-        try await weakVisibleTrustReproduction(terminalExercise: { driver, transport in
-            let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-            let payload = Data("OPENLXSSH-R9-INPUT-\(nonce)\n".utf8)
-            let ack = "OPENLXSSH-R9-ACK-\(nonce)"
-            let ackBytes = Data(("\r\n" + ack + "\r\n").utf8)
-            var received: [Data] = []
-            var phase = "before-first-send", framesBeforeACK: Int?
-            @MainActor func frameDiagnostic(_ stage: String) {
-                let terminal = driver.terminal, diagnostics = terminal.diagnostics, window = terminal.window
-                print("visible-terminal-ack-frame-diag stage=\(stage) textPresent=\(terminal.text.contains(ack)) receiveCount=\(transport.receiveLimits.count) presented=\(frames.value) bytesFed=\(diagnostics.bytesFed) batches=\(diagnostics.batches) ticks=\(diagnostics.ticks) frames=\(diagnostics.frames) renders=\(diagnostics.renders) pauses=\(diagnostics.pauses)"
-                    + " needsDisplay=\(terminal.needsDisplay) hidden=\(terminal.isHiddenOrHasHiddenAncestor) hasWindow=\(window != nil) windowVisible=\(window?.isVisible == true) windowKey=\(window?.isKeyWindow == true) windowMiniaturized=\(window?.isMiniaturized == true) occlusionVisible=\(window?.occlusionState.contains(.visible) == true)"
-                    + " hasApp=\(NSApp != nil) appActive=\(NSApp?.isActive == true) appHidden=\(NSApp?.isHidden == true) metal=\(terminal.isUsingMetalRenderer) renderLoop=\(terminal.isUsingRenderLoop) suspendsRenderingWhenNotVisible=\(terminal.suspendsRenderingWhenNotVisible)"
-                    + " viewInLiveResize=\(terminal.inLiveResize) windowInLiveResize=\(window?.inLiveResize == true) hasFocus=\(terminal.hasFocus) caretTracksFocus=\(terminal.caretViewTracksFocus) cursorBlinkResetsOnInput=\(terminal.cursorBlinkResetsOnInput)")
-            }
-            transport.rendererGeometryWillWrite = { bytes in received.append(bytes) }
-            defer {
-                frameDiagnostic("final")
-                transport.rendererGeometryWillWrite = nil
-                print("visible-terminal-ack-progress phase=\(phase) writes=\(received.count) exactPayload=\(received == [payload]) framesBeforeACK=\(String(describing: framesBeforeACK)) framesNow=\(frames.value)")
-            }
-            XCTAssertTrue(driver.terminal.window?.isVisible == true)
-            XCTAssertTrue(NSApplication.shared.isActive)
-            XCTAssertTrue(driver.terminal.window?.isKeyWindow == true)
-            XCTAssertTrue(driver.terminal.window?.occlusionState.contains(.visible) == true)
-            XCTAssertFalse(driver.terminal.isHiddenOrHasHiddenAncestor)
-            XCTAssertFalse(driver.terminal.text.contains(ack))
-            try record("beforeFirstSend")
-            let bytes = Array(payload)
-            driver.terminal.send(data: bytes[...]) // Real SwiftTerm input sender and application relay, never admitInput.
-            phase = "awaiting-transport-write"
-            try await transport.waitForWrite()
-            XCTAssertEqual(received, [payload], "The virtual transport must receive the original exact input bytes once")
-            guard received == [payload] else { throw AdapterWaitFailure.timeout }
-            transport.releaseWrites()
-            try await self.wait { driver.snapshot.pendingInputBytes == 0 && driver.snapshot.pendingInputItems == 0 }
-            phase = "awaiting-ack-frame"
-            let receivesBeforeACK = transport.receiveLimits.count
-            let beforeACK = frames.value; framesBeforeACK = beforeACK
-            frameDiagnostic("beforeACK")
-            transport.releaseReceive(.bytes(ackBytes)) // Sole application receive consumer feeds and renders these public bytes.
-            try await transport.waitForReceiveCount(receivesBeforeACK + 1)
-            // Feeding/text alone is insufficient. Only SwiftTerm's actual drawn-frame callback advances this counter.
-            try await self.wait { driver.terminal.text.contains(ack) && frames.value > beforeACK }
-            XCTAssertTrue(driver.terminal.text.contains(ack))
-            XCTAssertGreaterThan(frames.value, beforeACK)
-            XCTAssertEqual(received, [payload])
-            try record("afterACKFrame")
-            phase = "ack-frame-observed"
-        }, requiresTrust: true, stage: { stage in
-            if stage == .checkDeadline { try sampler.checkpoint() }
-            else if stage == .closed { try record("closed") }
-            else if stage == .helperTaskReturned { try record("helperReturned") }
-        })
-        XCTAssertEqual(sampledStages, ["beforeFirstSend", "afterACKFrame", "closed", "helperReturned"])
-    }
-    #endif
     func testWeakReleaseVisibleActualWorkspaceWithoutTrustSheetControl() async throws {
         try await weakVisibleTrustReproduction(requiresTrust: false)
     }
@@ -2960,175 +2847,6 @@ extension NativeSessionAdapterTests {
         XCTAssertFalse(window.isVisible); XCTAssertTrue(app.sessions.tabs.isEmpty); XCTAssertEqual(app.workspacePage, .vault)
         withExtendedLifetime((app, hosting, window, repository)) {}
     }
-    #if HOST_PROBE
-    func testFiniteProbeWaitsForActualRenderer113x37AfterLateOwnedLayout() async throws {
-        // R2 explicitly configures only this isolated fixture. The R1 default13/minimum conflict stays recorded.
-        let (app, transport, driver, window, hosting) = try await rendererGeometryFixture(fontSize: 14)
-        XCTAssertEqual(app.settings.fontSize, 14); XCTAssertEqual(driver.terminal.font.pointSize, 14)
-        XCTAssertEqual(AppSettings().fontSize, 13)
-        let terminal = driver.terminal, cell = terminal.caretFrame.size
-        let optimal = terminal.getOptimalFrameSize().size
-        let reservedWidth = optimal.width - cell.width * CGFloat(terminal.columns)
-        let targetTerminal = NSSize(width: reservedWidth + cell.width * 113.5, height: cell.height * 37.5)
-        let targetContent = NSSize(width: hosting.view.frame.width + targetTerminal.width - terminal.frame.width,
-                                   height: hosting.view.frame.height + targetTerminal.height - terminal.frame.height)
-        let targetWindow = window.frameRect(forContentRect: NSRect(origin: .zero, size: targetContent)).size
-        print("renderer-geometry minimum columns=\(terminal.columns) rows=\(terminal.rows) terminalFrame=\(terminal.frame) contentFrame=\(hosting.view.frame) windowFrame=\(window.frame) minSize=\(window.minSize) cell=\(cell) optimal=\(optimal) reservedWidth=\(reservedWidth) target113x37Terminal=\(targetTerminal) targetContent=\(targetContent) targetWindow=\(targetWindow) font=\(terminal.font.fontName)/\(terminal.font.pointSize)")
-        let initialColumns = driver.terminal.columns, initialRows = driver.terminal.rows
-        XCTAssertTrue(initialColumns != 113 || initialRows != 37)
-        let deadline = ContinuousClock.now + .seconds(3)
-        let plan = try AppNativeFiniteTerminalPlan(nonce: String(repeating: "c", count: 32))
-        let command = Data(plan.command.utf8)
-        var layoutRounds = 0, targetRounds = 0, stabilityResets = 0, firstTarget: ContinuousClock.Instant?
-        var disturbed = false, sent = 0, writes = 0
-        var firstSendColumns: Int?, firstSendRows: Int?, lastResizeAtWrite: NativeShellSize?
-        var stableAtSend: Duration?
-        func observeLayout() throws {
-            try Task.checkCancellation()
-            guard .now < deadline else { throw AdapterWaitFailure.timeout }
-            hosting.view.layoutSubtreeIfNeeded(); layoutRounds += 1
-            XCTAssertTrue(driver.terminal.window === window)
-            if driver.terminal.columns == 113 && driver.terminal.rows == 37 &&
-                !driver.snapshot.resizeInFlight && !driver.snapshot.hasLatestResize {
-                if firstTarget == nil { firstTarget = .now; targetRounds = 0 }
-                targetRounds += 1
-            } else {
-                if firstTarget != nil { stabilityResets += 1 }
-                firstTarget = nil; targetRounds = 0
-            }
-        }
-        transport.rendererGeometryDidResize = { size in
-            if size.columns == 113 && size.rows == 37 && !disturbed {
-                disturbed = true
-                let contentSize = hosting.view.frame.size
-                window.setContentSize(NSSize(width: contentSize.width + 48, height: contentSize.height + 32))
-                hosting.view.layoutSubtreeIfNeeded()
-                print("renderer-geometry late-layout columns=\(driver.terminal.columns) rows=\(driver.terminal.rows) frame=\(driver.terminal.frame) windowFrame=\(window.frame)")
-            }
-            transport.releaseResize()
-        }
-        transport.rendererGeometryWillWrite = { bytes in
-            writes += 1
-            XCTAssertEqual(bytes, command)
-            XCTAssertEqual(driver.terminal.columns, 113); XCTAssertEqual(driver.terminal.rows, 37)
-            lastResizeAtWrite = transport.sizes.last
-        }
-        print("renderer-geometry initial columns=\(initialColumns) rows=\(initialRows) frame=\(driver.terminal.frame) windowFrame=\(window.frame) minSize=\(window.minSize)")
-        try await AppNativeFiniteRendererGeometry.prepare(driver, ownedWindow: window, checkpoint: observeLayout) {
-            sent += 1
-            firstSendColumns = driver.terminal.columns; firstSendRows = driver.terminal.rows
-            stableAtSend = firstTarget?.duration(to: .now)
-            XCTAssertTrue(driver.terminal.window === window)
-            XCTAssertFalse(driver.snapshot.resizeInFlight); XCTAssertFalse(driver.snapshot.hasLatestResize)
-            XCTAssertEqual(driver.terminal.columns, 113); XCTAssertEqual(driver.terminal.rows, 37)
-            XCTAssertGreaterThanOrEqual(layoutRounds, 2); XCTAssertGreaterThanOrEqual(targetRounds, 2)
-            XCTAssertGreaterThanOrEqual(stableAtSend ?? .zero, .milliseconds(100))
-            let bytes = Array(command); driver.terminal.send(data: bytes[...])
-        }
-        try await transport.waitForWrite()
-        XCTAssertEqual(sent, 1); XCTAssertEqual(writes, 1); XCTAssertTrue(disturbed)
-        XCTAssertEqual(firstSendColumns, 113); XCTAssertEqual(firstSendRows, 37)
-        XCTAssertEqual(lastResizeAtWrite, try NativeShellSize(columns: 113, rows: 37))
-        XCTAssertEqual(transport.maximumConcurrentResizes, 1)
-        XCTAssertEqual(window.minSize, MainWindowFramePreferences.minimumSize)
-        XCTAssertFalse(window.isVisible); XCTAssertFalse(window.isKeyWindow)
-        print("renderer-geometry final columns=\(driver.terminal.columns) rows=\(driver.terminal.rows) frame=\(driver.terminal.frame) windowFrame=\(window.frame) layoutRounds=\(layoutRounds) stableResets=\(stabilityResets) stableAtSend=\(String(describing: stableAtSend))")
-        transport.releaseWrites()
-        try await wait { driver.snapshot.pendingInputBytes == 0 }
-        withExtendedLifetime((app, hosting, window)) {}
-    }
-    func testFiniteProbeDefault13MinimumRejectsUnreachableGeometryWithoutSending() async throws {
-        let (app, transport, driver, window, hosting) = try await rendererGeometryFixture(fontSize: nil)
-        XCTAssertEqual(app.settings.fontSize, 13); XCTAssertEqual(driver.terminal.font.pointSize, 13)
-        XCTAssertEqual(window.minSize, MainWindowFramePreferences.minimumSize)
-        let originalFrame = window.frame, originalTerminal = driver.terminal.frame
-        XCTAssertEqual(driver.terminal.columns, 114)
-        let deadline = ContinuousClock.now + .seconds(3)
-        var sends = 0, writes = 0
-        transport.rendererGeometryDidResize = { _ in transport.releaseResize() }
-        transport.rendererGeometryWillWrite = { _ in writes += 1 }
-        do {
-            try await AppNativeFiniteRendererGeometry.prepare(driver, ownedWindow: window, checkpoint: {
-                try Task.checkCancellation()
-                guard .now < deadline else { throw AdapterWaitFailure.timeout }
-            }) { sends += 1 }
-            XCTFail("Default13 requires a width below the real MainView/window minimum")
-        } catch let error as AppNativeFiniteFailure {
-            XCTAssertEqual(error, .terminalEvidence)
-        }
-        XCTAssertEqual(sends, 0); XCTAssertEqual(writes, 0)
-        XCTAssertEqual(driver.snapshot.pendingInputBytes, 0); XCTAssertEqual(driver.snapshot.pendingInputItems, 0)
-        XCTAssertEqual(window.frame, originalFrame); XCTAssertEqual(driver.terminal.frame, originalTerminal)
-        XCTAssertEqual(driver.terminal.columns, 114)
-        XCTAssertFalse(window.isVisible); XCTAssertFalse(window.isKeyWindow)
-        print("renderer-geometry unreachable-default13 columns=\(driver.terminal.columns) rows=\(driver.terminal.rows) terminalFrame=\(driver.terminal.frame) windowFrame=\(window.frame) sends=\(sends) writes=\(writes)")
-        withExtendedLifetime((app, hosting, window)) {}
-    }
-    private func rendererGeometryFixture(fontSize: Double?) async throws
-        -> (AppModel, AdapterTransport, NativeSessionDriver, NSWindow, NSHostingController<MainView>) {
-        let root = try AppDataLocation.canonical(FileManager.default.temporaryDirectory)
-            .appendingPathComponent("OpenLXSSH-AppTests-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let location = AppDataLocation.isolated(root), repository = AppRepository(location: location)
-        let credentials = AdapterCredentials(), connector = AdapterConnector(), transport = AdapterTransport()
-        let security = SecurityCoordinator(repository: repository, location: location, credentials: credentials)
-        let builder = NativeSessionBuilder(repository: repository, security: security,
-            environment: SessionEnvironment(location: location), connector: connector)
-        let app = AppModel(repository: repository, security: security, location: location, sessionBuilder: builder,
-                           nativeCandidateBuilder: builder, preferencesDefaults: nil)
-        let hosting = NSHostingController(rootView: MainView(model: app))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.minSize = MainWindowFramePreferences.minimumSize
-        window.contentViewController = hosting
-        addTeardownBlock {
-            await MainActor.run {
-                transport.rendererGeometryDidResize = nil; transport.rendererGeometryWillWrite = nil; transport.cancel()
-            }
-            await connector.cancelAll(); await app.sessions.closeAll(); await app.files.closeForWindow()
-            await MainActor.run { window.contentViewController = nil; window.close() }
-            try await security.close(); try await repository.close()
-            try FileManager.default.removeItem(at: root)
-        }
-        _ = await app.reload()
-        XCTAssertEqual(app.settings.fontSize, 13)
-        if let fontSize {
-            var settings = app.settings; settings.fontSize = fontSize
-            let saved = await app.saveSettings(settings)
-            XCTAssertTrue(saved); XCTAssertEqual(app.settings.fontSize, fontSize)
-            let persisted = try await repository.snapshot(query: HostQuery())
-            XCTAssertEqual(persisted.settings.fontSize, fontSize)
-        }
-        let host = HostConfiguration(name: "renderer geometry logical fixture", address: "never-connected.invalid", username: "fixture")
-        try await repository.apply([.insertHost(host)]); _ = await app.reload()
-        try await wait { app.connectionHosts.contains(where: { $0.id == host.id }) && !app.isLoading }
-        app.requestSession(hostID: host.id, mode: .newSession)
-        let tab = try XCTUnwrap(app.sessions.selectedTab); await tab.preparation?.value
-        let driver = try XCTUnwrap(tab.driver as? NativeSessionDriver)
-        _ = try await connector.request(0); await connector.succeed(0, transport: transport)
-        try await nextState(driver, .connected)
-        try await wait {
-            hosting.view.layoutSubtreeIfNeeded()
-            return driver.terminal.window === window && driver.terminal.isDescendant(of: hosting.view)
-        }
-        try await wait {
-            transport.releaseResize()
-            return !driver.snapshot.resizeInFlight && !driver.snapshot.hasLatestResize
-        }
-        window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: false, animate: false)
-        for _ in 0..<3 {
-            hosting.view.layoutSubtreeIfNeeded(); transport.releaseResize()
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try await wait {
-            transport.releaseResize()
-            return !driver.snapshot.resizeInFlight && !driver.snapshot.hasLatestResize
-        }
-        print("renderer-geometry fixture font=\(app.settings.fontSize) columns=\(driver.terminal.columns) rows=\(driver.terminal.rows) terminalFrame=\(driver.terminal.frame) windowFrame=\(window.frame)")
-        return (app, transport, driver, window, hosting)
-    }
-    #endif
     private func generatedKeyPrimaryExercise(app: AppModel, host: HostConfiguration, repository: AppRepository,
         connector: AdapterConnector, transport: AdapterTransport, hosting: NSHostingController<WeakHostedSessionRoot>,
         window: NSWindow, invokePrimary: Bool) async throws -> KeyPrimaryWeakReceipt {

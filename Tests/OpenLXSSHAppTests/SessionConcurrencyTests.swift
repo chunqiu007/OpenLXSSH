@@ -213,12 +213,16 @@ import OpenLXSSHTransport
         try await cancelledDuringMetadata(.taskOnly)
     }
     private enum Invalidation { case closeTab, newGeneration, taskOnly }
+    private func primaryRequest(token: SessionToken, tabID: UUID) -> SessionPrimaryRequest {
+        SessionPrimaryRequest(token: token, id: UUID(), nativeSessionID: tabID, purpose: .password, key: nil)
+    }
     private func cancelledDuringMetadata(_ invalidation: Invalidation) async throws {
         let (host, repository, credentials, builder, controller) = fixture()
         let tab = try await connected(controller, host: host)
         let token = try XCTUnwrap(tab.driver?.token)
         await repository.pause.arm()
-        let provider = Task { try await controller.readSavedPassword(token, tabID: tab.id, expectedHost: host) }
+        let request = primaryRequest(token: token, tabID: tab.id)
+        let provider = Task { try await controller.readTypedPrimary(request, tabID: tab.id, expectedHost: host) }
         await repository.pause.waitForArrival()
         switch invalidation {
         case .closeTab:
@@ -228,9 +232,11 @@ import OpenLXSSHTransport
         case .taskOnly: provider.cancel()
         }
         await repository.pause.release()
-        let result = try await provider.value
+        do {
+            _ = try await provider.value
+            XCTFail("Invalidated primary read must throw")
+        } catch {}
         let reads = await credentials.readCount
-        XCTAssertNil(result)
         XCTAssertEqual(reads, 0)
         await controller.closeAll()
     }
@@ -240,14 +246,18 @@ import OpenLXSSHTransport
         let tab = try await connected(controller, host: host)
         let token = try XCTUnwrap(tab.driver?.token)
         let entry = R2Pause(); await entry.arm()
+        let request = primaryRequest(token: token, tabID: tab.id)
         let provider = Task {
             await entry.suspendIfArmed()
-            return try await controller.readSavedPassword(token, tabID: tab.id, expectedHost: host)
+            return try await controller.readTypedPrimary(request, tabID: tab.id, expectedHost: host)
         }
         await entry.waitForArrival(); provider.cancel(); await entry.release()
-        let result = try await provider.value
+        do {
+            _ = try await provider.value
+            XCTFail("Cancelled primary read must throw")
+        } catch {}
         let metadataReads = await repository.metadataReads, credentialReads = await credentials.readCount
-        XCTAssertNil(result); XCTAssertEqual(metadataReads, 0); XCTAssertEqual(credentialReads, 0)
+        XCTAssertEqual(metadataReads, 0); XCTAssertEqual(credentialReads, 0)
         await controller.closeAll()
     }
 
@@ -256,15 +266,18 @@ import OpenLXSSHTransport
         let tab = try await connected(controller, host: host)
         let token = try XCTUnwrap(tab.driver?.token)
         await credentials.pause.arm()
-        let provider = Task { try await controller.readSavedPassword(token, tabID: tab.id, expectedHost: host) }
+        let request = primaryRequest(token: token, tabID: tab.id)
+        let provider = Task { try await controller.readTypedPrimary(request, tabID: tab.id, expectedHost: host) }
         await credentials.pause.waitForArrival()
         await repository.pause.arm()
         await credentials.pause.release()
         await repository.pause.waitForArrival()
         provider.cancel()
         await repository.pause.release()
-        let result = try await provider.value
-        XCTAssertNil(result)
+        do {
+            _ = try await provider.value
+            XCTFail("Cancelled primary read during final metadata must throw")
+        } catch {}
         let reads = await credentials.readCount
         XCTAssertEqual(reads, 1)
         await controller.closeAll()
@@ -275,13 +288,16 @@ import OpenLXSSHTransport
         let tab = try await connected(controller, host: host)
         let token = try XCTUnwrap(tab.driver?.token)
         await credentials.pause.arm()
-        let provider = Task { try await controller.readSavedPassword(token, tabID: tab.id, expectedHost: host) }
+        let request = primaryRequest(token: token, tabID: tab.id)
+        let provider = Task { try await controller.readTypedPrimary(request, tabID: tab.id, expectedHost: host) }
         await credentials.pause.waitForArrival()
         provider.cancel()
         await credentials.pause.release()
-        let result = try await provider.value
+        do {
+            _ = try await provider.value
+            XCTFail("Cancelled primary read during credential await must throw")
+        } catch {}
         let metadataReads = await repository.metadataReads
-        XCTAssertNil(result)
         XCTAssertEqual(metadataReads, 1)
         await controller.closeAll()
     }
@@ -360,13 +376,13 @@ private actor R2Credentials: CredentialAccess {
     var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
     var closeCount = 0
     init(id: UUID, configuration: SSHSessionConfiguration) { self.id = id; self.configuration = configuration }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
+    func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
         token = SessionToken(sessionID: id, generation: (token?.generation ?? 0) + 1)
         state = .connectionPending; onState?(token, state); return token!
     }
-    func advanceGeneration() throws { _ = try connect(configuration, savedPassword: nil) }
-    func accept(_ prompt: SessionTrustPrompt) async throws {}
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {}
+    func advanceGeneration() throws { _ = try connect(configuration, primary: SessionPrimaryAuthorization(provider: { _ in nil })) }
+    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {}
+    func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws {}
     func cancel() { state = .disconnected(nil); onState?(token, state) }
     func closeTab() {
         closeCount += 1

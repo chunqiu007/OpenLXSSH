@@ -14,7 +14,6 @@ struct SessionTrustPrompt: Identifiable, Equatable {
     let algorithm: String
     let fingerprint: String
     let source: String
-    let transport: SessionTrustChallenge?
     var changed: ChangedHostKey? = nil
 }
 struct SessionKeyboardField: Equatable, Sendable {
@@ -22,7 +21,6 @@ struct SessionKeyboardField: Equatable, Sendable {
     let echo: Bool
 }
 enum SessionAuthenticationPayload: Equatable, Sendable {
-    case legacyAskpass(AuthenticationChallengeKind, String)
     case initialPassword
     case privateKeyPassphrase
     case keyboard(name: String, instruction: String, prompts: [SessionKeyboardField])
@@ -31,21 +29,15 @@ struct SessionAuthenticationPrompt: Identifiable, Equatable {
     let token: SessionToken
     let id: UUID
     let payload: SessionAuthenticationPayload
-    init(token: SessionToken, id: UUID, kind: AuthenticationChallengeKind, text: String) {
-        self.token = token; self.id = id; payload = .legacyAskpass(kind, SafePrompt.display(text))
-    }
     init(token: SessionToken, id: UUID, payload: SessionAuthenticationPayload) {
         self.token = token; self.id = id; self.payload = payload
     }
-    var kind: AuthenticationChallengeKind {
-        if case .legacyAskpass(let kind, _) = payload { return kind }
-        if case .keyboard(_, _, let fields) = payload, fields.isEmpty { return .notification }
-        return .unknownMasked
+    var isNotification: Bool {
+        if case .keyboard(_, _, let fields) = payload { return fields.isEmpty }
+        return false
     }
-    var text: String { if case .legacyAskpass(_, let text) = payload { return text }; return "" }
 }
 enum SessionAuthenticationAnswer {
-    case legacy(AuthenticationResponse)
     case answers([OpenLXSSHSecurity.SecretBytes])
     case cancel
 }
@@ -224,82 +216,18 @@ struct SessionCloseBatchResult: Equatable, Sendable {
     var onState: ((SessionToken?, SSHSessionState) -> Void)? { get set }
     var onTrust: (([SessionTrustPrompt]) -> Void)? { get set }
     var onAuthentication: ((SessionAuthenticationPrompt) -> Void)? { get set }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken
-    func accept(_ prompt: SessionTrustPrompt) async throws
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws
-    func cancel()
-    func closeTab()
-    var usesTypedAuthentication: Bool { get }
     var automaticallyPresentsChallenges: Bool { get }
     func updateHost(_ host: HostConfiguration)
     func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken
     func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws
     func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws
+    func cancel()
+    func closeTab()
 }
 extension SessionDriving {
     var failureDetail: SessionFailureDetail? { nil }
-    var usesTypedAuthentication: Bool { false }
     var automaticallyPresentsChallenges: Bool { false }
     func updateHost(_ host: HostConfiguration) {}
-    func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
-        throw TransportError.invalidConfiguration // Never silently turn typed material into Askpass text.
-    }
-    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {
-        guard persistence == .persistent else { throw TransportError.invalidConfiguration }
-        try await accept(prompt)
-    }
-    func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws {
-        switch answer {
-        case .legacy(let response): try respond(response, to: prompt)
-        case .cancel: cancel()
-        case .answers: throw TransportError.invalidConfiguration
-        }
-    }
-}
-
-@MainActor final class DirectSessionDriver: SessionDriving, SessionResultClosing {
-    let session: DirectSSHSession
-    var terminal: NativeTerminalView { session.terminal }
-    var token: SessionToken? { session.token }
-    var state: SSHSessionState { session.state }
-    var canReconnect: Bool { session.canReconnect }
-    var onState: ((SessionToken?, SSHSessionState) -> Void)?
-    var onTrust: (([SessionTrustPrompt]) -> Void)?
-    var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
-    init(_ session: DirectSSHSession) {
-        self.session = session
-        session.onStateChange = { [weak self] in self?.onState?($0, $1) }
-        session.onTrustRequired = { [weak self] values in
-            self?.onTrust?(values.map { value in
-                SessionTrustPrompt(token: value.token, id: value.decision.id, host: value.candidate.host,
-                    algorithm: value.candidate.key.algorithm, fingerprint: value.candidate.key.fingerprint,
-                    source: "系统 ssh-keyscan 未认证预扫；必须通过独立可信渠道核实", transport: value)
-            })
-        }
-        session.onAuthenticationRequest = { [weak self] token, request in
-            self?.onAuthentication?(SessionAuthenticationPrompt(token: token, id: request.id, kind: request.kind,
-                                                               text: SafePrompt.display(request.prompt)))
-        }
-    }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
-        try session.connect(configuration, savedPassword: savedPassword)
-    }
-    var automaticallyPresentsChallenges: Bool { true }
-    func accept(_ prompt: SessionTrustPrompt) async throws { try await accept(prompt, persistence: .persistent) }
-    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {
-        guard let challenge = prompt.transport, token == prompt.token else { throw TransportError.stale }
-        try await session.acceptTrust(challenge, displayedFingerprint: prompt.fingerprint, persistence: persistence)
-    }
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {
-        try session.respond(response, requestID: prompt.id, token: prompt.token)
-    }
-    func cancel() { session.cancel() }
-    func closeTab() { session.closeTab() }
-    func closeResult(deadline: ContinuousClock.Instant) async -> SessionCloseResult {
-        session.closeTab()
-        while session.state != .closed, .now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
-        return session.state == .closed ? .closed : .incomplete(.init(token: token, reason: .legacyPending, drain: nil))
-    }
 }
 
 /// Plain untrusted text only; no Markdown, link activation, terminal escapes or unbounded UI text.
@@ -528,7 +456,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         do { ready = try await candidateBuilder.prepare(hostID: host.id, sessionID: id) }
         catch { intent.cancel(); throw error }
         guard !Task.isCancelled, epoch == preparationEpoch, !closingAll, !terminating, !windowCleanupAdmissionClosed,
-              ready.host.matchesConnection(of: host), ready.driver.usesTypedAuthentication else {
+              ready.host.matchesConnection(of: host) else {
             intent.cancel(); ready.driver.closeTab(); throw TransportError.stale
         }
         if let native = ready.driver as? NativeSessionDriver {
@@ -571,25 +499,23 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         guard let driver = tab.driver, let host = tab.host else { throw TransportError.invalidConfiguration }
         driver.updateHost(host)
         tab.primaryRequestID = nil
-        if driver.usesTypedAuthentication {
-            let intent = transientIntents[tab.id]
-            let reader = SessionCredentialReadOwner(host: host, repository: repository, credentials: credentials, intent: intent,
-                isCurrent: { [weak self, weak tab] token in self?.isCurrent(token, tab: tab, host: host) == true },
-                claim: { [weak tab] id in
-                    guard let tab, tab.primaryRequestID == nil else { return false }
-                    tab.primaryRequestID = id; return true
-                })
-            let authorization = SessionPrimaryAuthorization(provider: { request in try await reader.read(request) },
-                revoke: { [weak self, weak intent, weak tab] in
-                    reader.revoke(); intent?.cancel()
-                    if let tab { self?.transientIntents[tab.id] = nil }
-                })
-            primaryAuthorizations[tab.id] = authorization
-            do {
-                let token = try driver.connect(configuration, primary: authorization)
-                try intent?.bind(to: token, host: host)
-            } catch { revokePrimary(tab.id); driver.cancel(); throw error }
-        } else { _ = try driver.connect(configuration, savedPassword: authorization(for: tab)) }
+        let intent = transientIntents[tab.id]
+        let reader = SessionCredentialReadOwner(host: host, repository: repository, credentials: credentials, intent: intent,
+            isCurrent: { [weak self, weak tab] token in self?.isCurrent(token, tab: tab, host: host) == true },
+            claim: { [weak tab] id in
+                guard let tab, tab.primaryRequestID == nil else { return false }
+                tab.primaryRequestID = id; return true
+            })
+        let authorization = SessionPrimaryAuthorization(provider: { request in try await reader.read(request) },
+            revoke: { [weak self, weak intent, weak tab] in
+                reader.revoke(); intent?.cancel()
+                if let tab { self?.transientIntents[tab.id] = nil }
+            })
+        primaryAuthorizations[tab.id] = authorization
+        do {
+            let token = try driver.connect(configuration, primary: authorization)
+            try intent?.bind(to: token, host: host)
+        } catch { revokePrimary(tab.id); driver.cancel(); throw error }
     }
     func select(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
@@ -797,30 +723,6 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
             value.1.cancel(); value.0.driver.closeTab(); preparedCandidates[id] = nil
         }
     }
-    private func authorization(for tab: SessionTab) -> SavedPasswordAuthorization? {
-        guard let host = tab.host, host.authentication == .password, host.savePasswordAuthorized, host.credentialRef != nil else { return nil }
-        let id = tab.id
-        return SavedPasswordAuthorization { [weak self] token in
-            try await self?.readSavedPassword(token, tabID: id, expectedHost: host)
-        }
-    }
-    /// Testable authorization boundary; the caller never supplies a free-form credential UUID.
-    func readSavedPassword(_ token: SessionToken, tabID: UUID, expectedHost host: HostConfiguration) async throws -> AuthenticationSecret? {
-        guard !Task.isCancelled, host.authentication == .password, host.savePasswordAuthorized, let ref = host.credentialRef,
-              isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host) else { return nil }
-        let before = try await repository.securityMetadata()
-        // Cancellation and tab/generation checks must precede accessing Keychain,
-        // not merely dropping a secret after the asynchronous read completed.
-        guard !Task.isCancelled, isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host),
-              before.hosts.contains(where: { $0.id == host.id && $0.connectionIdentity == host.connectionIdentity }), before.credentials.contains(where: { $0.id == ref && $0.purpose == .password && $0.isSavingAuthorized }) else { return nil }
-        let result = await credentials.read(.init(id: ref, kind: .password))
-        guard !Task.isCancelled, isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host),
-              case .available(let secret) = result else { return nil }
-        let after = try await repository.securityMetadata()
-        guard !Task.isCancelled, after.hosts.contains(where: { $0.id == host.id && $0.connectionIdentity == host.connectionIdentity }), after.credentials.contains(where: { $0.id == ref && $0.purpose == .password && $0.isSavingAuthorized }),
-              isCurrent(token, tab: tabs.first { $0.id == tabID }, host: host) else { return nil }
-        return try secret.withUnsafeBytes { try AuthenticationSecret(Data($0)) }
-    }
     private func isCurrent(_ token: SessionToken, tab: SessionTab?, host: HostConfiguration) -> Bool {
         guard !closingAll, !terminating, let tab, tabs.contains(where: { $0 === tab }), tab.host?.id == host.id, tab.host?.connectionIdentity == host.connectionIdentity, tab.driver?.token == token else { return false }
         return tab.isReusable
@@ -963,13 +865,6 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
               tab.trust.contains(prompt), tab.driver?.token == prompt.token, let driver = tab.driver else { return false }
         do { try await driver.accept(prompt, persistence: persistence); return true }
         catch { if tab.driver?.token == prompt.token { tab.issue = .session(error) }; return false }
-    }
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt, tabID: UUID) -> Bool {
-        guard !closingAll, !terminating, workspaceVisible, selectedTabID == tabID,
-              let tab = tabs.first(where: { $0.id == tabID }), tab.authentication == prompt,
-              tab.state == .authenticating, tab.driver?.token == prompt.token, let driver = tab.driver else { return false }
-        do { try driver.respond(response, to: prompt); tab.authentication = nil; return true }
-        catch { tab.issue = .session(error); return false }
     }
     func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt, tabID: UUID) -> Bool {
         guard !closingAll, !terminating, workspaceVisible, selectedTabID == tabID,

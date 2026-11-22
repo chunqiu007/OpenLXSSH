@@ -249,7 +249,7 @@ private final class NativePrimaryReply: @unchecked Sendable {
         case .pending(let decision):
             guard decision.host == host else { cancellation.cancel(); reply.cancel(); return }
             prompt = SessionTrustPrompt(token: token, id: decision.id, host: decision.host, algorithm: decision.algorithm,
-                fingerprint: decision.fingerprint, source: "当前 libssh2 同一握手实际公钥；不是预扫", transport: nil)
+                fingerprint: decision.fingerprint, source: "当前 libssh2 同一握手实际公钥；不是预扫")
             trust = (prompt, reply)
         case .changed: return // Handled above; never an answerable trust request.
         }
@@ -390,7 +390,6 @@ private final class NativeTrustEventRecord: @unchecked Sendable {
     private(set) var token: SessionToken?
     private(set) var state: SSHSessionState = .idle
     private(set) var failureDetail: SessionFailureDetail?
-    var usesTypedAuthentication: Bool { true }
     var automaticallyPresentsChallenges: Bool { true }
     var onState: ((SessionToken?, SSHSessionState) -> Void)?
     var onTrust: (([SessionTrustPrompt]) -> Void)?
@@ -473,9 +472,6 @@ private final class NativeTrustEventRecord: @unchecked Sendable {
         guard configuration.serverAliveInterval != 0 else { return nil }
         return try NativeTCPKeepalivePolicy(interval: configuration.serverAliveInterval,
             failedProbes: configuration.serverAliveCountMax)
-    }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
-        throw TransportError.invalidConfiguration // Saved Askpass policy is not a native typed provider.
     }
     func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
         if let retiredTicket, retiredTicket.snapshot.drained { retirementFinished(retiredTicket) }
@@ -566,7 +562,7 @@ private final class NativeTrustEventRecord: @unchecked Sendable {
               self.host.matchesConnection(of: host), change.host == identity else { return }
         guard run.changedPrompt == nil else { return } // Callback/error share one immutable prompt.
         let prompt = SessionTrustPrompt(token: run.token, id: UUID(), host: change.host, algorithm: change.algorithm,
-            fingerprint: change.presentedFingerprint, source: "当前握手密钥与已知主机记录不符；连接已阻止", transport: nil, changed: change)
+            fingerprint: change.presentedFingerprint, source: "当前握手密钥与已知主机记录不符；连接已阻止", changed: change)
         run.changedPrompt = prompt; terminal.inputEnabled = false
         run.primary.revoke()
         failureDetail = SessionFailureDetail(category: .trustRejected, operation: "host-key-changed", code: nil, stages: [])
@@ -631,18 +627,15 @@ private final class NativeTrustEventRecord: @unchecked Sendable {
             } catch { if let self, self.isCurrent(run) { self.finish(run, state: self.inputFailureState(error, run: run, origin: .controlFailure)) } }
         }
     }
-    func accept(_ prompt: SessionTrustPrompt) async throws { try await accept(prompt, persistence: .persistent) }
     func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {
         guard let run, isCurrent(run), prompt.token == run.token else { throw TransportError.stale }
         try run.challenges.accept(prompt, persistence: persistence)
         setState(.preparing, run: run)
     }
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws { throw TransportError.invalidConfiguration }
     func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws {
         guard let run, isCurrent(run), prompt.token == run.token else { throw TransportError.stale }
         switch answer {
         case .cancel: cancel()
-        case .legacy: throw TransportError.invalidConfiguration
         case .answers(let answers):
             if !(try run.primary.respond(answers, to: prompt)) { try run.challenges.answer(answers, prompt: prompt) }
             setState(.preparing, run: run)

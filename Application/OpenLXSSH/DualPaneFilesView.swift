@@ -28,7 +28,7 @@ struct DualPaneFilesView: View {
     @State private var remoteSearchFocusRequest: UUID?
     init(model: AppModel, localRoot: URL? = nil) {
         app = model; files = model.files
-        _local = StateObject(wrappedValue: model.isEngineeringPreview ? model.files.localBrowser : (localRoot.map { LocalBrowserModel(root: $0) } ?? model.files.localBrowser))
+        _local = StateObject(wrappedValue: localRoot.map { LocalBrowserModel(root: $0) } ?? model.files.localBrowser)
     }
     var body: some View {
         reviewedContent
@@ -56,9 +56,9 @@ struct DualPaneFilesView: View {
                 .foregroundStyle(Color.accentColor)
             Text("文件传输").font(.system(size: 18, weight: .semibold))
             Spacer()
-            if files.selectedHost != nil || app.isEngineeringPreview {
+            if files.selectedHost != nil {
                 Button { dialog = DualFilesDialog(content: .host) } label: {
-                    Label(files.selectedHost == nil ? "选择主机" : "更换主机", systemImage: "server.rack")
+                    Label("更换主机", systemImage: "server.rack")
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("files.host.choose")
@@ -209,9 +209,7 @@ struct DualPaneFilesView: View {
                     }
                 }
             }
-            if app.isEngineeringPreview {
-                Text(AppModel.engineeringPreviewUnavailableIssue.message).font(.callout).foregroundStyle(.secondary)
-            } else if files.selectedHost == nil {
+            if files.selectedHost == nil {
                 Text("从保险箱选择主机，浏览远端文件。").font(.callout).foregroundStyle(.secondary)
                 Button("选择主机") { dialog = DualFilesDialog(content: .host) }
                     .buttonStyle(.borderedProminent)
@@ -307,7 +305,7 @@ struct DualPaneFilesView: View {
                     Divider()
                     Button("新建目录…") { newDirectory(localSide) }.disabled(localSide ? local.loading : files.state != .ready || files.busy)
                     Button("刷新") { if localSide { local.refresh() } else { files.browse(files.path) } }
-                    if localSide { Button("选择本地目录…") { chooseLocalDirectory() }.disabled(app.isEngineeringPreview) }
+                    if localSide { Button("选择本地目录…") { chooseLocalDirectory() } }
                     else {
                         Button("更换主机…") { dialog = DualFilesDialog(content: .host) }
                         Button("断开连接") { requestChange(nil, disconnect: true) }.disabled(files.state == .disconnected)
@@ -427,12 +425,11 @@ struct DualPaneFilesView: View {
     }
     private func connectInitial(_ displayed: FilesInitialInputOwner.Context) {
         guard displayed == inputContext, files.canConnect, !files.busy,
-              !(requiresKeyPassphrase && initialInput.secret.isEmpty), app.allowSensitivePreviewAction(),
+              !(requiresKeyPassphrase && initialInput.secret.isEmpty),
               let input = initialInput.take(for: displayed) else { return }
         files.connect(input)
     }
     private func chooseLocalDirectory() {
-        guard app.allowSensitivePreviewAction() else { return }
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.resolvesAliases = false
         panel.begin { response in if response == .OK, let url = panel.url { Task { @MainActor in do { local.navigate(try FilesLocalPaths.rawPath(FilesLocalPaths.components(url))) } catch { local.issue = .files(error) } } } }
     }
@@ -453,7 +450,6 @@ struct DualPaneFilesView: View {
         dialog = DualFilesDialog(content: .details(target, localSide))
     }
     private func transfer(localSide: Bool) {
-        guard app.allowSensitivePreviewAction() else { return }
         do {
             if localSide {
                 guard let path = local.path else { return }
@@ -475,7 +471,6 @@ struct DualPaneFilesView: View {
         localSide ? local.path != nil && files.canTransfer && FilesPaneDrag.remoteNames(pasteboard, controller: files) != nil : files.canTransfer && FilesDrop.urls(pasteboard) != nil
     }
     private func acceptDrop(_ pasteboard: NSPasteboard, localSide: Bool) -> Bool {
-        guard app.allowSensitivePreviewAction() else { return false }
         do {
             if localSide {
                 guard let parent = local.path, let names = FilesPaneDrag.remoteNames(pasteboard, controller: files) else { return false }
@@ -503,8 +498,7 @@ struct DualPaneFilesView: View {
             .init(title: "详情…", enabled: selected.count == 1 && current != nil, perform: { if let current { showDetails(current, localSide: localSide) } }),
             .init(title: "刷新", enabled: active, perform: { if localSide { local.refresh() } else { files.browse(files.path) } })
         ]
-        if localSide { actions.append(.init(title: "在 Finder 中显示", enabled: current != nil && !app.isEngineeringPreview, perform: {
-            guard app.allowSensitivePreviewAction() else { return }
+        if localSide { actions.append(.init(title: "在 Finder 中显示", enabled: current != nil, perform: {
             if let current, let parent = local.path, let path = try? parent.appending(current.name) { NSWorkspace.shared.activateFileViewerSelecting([FilesLocalPaths.url(path)]) }
         })) }
         actions += [.separator, .init(title: "删除所选…", enabled: active && !selected.isEmpty, perform: {

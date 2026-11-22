@@ -4,10 +4,6 @@ import Foundation
 import OpenLXSSHCore
 import OpenLXSSHFiles
 import OpenLXSSHTransport
-#if PREVIEW_ISOLATED
-import OpenLXSSHSecurity
-import OpenLXSSHTrust
-#endif
 
 enum SessionOpenMode: String, Sendable { case reuse, newSession }
 struct VaultHostFocusRequest: Identifiable, Equatable, Sendable {
@@ -330,14 +326,6 @@ struct AppIssue: Identifiable, Equatable {
     private let sessionRouter: (any SessionRouting)?
     private let nativeCandidateBuilder: any SessionBuilding
     private let preferencesDefaults: UserDefaults?
-    #if PREVIEW_ISOLATED
-    private(set) var engineeringPreviewRoot: EngineeringPreviewRoot?
-    private(set) var engineeringPreviewCredentials: PreviewNoAccessCredentials?
-    private(set) var engineeringPreviewAdmission: EngineeringPreviewAdmission?
-    private(set) var engineeringPreviewOrdinary: EngineeringPreviewSessionAdmission?
-    private(set) var engineeringPreviewCandidate: EngineeringPreviewSessionAdmission?
-    private(set) var engineeringPreviewFiles: EngineeringPreviewFilesAdmission?
-    #endif
     private var didRestoreManagementPage = false
     @Published private(set) var hosts: [HostConfiguration] = []
     @Published private(set) var folders: [HostFolder] = []
@@ -398,67 +386,23 @@ struct AppIssue: Identifiable, Equatable {
          filesConnector: (any FilesConnecting)? = nil, preferencesDefaults: UserDefaults? = nil,
          filesLocalService: @escaping @Sendable (Int32) throws -> any RemoteFileService = { try LocalFileService(rootDirectoryDescriptor: $0) }) {
         self.repository = repository
-        #if PREVIEW_ISOLATED
-        if case .engineeringPreview = location { self.sessionRouter = nil; self.preferencesDefaults = nil }
-        else { self.sessionRouter = sessionRouter; self.preferencesDefaults = preferencesDefaults }
-        #else
         self.sessionRouter = sessionRouter; self.preferencesDefaults = preferencesDefaults
-        #endif
-        let security: SecurityCoordinator
-        #if PREVIEW_ISOLATED
-        let previewRoot: EngineeringPreviewRoot?
-        if case .engineeringPreview(let root) = location { previewRoot = root } else { previewRoot = nil }
-        engineeringPreviewRoot = previewRoot
-        let noAccess = previewRoot.map { _ in PreviewNoAccessCredentials() }
-        engineeringPreviewCredentials = noAccess
-        let admission = previewRoot.map { _ in EngineeringPreviewAdmission() }
-        engineeringPreviewAdmission = admission
-        if let noAccess { security = SecurityCoordinator(repository: repository, location: location, credentials: noAccess) }
-        else { security = suppliedSecurity ?? SecurityCoordinator(repository: repository, location: location) }
-        #else
-        security = suppliedSecurity ?? SecurityCoordinator(repository: repository, location: location)
-        #endif
+        let security = suppliedSecurity ?? SecurityCoordinator(repository: repository, location: location)
         self.security = security
         let environment = SessionEnvironment(location: location); sessionEnvironment = environment
         let selection = AppSessionBuilders(repository: repository, security: security, environment: environment,
                                            ordinary: sessionBuilder, prepared: suppliedCandidate)
         sessionBuilders = selection
-        let ordinary = selection.ordinary, candidate = selection.prepared
-        let productionFiles = filesConnector ?? LibSSH2FilesConnector(repository: repository, security: security, environment: environment)
-        let builder: any SessionBuilding
-        let connector: any FilesConnecting
-        #if PREVIEW_ISOLATED
-        if let admission {
-            let ordinaryAdmission = EngineeringPreviewSessionAdmission(underlying: ordinary, admission: admission, role: .ordinary)
-            let candidateAdmission = EngineeringPreviewSessionAdmission(underlying: candidate, admission: admission, role: .candidate)
-            let filesAdmission = EngineeringPreviewFilesAdmission(underlying: productionFiles, admission: admission)
-            engineeringPreviewOrdinary = ordinaryAdmission; engineeringPreviewCandidate = candidateAdmission; engineeringPreviewFiles = filesAdmission
-            builder = ordinaryAdmission; nativeCandidateBuilder = candidateAdmission; connector = filesAdmission
-        } else { builder = ordinary; nativeCandidateBuilder = candidate; connector = productionFiles }
-        #else
-        builder = ordinary; nativeCandidateBuilder = candidate; connector = productionFiles
-        #endif
+        let builder = selection.ordinary
+        nativeCandidateBuilder = selection.prepared
+        let connector = filesConnector ?? LibSSH2FilesConnector(repository: repository, security: security, environment: environment)
         sessions = SessionController(repository: repository, credentials: security.credentials, builder: builder)
         let localBrowserRoot: URL?
         switch location {
         case .isolated(let root): localBrowserRoot = root.appendingPathComponent("LocalFilesFixture", isDirectory: true)
         case .applicationSupport: localBrowserRoot = nil
-        #if LOCAL_CANDIDATE
-        case .localTrial: localBrowserRoot = nil
-        #endif
-        #if PREVIEW_ISOLATED
-        case .engineeringPreview(let root): localBrowserRoot = root.localURL
-        #endif
         }
-        let localValidation: (@Sendable () throws -> Void)?
-        #if PREVIEW_ISOLATED
-        if let previewRoot { localValidation = { try previewRoot.validateLocalBoundary() } }
-        else { localValidation = nil }
-        #else
-        localValidation = nil
-        #endif
-        files = FilesController(connector: connector, localService: filesLocalService, localBrowserRoot: localBrowserRoot,
-                                localBrowserValidation: localValidation)
+        files = FilesController(connector: connector, localService: filesLocalService, localBrowserRoot: localBrowserRoot)
         sessions.trustEnvironment = environment
         files.trustEnvironment = environment
         lifecycle = AppLifecycleCoordinator(sessions: sessions)
@@ -480,37 +424,6 @@ struct AppIssue: Identifiable, Equatable {
         return preferencesDefaults === UserDefaults.standard ? MainWindowFramePreferences.autosaveName : nil
     }
     var desktopPreferencesDefaults: UserDefaults? { preferencesDefaults }
-    var isEngineeringPreview: Bool {
-        #if PREVIEW_ISOLATED
-        engineeringPreviewRoot != nil
-        #else
-        false
-        #endif
-    }
-    static var engineeringPreviewBuild: Bool {
-        #if PREVIEW_ISOLATED
-        true
-        #else
-        false
-        #endif
-    }
-    static let engineeringPreviewUnavailableIssue = AppIssue(code: "preview.unavailable", message: "隔离离线工程预览：不连接网络，不读取或保存秘密，不打开外部目录或系统选择器。仅可编辑本轮虚构配置。")
-    @discardableResult func allowSensitivePreviewAction() -> Bool {
-        guard !isEngineeringPreview else { issue = Self.engineeringPreviewUnavailableIssue; return false }
-        return true
-    }
-    #if PREVIEW_ISOLATED
-    convenience init(engineeringPreview root: EngineeringPreviewRoot) {
-        self.init(repository: AppRepository(location: .engineeringPreview(root)), location: .engineeringPreview(root), preferencesDefaults: nil)
-    }
-    var engineeringPreviewDescription: String {
-        guard let root = engineeringPreviewRoot, let path = try? root.displayPath() else {
-            return "Engineering-R2 · 隔离离线 · 数据身份核验失败，不能确认当前目录。"
-        }
-        let actual = root.facts.databaseURL?.path ?? "尚未打开数据库"
-        return "Engineering-R2 · 隔离离线 · 无自动连接、无秘密持久化\n本轮独占根：" + path + "\n实际仓储：" + actual
-    }
-    #endif
 
     @discardableResult func reload() async -> Bool {
         let query = selection.query(search: search), lifetime = generation
@@ -621,15 +534,6 @@ struct AppIssue: Identifiable, Equatable {
         await write { try await repository.apply([isNew ? .insertHost(host) : .updateHost(host)]) }
     }
     @discardableResult func saveHostSecurely(_ host: HostConfiguration, isNew: Bool, password: PasswordChoice) async -> Bool {
-        if isEngineeringPreview {
-            switch password {
-            case .remember, .forget: issue = Self.engineeringPreviewUnavailableIssue; return false
-            case .manual, .preserve: break
-            }
-            guard host.keyRef == nil, host.credentialRef == nil, !host.savePasswordAuthorized else {
-                issue = Self.engineeringPreviewUnavailableIssue; return false
-            }
-        }
         guard !isWriting else { return false }
         isWriting = true; defer { isWriting = false }
         do {
@@ -700,7 +604,6 @@ struct AppIssue: Identifiable, Equatable {
         issue = AppIssue(code: "session.configurationSelected", message: "已返回保险箱并请求定位此会话的保存配置。可使用主机的编辑入口；不会自动连接或修改当前会话。")
     }
     func prepareTransientConnection(_ host: HostConfiguration, intent: VaultTransientConnectionIntent) async throws -> VaultPreparedConnection {
-        guard allowSensitivePreviewAction() else { intent.cancel(); throw EngineeringPreviewFailure.offline }
         do {
             return try await sessions.prepareTransient(host, intent: intent, candidateBuilder: nativeCandidateBuilder) { [weak self] id in
                 guard let self else { return false }
@@ -713,7 +616,6 @@ struct AppIssue: Identifiable, Equatable {
         } catch { intent.cancel(); issue = .session(error); throw error }
     }
     func requestSession(hostID: UUID, mode: SessionOpenMode) {
-        guard allowSensitivePreviewAction() else { return }
         guard let host = connectionHosts.first(where: { $0.id == hostID }) else { issue = .sanitized(RepositoryError.notFound); return }
         // Ask before router/open allocates or selects a tab, not after a hidden session exists.
         if workspacePage == .vault, workspaceNavigationGuard?.action() == false { return }
@@ -1128,54 +1030,6 @@ enum DesktopHelp {
         return text
     }
 }
-
-#if PREVIEW_ISOLATED
-/// A non-caching denial provider. There is no Keychain namespace, factory or
-/// backend here. Counters contain no references, contents, sizes or digests.
-actor PreviewNoAccessCredentials: CredentialAccess {
-    struct Calls: Equatable, Sendable { var reads = 0; var saves = 0; var deletes = 0; var closes = 0 }
-    private(set) var calls = Calls()
-    func save(_ secret: OpenLXSSHSecurity.SecretBytes, as reference: OpenLXSSHSecurity.CredentialReference,
-              authorization: RememberAuthorization) async -> CredentialSaveResult { calls.saves += 1; return .notAuthorized }
-    func read(_ reference: OpenLXSSHSecurity.CredentialReference) async -> CredentialReadResult { calls.reads += 1; return .manualEntryRequired(.denied) }
-    func deleteExact(_ reference: OpenLXSSHSecurity.CredentialReference) async -> CredentialDeleteResult { calls.deletes += 1; return .retryRequired(.denied) }
-    func close() async throws { calls.closes += 1 }
-}
-final class EngineeringPreviewAdmission: @unchecked Sendable {
-    enum Role: String, Sendable { case ordinary, candidate, files }
-    struct Facts: Equatable, Sendable { var ordinary = 0; var candidate = 0; var files = 0 }
-    private let lock = NSLock()
-    private var rejected = Facts()
-    func refusal(_ role: Role) -> EngineeringPreviewFailure {
-        lock.withLock {
-            switch role { case .ordinary: rejected.ordinary += 1; case .candidate: rejected.candidate += 1; case .files: rejected.files += 1 }
-        }
-        return .offline
-    }
-    var facts: Facts { lock.withLock { rejected } }
-}
-/// Negative admission only. The real builder is retained for identity inspection,
-/// but never receives configuration/prepare calls while this closed policy exists.
-@MainActor final class EngineeringPreviewSessionAdmission: SessionBuilding {
-    let underlying: any SessionBuilding
-    let admission: EngineeringPreviewAdmission
-    let role: EngineeringPreviewAdmission.Role
-    init(underlying: any SessionBuilding, admission: EngineeringPreviewAdmission, role: EngineeringPreviewAdmission.Role) {
-        self.underlying = underlying; self.admission = admission; self.role = role
-    }
-    func configuration(hostID: UUID) async throws -> (HostConfiguration, SSHSessionConfiguration) { throw admission.refusal(role) }
-    func prepare(hostID: UUID, sessionID: UUID) async throws -> ReadySession { throw admission.refusal(role) }
-}
-struct EngineeringPreviewFilesAdmission: FilesConnecting {
-    let underlying: any FilesConnecting
-    let admission: EngineeringPreviewAdmission
-    func connect(request: FilesRequest, input: FilesConnectInput, token: CancellationToken,
-                 trust: @escaping FileHostTrustHandler, keyboard: @escaping FilesKeyboardHandler,
-                 isCurrent: @escaping @Sendable () async -> Bool) async throws -> any RemoteFileService {
-        throw admission.refusal(.files)
-    }
-}
-#endif
 
 extension AuthenticationKind {
     var displayName: String {

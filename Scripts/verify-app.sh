@@ -2,27 +2,23 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-all}"
-case "$MODE" in all|build|gui|signed-security) ;; *) printf 'Use all, build, gui, or signed-security.\n' >&2; exit 64 ;; esac
+case "$MODE" in all|build) ;; *) printf 'Use all or build.\n' >&2; exit 64 ;; esac
 LOGS="$ROOT/DerivedData/Verification"
 mkdir -p "$LOGS"
-if [[ "$MODE" == signed-security ]]; then
-    "$ROOT/Scripts/build-app.sh" HostProbe build > "$LOGS/HostProbe-build.log" 2>&1
-    python3 "$ROOT/Scripts/verify-signed-app.py"
-    exit $?
-fi
-if [[ "$MODE" != gui ]]; then
-    for configuration in Debug Release; do
-        "$ROOT/Scripts/build-app.sh" "$configuration" build-for-testing > "$LOGS/${configuration}-build.log" 2>&1
-        OPENLXSSH_FILES_TARGET26=1 xcodebuild -project "$ROOT/OpenLXSSH.xcodeproj" -scheme OpenLXSSH -configuration "$configuration" \
-            -destination 'platform=macOS,arch=arm64' -derivedDataPath "$ROOT/DerivedData/$configuration" \
-            -clonedSourcePackagesDirPath "$ROOT/DerivedData/SourcePackages" \
-            -onlyUsePackageVersionsFromResolvedFile -skipPackageUpdates -showBuildSettings \
-            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES > "$LOGS/${configuration}-settings.log" 2>&1
-        BINARY="$ROOT/DerivedData/$configuration/Build/Products/$configuration/OpenLXSSH.app/Contents/MacOS/OpenLXSSH"
-        xcrun vtool -show-build "$BINARY" > "$LOGS/${configuration}-vtool.log"
-        /usr/bin/otool -L "$BINARY" > "$LOGS/${configuration}-libraries.log"
-        python3 - "$ROOT" "$configuration" <<'PY'
-import json, pathlib, plistlib, re, subprocess, sys
+for configuration in Debug Release; do
+    BUILD_ACTION=build
+    [[ "$configuration" != Debug ]] || BUILD_ACTION=build-for-testing
+    "$ROOT/Scripts/build-app.sh" "$configuration" "$BUILD_ACTION" > "$LOGS/${configuration}-build.log" 2>&1
+    OPENLXSSH_FILES_TARGET26=1 xcodebuild -project "$ROOT/OpenLXSSH.xcodeproj" -scheme OpenLXSSH -configuration "$configuration" \
+        -destination 'platform=macOS,arch=arm64' -derivedDataPath "$ROOT/DerivedData/$configuration" \
+        -clonedSourcePackagesDirPath "$ROOT/DerivedData/SourcePackages" \
+        -onlyUsePackageVersionsFromResolvedFile -skipPackageUpdates -showBuildSettings \
+        CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES > "$LOGS/${configuration}-settings.log" 2>&1
+    BINARY="$ROOT/DerivedData/$configuration/Build/Products/$configuration/OpenLXSSH.app/Contents/MacOS/OpenLXSSH"
+    xcrun vtool -show-build "$BINARY" > "$LOGS/${configuration}-vtool.log"
+    /usr/bin/otool -L "$BINARY" > "$LOGS/${configuration}-libraries.log"
+    python3 - "$ROOT" "$configuration" <<'PY'
+import hashlib, json, pathlib, plistlib, re, subprocess, sys
 root, config = pathlib.Path(sys.argv[1]), sys.argv[2]
 logs = root / 'DerivedData/Verification'
 settings = (logs / f'{config}-settings.log').read_text()
@@ -48,9 +44,7 @@ assert pins['grdb.swift'] == {'revision':'b83108d10f42680d78f23fe4d4d80fc88dab32
 assert pins['swiftterm'] == {'revision':'2f573f73af5e768d90847dce20c97fa9535d7164', 'version':'1.99.1'}
 for p in json.loads((root / 'Packages/OpenLXSSHTransport/Package.resolved').read_text())['pins']:
     assert pins[p['identity']] == p['state']
-helper = app / 'Contents/Helpers/openlxssh-askpass'
-assert helper.is_file() and subprocess.check_output(['lipo','-archs',str(helper)], text=True).strip() == 'arm64'
-assert re.search(r'minos\s+26.0', subprocess.check_output(['xcrun','vtool','-show-build',str(helper)], text=True))
+assert not (app / 'Contents/Helpers').exists(), 'Unexpected Contents/Helpers directory'
 for notice in ('SwiftTerm-LICENSE', 'ArgumentParser-LICENSE', 'SwiftPNG-LICENSE', 'H-LICENSE'):
     assert (app / 'Contents/Resources' / notice).is_file()
 project = (root / 'OpenLXSSH.xcodeproj/project.pbxproj').read_text()
@@ -61,57 +55,12 @@ assert 'productName = OpenLXSSHFiles' in project
 bridge = root / f'DerivedData/{config}/Build/Intermediates.noindex/OpenLXSSHFiles.build/{config}/COpenLXSSHFiles.build/Objects-normal/arm64/Bridge.o'
 assert re.search(r'minos\s+26.0', subprocess.check_output(['xcrun','vtool','-show-build',str(bridge)], text=True))
 native_manifest = json.loads((root / 'Packages/OpenLXSSHFiles/.build/native/manifest.json').read_text())
-import hashlib
 for relative, digest in native_manifest['licenseSHA256'].items():
     assert hashlib.sha256((app / 'Contents/Resources/FilesNativeLicenses' / relative).read_bytes()).hexdigest() == digest
-print(f'{config}: arm64 / min26 App+Files C object / embedded helper / static native libraries / pinned graph checked')
+print(f'{config}: arm64 / min26 App+Files C object / static native libraries / pinned graph checked')
 PY
-    done
-    "$ROOT/Scripts/build-app.sh" HostProbe test > "$LOGS/HostProbe-tests.log" 2>&1
-fi
-if [[ "$MODE" != build ]]; then
-    "$ROOT/Scripts/build-app.sh" HostProbe build > "$LOGS/HostProbe-build.log" 2>&1
-    python3 - "$ROOT" <<'PY'
-import json, os, pathlib, subprocess, sys, tempfile
-root = pathlib.Path(sys.argv[1])
-logs = root / 'DerivedData/Verification'
-data = pathlib.Path(tempfile.mkdtemp(prefix='OpenLXSSH-AppSmoke-'))
-os.chmod(data, 0o700)
-(data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
-(logs / 'gui-data-path.txt').write_text(str(data) + '\n')
-binary = root / 'DerivedData/HostProbe/Build/Products/HostProbe/OpenLXSSH.app/Contents/MacOS/OpenLXSSH'
-for phase in ('exercise', 'reopen', 'security-sheets', 'sessions', 'sessions-exit', 'files-local', 'files-transfers', 'files-transfer-exit'):
-    phase_data = data
-    if phase in ('security-sheets', 'sessions', 'sessions-exit', 'files-local', 'files-transfers', 'files-transfer-exit'):
-        phase_data = pathlib.Path(tempfile.mkdtemp(prefix='OpenLXSSH-AppSmoke-'))
-        os.chmod(phase_data, 0o700)
-        (phase_data / '.openlxssh-app-smoke').write_text('OpenLXSSH isolated GUI smoke\n')
-        (logs / f'gui-{phase}-data-path.txt').write_text(str(phase_data) + '\n')
-    with (logs / f'gui-{phase}.log').open('w') as log:
-        try:
-            result = subprocess.run([str(binary), '--self-test-data-dir', str(phase_data), '--self-test-phase', phase], stdout=log, stderr=subprocess.STDOUT, timeout=120)
-        except subprocess.TimeoutExpired:
-            raise SystemExit(f'Native GUI {phase} timed out; owned process was terminated; inspect {log.name}')
-    if result.returncode:
-        raise SystemExit(f'Native GUI {phase} exited {result.returncode}; inspect sanitized log {log.name}')
-    report = json.loads((phase_data / f'smoke-{phase}.json').read_text())
-    assert report['passed'] and not report['productRuntimeVerified']
-    assert report['checks'] and all(check['passed'] for check in report['checks'])
-    if phase == 'sessions-exit':
-        repeat = json.loads((phase_data / 'termination-repeat.json').read_text())
-        cleanup = json.loads((phase_data / 'termination-cleanup.json').read_text())
-        admission = json.loads((phase_data / 'termination-admission.json').read_text())
-        assert repeat == {'activeCleanupStillPending': True, 'secondQuitWaits': True}
-        assert cleanup == {'cleanupCompleted': True, 'selectedTabCleared': True}
-        assert admission == {'windowCloseOverlappedQuit': True, 'terminationPermanent': True, 'reopenRefused': True, 'newSessionRefused': True}
-        print('HostProbe real process quit: overlapping window cleanup awaited; repeated quit/reopen/new session cannot bypass termination; exit=0')
-    if phase == 'files-transfer-exit':
-        cleanup = json.loads((phase_data / 'transfer-exit-cleanup.json').read_text())
-        assert cleanup == {'managerClosed': True, 'allWorkDrained': True, 'cancelledTransfer': True, 'sshTabsCleared': True, 'noRetainedTemps': True}
-        print('HostProbe transfer quit: native continue/cancel decision, manager cleanup/services closed, real process exit=0')
-    print(f'HostProbe native GUI {phase}: {len(report["checks"])} checks passed')
-print('Isolated GUI data and window captures:', data)
-print('HostProbe does not validate macOS 26 runtime, IME, SSH, SFTP, signing or notarization.')
-PY
+done
+if [[ "$MODE" == all ]]; then
+    "$ROOT/Scripts/build-app.sh" Debug test > "$LOGS/Debug-tests.log" 2>&1
 fi
 printf 'Verification logs: %s\n' "$LOGS"

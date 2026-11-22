@@ -458,7 +458,6 @@ struct AuthenticationChallengeView: View {
         let count: Int
         switch prompt.payload {
         case .keyboard(_, _, let fields): count = fields.count
-        case .legacyAskpass(let kind, _): count = kind == .unknownMasked ? 1 : 0
         case .initialPassword, .privateKeyPassphrase: count = 1
         }
         _answers = State(initialValue: Array(repeating: "", count: count))
@@ -468,7 +467,6 @@ struct AuthenticationChallengeView: View {
         case .initialPassword: "输入本次连接密码"
         case .privateKeyPassphrase: "解锁受管理 SSH 私钥"
         case .keyboard(_, _, let fields): fields.isEmpty ? "服务器认证通知" : "服务器要求进一步验证"
-        case .legacyAskpass: prompt.kind == .notification ? "认证通知" : (prompt.kind == .confirmation ? "认证确认" : "人工认证输入")
         }
     }
     private var explanation: String {
@@ -476,7 +474,6 @@ struct AuthenticationChallengeView: View {
         case .initialPassword: "密码仅用于当前连接，不会保存。"
         case .privateKeyPassphrase: "口令仅用于解锁本次连接使用的密钥，不会保存。"
         case .keyboard: "请按服务器提示完成本轮验证。附加回答不会保存。"
-        case .legacyAskpass: "请按服务器提示完成当前连接的验证。本次回答不会保存。"
         }
     }
     var body: some View {
@@ -511,12 +508,7 @@ struct AuthenticationChallengeView: View {
             HStack {
                 NativeButton(title: "取消本次连接", id: "authentication.cancel") { clear(); controller.cancelChallenge(prompt, tabID: tab.id); dismiss() }.fixedSize()
                 Spacer(minLength: 8)
-                if case .legacyAskpass(let kind, _) = prompt.payload, kind == .confirmation {
-                    NativeButton(title: "拒绝", id: "authentication.decline") { submit(.legacy(.confirm(false))) }.fixedSize()
-                    NativeButton(title: "确认", id: "authentication.confirm", isDefault: true) { submit(.legacy(.confirm(true))) }.fixedSize()
-                } else {
-                    NativeButton(title: answers.isEmpty ? "已阅，继续" : "继续", id: "authentication.submit", isDefault: true) { sendAnswers() }.fixedSize()
-                }
+                NativeButton(title: answers.isEmpty ? "已阅，继续" : "继续", id: "authentication.submit", isDefault: true) { sendAnswers() }.fixedSize()
             }
         }
         .padding(24)
@@ -540,9 +532,6 @@ struct AuthenticationChallengeView: View {
                 }
             case .initialPassword, .privateKeyPassphrase:
                 SecureField("仅本次使用，不保存", text: $answers[0]).focused($focusedIndex, equals: 0).accessibilityIdentifier("authentication.answer.0")
-            case .legacyAskpass(_, let text):
-                Text(verbatim: text).textSelection(.enabled)
-                if !answers.isEmpty { SecureField("仅本次回答", text: $answers[0]).focused($focusedIndex, equals: 0) }
             }
         }.textFieldStyle(.roundedBorder)
             // The native text input system commits marked text before onSubmit;
@@ -551,14 +540,8 @@ struct AuthenticationChallengeView: View {
     }
     private func clear() { answers = Array(repeating: "", count: answers.count) }
     private func sendAnswers() {
-        if case .legacyAskpass(let kind, _) = prompt.payload {
-            if kind == .notification { submit(.legacy(.acknowledge)); return }
-            do { let secret = try AuthenticationSecret(Data((answers.first ?? "").utf8)); clear(); submit(.legacy(.manual(secret))) }
-            catch { clear(); tab.issue = AppIssue(code: "authentication.inputBounds", message: "旧 Askpass 输入最多 1023 字节且不含 NUL 或换行；未发送。") }
-        } else {
-            guard answers.allSatisfy({ $0.utf8.count <= 65536 }) else { clear(); tab.issue = AppIssue(code: "authentication.inputBounds", message: "每个回答最多 65536 UTF-8 字节；未发送。"); return }
-            let values = answers.map { OpenLXSSHSecurity.SecretBytes(utf8: $0) }; clear(); submit(.answers(values))
-        }
+        guard answers.allSatisfy({ $0.utf8.count <= 65536 }) else { clear(); tab.issue = AppIssue(code: "authentication.inputBounds", message: "每个回答最多 65536 UTF-8 字节；未发送。"); return }
+        let values = answers.map { OpenLXSSHSecurity.SecretBytes(utf8: $0) }; clear(); submit(.answers(values))
     }
     private func submit(_ answer: SessionAuthenticationAnswer) {
         clear(); if controller.respond(answer, to: prompt, tabID: tab.id) { dismiss() }

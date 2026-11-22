@@ -1,6 +1,0 @@
-.cache
-.runtime
-.logs
-__pycache__
-*.pyc
-.git

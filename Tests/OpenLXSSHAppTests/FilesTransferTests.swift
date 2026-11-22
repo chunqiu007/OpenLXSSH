@@ -996,11 +996,11 @@ private actor TransferDisconnectingService: RemoteFileService {
     var onTrust: (([SessionTrustPrompt]) -> Void)?
     var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
     init(id: UUID) { self.id = id }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
+    func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
         let value = SessionToken(sessionID: id, generation: 1); token = value; state = .connectionPending; return value
     }
-    func accept(_ prompt: SessionTrustPrompt) async throws {}
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws {}
+    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws {}
+    func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws {}
     func cancel() { state = .disconnected(nil) }
     func closeTab() {
         state = .closing; closeStarted.signal()
@@ -1108,72 +1108,3 @@ private extension XCTestCase {
         XCTAssertEqual(try Data(contentsOf: remote.appendingPathComponent("tree (1)/file")), Data("new".utf8))
     }
 }
-
-
-#if HOST_PROBE
-/// Real LocalFileService I/O plus the exact consumer gate, not a network/transport fake.
-private actor CancelRetryLocalSource: RemoteFileService {
-    nonisolated let capabilities: FileServiceCapabilities
-    private let base: LocalFileService, gate: AppFilesCancelReadGate
-    private var paths: [FileHandleID: Data] = [:]
-    private let phase: UUID
-    init(fd: Int32, gate: AppFilesCancelReadGate, phase: UUID) throws { base = try LocalFileService(rootDirectoryDescriptor: fd); capabilities = base.capabilities; self.gate = gate; self.phase = phase }
-    func initialDirectory(token: CancellationToken) async throws -> RemotePath { try await base.initialDirectory(token:token) }
-    func list(_ p: RemotePath, token: CancellationToken) async throws -> [DirectoryEntry] { try await base.list(p,token:token) }
-    func lstat(_ p: RemotePath, token: CancellationToken) async throws -> FileAttributes { try await base.lstat(p,token:token) }
-    func fstat(_ h: FileHandleID, token: CancellationToken) async throws -> FileAttributes? { try await base.fstat(h,token:token) }
-    func open(_ p: RemotePath, mode: OpenMode, token: CancellationToken) async throws -> FileHandleID { let h = try await base.open(p,mode:mode,token:token); paths[h] = p.bytes; return h }
-    func read(_ h: FileHandleID, maxBytes: Int, token: CancellationToken) async throws -> Data { if let p = paths[h] { try await gate.beforeRead(path:p,phaseID:phase,token:token) }; return try await base.read(h,maxBytes:maxBytes,token:token) }
-    func write(_ h: FileHandleID, data: Data, token: CancellationToken) async throws -> Int { try await base.write(h,data:data,token:token) }
-    func finish(_ h: FileHandleID, token: CancellationToken) async throws { try await base.finish(h,token:token) }
-    func closeHandle(_ h: FileHandleID) async throws { try await base.closeHandle(h); paths[h] = nil }
-    func mkdir(_ p: RemotePath, token: CancellationToken) async throws { try await base.mkdir(p,token:token) }
-    func rename(_ p: RemotePath, to q: RemotePath, mode: RenameMode, token: CancellationToken) async throws { try await base.rename(p,to:q,mode:mode,token:token) }
-    func commit(_ p: RemotePath, to q: RemotePath, request: CommitRequest, token: CancellationToken) async throws { try await base.commit(p,to:q,request:request,token:token) }
-    func remove(_ p: RemotePath, directory: Bool, token: CancellationToken) async throws { try await base.remove(p,directory:directory,token:token) }
-    nonisolated func cancel() { base.cancel() }
-    func close() async { await base.close() }
-}
-@MainActor final class FilesManifestCancelRetryAppTests: XCTestCase {
-    func testPositiveRealLocalBytesCancelPreservesPartialAndExplicitNewManifestRetryStartsSecondFromZero() async throws {
-        let root = try AppDataLocation.canonical(FileManager.default.temporaryDirectory).appendingPathComponent("OpenLXSSH-AppTests-cancel-" + UUID().uuidString)
-        let local = root.appendingPathComponent("Source"), remote = root.appendingPathComponent("Remote"), scope = try AppFilesManifestScope(nonce:String(repeating:"a",count:32))
-        try FileManager.default.createDirectory(at:local.appendingPathComponent(scope.tree+"/"+scope.child),withIntermediateDirectories:true)
-        try FileManager.default.createDirectory(at:remote,withIntermediateDirectories:true)
-        for payload in scope.payloads(for:.cancelRetry) { try Data(repeating:7,count:payload.bytes).write(to:local.appendingPathComponent(scope.tree+"/"+payload.relative)) }
-        let phase = UUID(), gate = AppFilesCancelReadGate()
-        try gate.arm(phaseID:phase,path:Data(("/"+scope.tree+"/"+scope.payloads[1].relative).utf8),deadline:.now + .seconds(5))
-        let model = FilesController(connector:TransferLocalConnector(root:remote),idleTimeout:nil,localService:{ try CancelRetryLocalSource(fd:$0,gate:gate,phase:phase) })
-        addTeardownBlock { gate.abortIfWaiting(); await model.closeForWindow(); try FileManager.default.removeItem(at:root) }
-        model.show(host:HostConfiguration(name:"real local cancel fixture",address:"never-connected.invalid",username:"fixture")); await model.waitUntilCurrentWorkCompletes()
-        model.connect(.init(primary:.manual(.init(utf8:"")))); await model.waitUntilCurrentWorkCompletes()
-        let ids = try await model.enqueueUploads([local.appendingPathComponent(scope.tree)],context:model.transferContext(upload:true)).value
-        XCTAssertNil(model.transferPlanReview)
-        let id = try XCTUnwrap(ids.first), deadline = ContinuousClock.now + .seconds(5)
-        while !gate.snapshot().waiting { guard .now < deadline else { throw FileServiceError(.timeout,operation:"local-gate") }; try await Task.sleep(for:.milliseconds(1)) }
-        let runningSnapshot = await model.manager.snapshot(); let running = try XCTUnwrap(runningSnapshot.jobs.first)
-        XCTAssertEqual(running.state,.running); XCTAssertEqual(running.transferredBytes,69632)
-        XCTAssertEqual(try Data(contentsOf:remote.appendingPathComponent(scope.tree+"/"+scope.payloads[0].relative)),Data(repeating:7,count:4096))
-        await model.cancelTransfer(id)
-        while await model.manager.snapshot().jobs.first?.state.isActive == true { try await Task.sleep(for:.milliseconds(1)) }
-        _ = await model.activeTransferSnapshot()
-        let cancelled = try XCTUnwrap(model.transferSnapshot.jobs.first)
-        XCTAssertEqual(cancelled.state,.cancelled); XCTAssertEqual(cancelled.transferredBytes,69632); XCTAssertTrue(cancelled.retainedTemporaryPaths.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath:remote.appendingPathComponent(scope.tree+"/"+scope.payloads[1].relative).path))
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath:remote.appendingPathComponent(scope.tree+"/"+scope.child).path).isEmpty)
-        model.updateTransferPreference(.overwrite)
-        let retryIDs = try await model.retryTransfer(id).value, retryID = try XCTUnwrap(retryIDs.first)
-        XCTAssertNil(model.transferPlanReview)
-        for await snapshot in try await model.manager.updates() {
-            guard let job = snapshot.jobs.first(where:{$0.id == retryID}) else { continue }
-            if let pending = job.pendingDecision { guard case .conflict = pending.question else { XCTFail("Unexpected local risk"); break }; assertTrueValue(await model.answerTransfer(pending,answer:.conflict(.skip,applyToBatch:false))) }
-            if !job.state.isActive { break }
-        }
-        let finalSnapshot = await model.manager.snapshot(); let job = try XCTUnwrap(finalSnapshot.jobs.first(where:{$0.id == retryID}))
-        XCTAssertEqual(job.state,.succeeded); XCTAssertEqual(job.transferredBytes,266240); XCTAssertEqual(job.retryOf,id)
-        XCTAssertNotEqual(job.generation,cancelled.generation); XCTAssertNotEqual(job.request.batchID,cancelled.request.batchID)
-        for payload in scope.payloads(for:.cancelRetry) { XCTAssertEqual(try Data(contentsOf:remote.appendingPathComponent(scope.tree+"/"+payload.relative)),Data(repeating:7,count:payload.bytes)) }
-        XCTAssertTrue(gate.snapshot().localCancellationObserved); XCTAssertFalse(gate.snapshot().waiting)
-    }
-}
-#endif

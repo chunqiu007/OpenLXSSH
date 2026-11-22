@@ -7,9 +7,6 @@ import OpenLXSSHFiles
     private var active: NSOpenPanel?
     private var generation = UUID()
     var isChoosing: Bool { active != nil }
-    #if HOST_PROBE
-    var testSelection: [URL]?
-    #endif
     func choose(upload: Bool, window: NSWindow?, completion: @escaping ([URL]) -> Void) {
         guard active == nil, let window else { return }
         let panel = NSOpenPanel(), id = UUID(); generation = id; active = panel
@@ -17,16 +14,6 @@ import OpenLXSSHFiles
         panel.canChooseFiles = upload; panel.canChooseDirectories = true
         panel.allowsMultipleSelection = upload; panel.resolvesAliases = false
         panel.canCreateDirectories = !upload
-        #if HOST_PROBE
-        if let urls = testSelection {
-            testSelection = nil
-            // The actual rendered button target/action reaches this picker, but only the
-            // isolated HostProbe replaces user selection. Product always presents NSOpenPanel.
-            active = nil
-            completion(urls)
-            return
-        }
-        #endif
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             MainActor.assumeIsolated {
                 guard let self, self.generation == id, self.active === panel else { return }
@@ -50,9 +37,6 @@ import OpenLXSSHFiles
         panel.directoryURL = upload ? original.deletingLastPathComponent() : original
         panel.canChooseFiles = upload; panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false; panel.resolvesAliases = false; panel.canCreateDirectories = false
-        #if HOST_PROBE
-        if let urls = testSelection { testSelection = nil; active = nil; completion(urls); return true }
-        #endif
         panel.beginSheetModal(for: window) { [weak self, weak panel] response in
             MainActor.assumeIsolated {
                 guard let self, self.generation == id, self.active === panel else { return }

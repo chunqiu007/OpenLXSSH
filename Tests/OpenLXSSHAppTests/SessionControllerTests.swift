@@ -162,10 +162,10 @@ import OpenLXSSHTrust
         await controller.selectedTab?.preparation?.value
         let driver = builder.drivers[0], token = try XCTUnwrap(builder.drivers[0].token)
         driver.set(.authenticating)
-        let prompt = SessionAuthenticationPrompt(token: token, id: UUID(), kind: .unknownMasked, text: "logic-only")
+        let prompt = SessionAuthenticationPrompt(token: token, id: UUID(), payload: .initialPassword)
         driver.onAuthentication?(prompt)
         XCTAssertFalse(controller.present(.authentication(prompt), tabID: aID))
-        XCTAssertFalse(controller.respond(.acknowledge, to: prompt, tabID: aID))
+        XCTAssertFalse(controller.respond(.answers([]), to: prompt, tabID: aID))
         controller.select(aID)
         XCTAssertTrue(controller.present(.authentication(prompt), tabID: aID))
         let presentation = a.dialog?.id
@@ -173,21 +173,21 @@ import OpenLXSSHTrust
         controller.select(aID); XCTAssertNil(a.dialog)
         XCTAssertTrue(controller.present(.authentication(prompt), tabID: aID))
         XCTAssertNotEqual(a.dialog?.id, presentation)
-        let replacement = SessionAuthenticationPrompt(token: token, id: UUID(), kind: .unknownMasked, text: "new request")
+        let replacement = SessionAuthenticationPrompt(token: token, id: UUID(), payload: .keyboard(name: "", instruction: "new request", prompts: []))
         driver.onAuthentication?(replacement)
         XCTAssertNil(a.dialog)
-        XCTAssertFalse(controller.respond(.acknowledge, to: prompt, tabID: aID))
+        XCTAssertFalse(controller.respond(.answers([]), to: prompt, tabID: aID))
         XCTAssertTrue(controller.present(.authentication(replacement), tabID: aID))
         controller.setWorkspaceVisible(false)
         XCTAssertNil(a.dialog)
-        XCTAssertFalse(controller.respond(.acknowledge, to: replacement, tabID: aID))
+        XCTAssertFalse(controller.respond(.answers([]), to: replacement, tabID: aID))
         controller.setWorkspaceVisible(true)
         XCTAssertNil(a.dialog)
-        XCTAssertTrue(controller.respond(.acknowledge, to: replacement, tabID: aID))
+        XCTAssertTrue(controller.respond(.answers([]), to: replacement, tabID: aID))
         XCTAssertEqual(driver.responseCount, 1)
         driver.set(.awaitingTrust)
         let trust = SessionTrustPrompt(token: token, id: UUID(), host: try XCTUnwrap(a.configuration?.connection.host),
-            algorithm: "ssh-ed25519", fingerprint: "SHA256:LOGIC-ONLY", source: "logic", transport: nil)
+            algorithm: "ssh-ed25519", fingerprint: "SHA256:LOGIC-ONLY", source: "logic")
         driver.onTrust?([trust]); XCTAssertTrue(controller.present(.trust(trust), tabID: aID))
         driver.onTrust?([]); XCTAssertNil(a.dialog)
         let rejectedTrust = await controller.accept(trust, tabID: aID); XCTAssertFalse(rejectedTrust)
@@ -326,10 +326,10 @@ import OpenLXSSHTrust
         try await wait { builder.drivers.count == 1 && controller.tabs[0].preparation == nil }
         let driver = builder.drivers[0]
         driver.set(.authenticating)
-        let prompt = SessionAuthenticationPrompt(token: try XCTUnwrap(driver.token), id: UUID(), kind: .unknownMasked, text: "logic-only")
+        let prompt = SessionAuthenticationPrompt(token: try XCTUnwrap(driver.token), id: UUID(), payload: .initialPassword)
         driver.onAuthentication?(prompt)
         controller.disconnect(id)
-        XCTAssertFalse(controller.respond(.acknowledge, to: prompt, tabID: id))
+        XCTAssertFalse(controller.respond(.answers([]), to: prompt, tabID: id))
         XCTAssertEqual(driver.responseCount, 0)
         await controller.closeAll(); try await repo.close()
     }
@@ -368,23 +368,37 @@ import OpenLXSSHTrust
         let id = try XCTUnwrap(controller.open(host, mode: .reuse))
         try await wait { builder.drivers.count == 1 && controller.tabs[0].preparation == nil }
         let token = try XCTUnwrap(builder.drivers[0].token)
-        let available = try await controller.readSavedPassword(token, tabID: id, expectedHost: host)
+        let available = try await controller.readTypedPrimary(
+            SessionPrimaryRequest(token: token, id: UUID(), nativeSessionID: id, purpose: .password, key: nil), tabID: id, expectedHost: host)
         XCTAssertNotNil(available)
-        var altered = host; altered.address = "changed.invalid"
-        try await repo.apply([.updateHost(altered)])
-        let changed = try await controller.readSavedPassword(token, tabID: id, expectedHost: host)
-        XCTAssertNil(changed)
-        try await repo.apply([.updateHost(host)])
+        // Single-use per generation: second read on same generation must fail without touching Keychain.
+        do {
+            _ = try await controller.readTypedPrimary(
+                SessionPrimaryRequest(token: token, id: UUID(), nativeSessionID: id, purpose: .password, key: nil), tabID: id, expectedHost: host)
+            XCTFail("Primary password read must be single-use per generation")
+        } catch {}
+        // Reconnect for a fresh generation, then alter host in repository and verify mismatch rejects.
         controller.disconnect(id)
-        let cancelled = try await controller.readSavedPassword(token, tabID: id, expectedHost: host)
-        XCTAssertNil(cancelled)
+        do {
+            _ = try await controller.readTypedPrimary(
+                SessionPrimaryRequest(token: token, id: UUID(), nativeSessionID: id, purpose: .password, key: nil), tabID: id, expectedHost: host)
+            XCTFail("Disconnected tab must reject primary read")
+        } catch {}
         controller.reconnect(id)
         try await wait { builder.drivers[0].token?.generation == 2 }
-        let stale = try await controller.readSavedPassword(token, tabID: id, expectedHost: host)
-        XCTAssertNil(stale)
-        var mfa = host; mfa.authentication = .passwordWithMFA
-        let mixed = try await controller.readSavedPassword(try XCTUnwrap(builder.drivers[0].token), tabID: id, expectedHost: mfa)
-        XCTAssertNil(mixed)
+        let token2 = try XCTUnwrap(builder.drivers[0].token)
+        do {
+            _ = try await controller.readTypedPrimary(
+                SessionPrimaryRequest(token: token, id: UUID(), nativeSessionID: id, purpose: .password, key: nil), tabID: id, expectedHost: host)
+            XCTFail("Stale generation token must reject primary read")
+        } catch {}
+        var altered = host; altered.address = "changed.invalid"
+        try await repo.apply([.updateHost(altered)])
+        do {
+            _ = try await controller.readTypedPrimary(
+                SessionPrimaryRequest(token: token2, id: UUID(), nativeSessionID: id, purpose: .password, key: nil), tabID: id, expectedHost: host)
+            XCTFail("Altered host must reject primary read")
+        } catch {}
         let reads = await credentials.readCount
         XCTAssertEqual(reads, 1)
         await controller.closeAll(); try await repo.close()
@@ -748,7 +762,7 @@ extension SessionControllerTests {
             let ready = try await ordinary.prepare(hostID: host.id, sessionID: UUID())
             let driver = try XCTUnwrap(ready.driver as? NativeSessionDriver)
             XCTAssertEqual(ready.host, host); XCTAssertEqual(ready.configuration.authentication.method, expected)
-            XCTAssertTrue(driver.usesTypedAuthentication); XCTAssertNil(driver.token)
+            XCTAssertNil(driver.token)
             let closed = await driver.closeResult(deadline: .now + .seconds(1))
             XCTAssertEqual(closed, .closed)
         }
@@ -789,7 +803,7 @@ extension SessionControllerTests {
     private func entryRoutingFixture(authentication: AuthenticationKind = .password, savedPassword: Bool = false) async throws -> EntryRoutingFixture {
         let (repository, _, ordinary, directory) = try fixture(), credentials = FakeCredentials()
         let security = SecurityCoordinator(repository: repository, location: .isolated(directory), credentials: credentials)
-        let candidate = LogicSessionBuilder(repository: repository); candidate.usesTypedAuthentication = true
+        let candidate = LogicSessionBuilder(repository: repository)
         ordinary.syntheticKeyPath = entryRoutingSyntheticKeyPath; candidate.syntheticKeyPath = entryRoutingSyntheticKeyPath
         let key = ManagedKeyReference(algorithm: .ed25519), reference = UUID()
         let host = HostConfiguration(name: "entry routing", address: "never-connected.invalid", username: "Fixture",
@@ -821,9 +835,9 @@ extension SessionControllerTests {
             f.app.requestSession(hostID: f.host.id, mode: .reuse)
             let first = try XCTUnwrap(f.app.sessions.selectedTab); await first.preparation?.value
             let driver = try XCTUnwrap(first.driver as? LogicSessionDriver), token = try XCTUnwrap(driver.token)
-            XCTAssertTrue(first.builder === f.ordinary); XCTAssertFalse(driver.usesTypedAuthentication)
+            XCTAssertTrue(first.builder === f.ordinary)
             XCTAssertEqual(driver.lastConfiguration?.authentication.method, expected)
-            XCTAssertEqual(driver.legacyConnectCount, 1); XCTAssertEqual(driver.typedConnectCount, 0)
+            XCTAssertEqual(driver.typedConnectCount, 1)
             f.app.showWorkspace(.vault)
             f.app.requestSession(hostID: f.host.id, mode: .reuse)
             XCTAssertEqual(f.app.sessions.selectedTabID, first.id); XCTAssertEqual(driver.token, token)
@@ -913,7 +927,7 @@ extension SessionControllerTests {
         XCTAssertTrue(result); XCTAssertEqual(dismisses, 1); XCTAssertNil(owner.item); XCTAssertTrue(editor.password.isEmpty)
         let preparedOwner = try XCTUnwrap(prepared), pendingIntent = try XCTUnwrap(intent)
         let tab = try XCTUnwrap(f.app.sessions.selectedTab), driver = try XCTUnwrap(tab.driver as? LogicSessionDriver)
-        XCTAssertTrue(tab.builder === f.candidate); XCTAssertEqual(driver.typedConnectCount, 1); XCTAssertEqual(driver.legacyConnectCount, 0)
+        XCTAssertTrue(tab.builder === f.candidate); XCTAssertEqual(driver.typedConnectCount, 1)
         XCTAssertEqual(f.app.workspacePage, .session(tab.id)); XCTAssertEqual(f.app.sessions.tabs.count, 1)
         XCTAssertEqual(f.app.connectionNotice, .opened(.init(hostID: f.host.id, mode: .newSession), tab.id))
         XCTAssertFalse(pendingIntent.consumed, "Commit binds the intent; only the exact typed primary request consumes it")
@@ -933,7 +947,7 @@ extension SessionControllerTests {
         f.app.showWorkspace(.vault); f.app.requestSession(hostID: f.host.id, mode: .newSession)
         let ordinaryTab = try XCTUnwrap(f.app.sessions.selectedTab); await ordinaryTab.preparation?.value
         XCTAssertNotEqual(ordinaryTab.id, tab.id); XCTAssertTrue(ordinaryTab.builder === f.ordinary)
-        XCTAssertEqual(f.ordinary.drivers.first?.legacyConnectCount, 1); XCTAssertEqual(f.candidate.drivers.count, 1)
+        XCTAssertEqual(f.ordinary.drivers.first?.typedConnectCount, 1); XCTAssertEqual(f.candidate.drivers.count, 1)
         XCTAssertEqual(driver.connectCount, 1)
         let reads = await f.credentials.readCount, saves = await f.credentials.saveCount
         XCTAssertEqual(reads, 0); XCTAssertEqual(saves, 0)
@@ -988,7 +1002,6 @@ private let entryRoutingSyntheticKeyPath = "/private/entry-routing-contract/key-
     var drivers: [LogicSessionDriver] = []
     var delay = false
     var fail = false
-    var usesTypedAuthentication = false
     var syntheticKeyPath: String?
     private(set) var preparedHostIDs: [UUID] = []
     private(set) var configuredHostIDs: [UUID] = []
@@ -1003,7 +1016,7 @@ private let entryRoutingSyntheticKeyPath = "/private/entry-routing-contract/key-
         if fail { throw TransportError.invalidConfiguration }
         if delay { try await Task.sleep(for: .milliseconds(100)) }
         let (host, configuration) = try await configuration(hostID: hostID)
-        let driver = LogicSessionDriver(id: sessionID, usesTypedAuthentication: usesTypedAuthentication); drivers.append(driver)
+        let driver = LogicSessionDriver(id: sessionID); drivers.append(driver)
         return ReadySession(host: host, configuration: configuration, driver: driver)
     }
 }
@@ -1017,21 +1030,14 @@ private let entryRoutingSyntheticKeyPath = "/private/entry-routing-contract/key-
     var onTrust: (([SessionTrustPrompt]) -> Void)?
     var onAuthentication: ((SessionAuthenticationPrompt) -> Void)?
     var connectCount = 0, responseCount = 0
-    private(set) var legacyConnectCount = 0, typedConnectCount = 0
-    let usesTypedAuthentication: Bool
+    private(set) var typedConnectCount = 0
     private(set) var primaryAuthorization: SessionPrimaryAuthorization?
     var holdClose = false
     var closeCount = 0
     var lastConfiguration: SSHSessionConfiguration?
-    init(id: UUID, usesTypedAuthentication: Bool = false) { self.id = id; self.usesTypedAuthentication = usesTypedAuthentication }
+    init(id: UUID) { self.id = id }
     func set(_ next: SSHSessionState) { state = next; onState?(token, next) }
-    func connect(_ configuration: SSHSessionConfiguration, savedPassword: SavedPasswordAuthorization?) throws -> SessionToken {
-        guard !usesTypedAuthentication else { throw TransportError.invalidConfiguration }
-        legacyConnectCount += 1
-        return beginConnection(configuration)
-    }
     func connect(_ configuration: SSHSessionConfiguration, primary: SessionPrimaryAuthorization) throws -> SessionToken {
-        guard usesTypedAuthentication else { throw TransportError.invalidConfiguration }
         primaryAuthorization = primary; typedConnectCount += 1
         return beginConnection(configuration)
     }
@@ -1039,8 +1045,8 @@ private let entryRoutingSyntheticKeyPath = "/private/entry-routing-contract/key-
         lastConfiguration = configuration
         connectCount += 1; token = SessionToken(sessionID: id, generation: UInt64(connectCount)); set(.connectionPending); return token!
     }
-    func accept(_ prompt: SessionTrustPrompt) async throws { set(.connectionPending) }
-    func respond(_ response: AuthenticationResponse, to prompt: SessionAuthenticationPrompt) throws { responseCount += 1; set(.connectionPending) }
+    func accept(_ prompt: SessionTrustPrompt, persistence: SessionTrustPersistence) async throws { set(.connectionPending) }
+    func respond(_ answer: SessionAuthenticationAnswer, to prompt: SessionAuthenticationPrompt) throws { responseCount += 1; set(.connectionPending) }
     func cancel() { set(.disconnected(nil)) }
     func closeTab() {
         closeCount += 1
