@@ -29,6 +29,10 @@ void rf_wipe(void *, size_t);
  * Must have exclusive use of the socket's underlying open-file description.
  * All methods except cancel must be invoked on the same serial owner queue. */
 rf_connection *rf_connection_create(int connected_socket);
+/* Returns the connection's owned nonblocking socket FD, or -1 if null/closed.
+ * Invoke only on the connection's serial owner queue. Callers MUST NOT close this FD
+ * directly; duplicate it (F_DUPFD_CLOEXEC) before registering with kqueue/DispatchSource. */
+int rf_connection_socket(const rf_connection *c);
 void rf_connection_cancel(rf_connection *);
 int rf_handshake(rf_connection *, rf_cancel *, double timeout);
 const char *rf_hostkey(rf_connection *, size_t *length, int *type);

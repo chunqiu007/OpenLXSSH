@@ -20,7 +20,12 @@ struct rf_cancel { atomic_int flag; };
 typedef union rf_allocation rf_allocation;
 union rf_allocation {
     max_align_t alignment;
-    struct { rf_allocation *next; size_t size; } meta;
+    struct {
+        rf_allocation *prev;
+        rf_allocation *next;
+        size_t size;
+        size_t padding; /* Keep 32-byte header (16-byte aligned on arm64). */
+    } meta;
 };
 struct rf_connection {
     LIBSSH2_SESSION *session;
@@ -42,25 +47,33 @@ struct rf_connection {
     rf_allocation *allocations;
     LIBSSH2_SFTP_HANDLE *handles[64];
 };
-/* Track every session allocation. libssh2 1.11.1 has incomplete SFTP handle cleanup
- * after interrupted operations; after session_free we can reclaim remaining owned blocks,
- * without accessing private upstream structs. All blocks (including auth packets) are wiped. */
+/* Track every session allocation in an O(1) doubly-linked list. libssh2 1.11.1 has incomplete
+ * SFTP handle cleanup after interrupted operations; after session_free we can reclaim remaining
+ * owned blocks without accessing private upstream structs. All blocks are wiped on free. */
 static LIBSSH2_ALLOC_FUNC(session_alloc) {
     rf_connection *c = *abstract;
     if(count > SIZE_MAX - sizeof(rf_allocation)) return NULL;
     rf_allocation *p = malloc(sizeof(*p) + count);
     if(!p) return NULL;
-    p->meta.size = count; p->meta.next = c->allocations; c->allocations = p;
+    p->meta.size = count;
+    p->meta.prev = NULL;
+    p->meta.next = c->allocations;
+    p->meta.padding = 0;
+    if(c->allocations) c->allocations->meta.prev = p;
+    c->allocations = p;
     return p + 1;
 }
 static LIBSSH2_FREE_FUNC(session_free_block) {
     if(!ptr) return;
     rf_connection *c = *abstract;
     rf_allocation *p = (rf_allocation *)ptr - 1;
-    rf_allocation **cursor = &c->allocations;
-    while(*cursor && *cursor != p) cursor = &(*cursor)->meta.next;
-    if(*cursor) *cursor = p->meta.next;
-    OPENSSL_cleanse(ptr, p->meta.size); free(p);
+    if(p->meta.prev) p->meta.prev->meta.next = p->meta.next;
+    else if(c->allocations == p) c->allocations = p->meta.next;
+    if(p->meta.next) p->meta.next->meta.prev = p->meta.prev;
+    p->meta.prev = NULL;
+    p->meta.next = NULL;
+    OPENSSL_cleanse(ptr, p->meta.size);
+    free(p);
 }
 static LIBSSH2_REALLOC_FUNC(session_realloc) {
     if(!ptr) return session_alloc(count, abstract);
@@ -169,6 +182,12 @@ rf_connection *rf_connection_create(int socket_fd) {
        setsockopt(owned, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one))) {
         close(owned); return NULL;
     }
+    if(address.ss_family == AF_INET || address.ss_family == AF_INET6) {
+        if(setsockopt(owned, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0 &&
+           errno != ENOPROTOOPT && errno != EOPNOTSUPP) {
+            close(owned); return NULL;
+        }
+    }
     rf_connection *c = calloc(1, sizeof(*c));
     if(!c) { close(owned); return NULL; }
     c->socket = owned;
@@ -179,6 +198,9 @@ rf_connection *rf_connection_create(int socket_fd) {
     libssh2_session_callback_set2(c->session, LIBSSH2_CALLBACK_RECV, (libssh2_cb_generic *)session_recv);
     libssh2_session_set_blocking(c->session, 0);
     return c;
+}
+int rf_connection_socket(const rf_connection *c) {
+    return (c && c->session && c->socket >= 0) ? c->socket : -1;
 }
 void rf_connection_cancel(rf_connection *c) { if(c) atomic_store(&c->cancelled, 1); }
 int rf_handshake(rf_connection *c, rf_cancel *cancel, double timeout) {

@@ -1,4 +1,5 @@
 import COpenLXSSHFiles
+import Darwin
 import Foundation
 import OpenLXSSHTrust
 
@@ -24,6 +25,179 @@ struct NativeShellPumpSnapshot: Sendable {
     let nativePresent: Bool
     let nativeDisposals: Int
     let failure: NativeShellError?
+}
+
+private final class WatchFDGuard: @unchecked Sendable {
+    private var fd: Int32
+    private var remaining: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    init(fd: Int32, sources: Int) {
+        self.fd = fd
+        self.remaining = sources
+    }
+    /// Must run on the owning serial queue.
+    func oneSourceCancelled() {
+        remaining -= 1
+        guard remaining == 0 else { return }
+        if fd >= 0 {
+            Darwin.close(fd)
+            fd = -1
+        }
+        let continuations = waiters
+        waiters.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+    /// Must run on the owning serial queue.
+    func waitClosed(_ continuation: CheckedContinuation<Void, Never>) {
+        if remaining == 0 {
+            continuation.resume()
+        } else {
+            waiters.append(continuation)
+        }
+    }
+    deinit {
+        if fd >= 0 { Darwin.close(fd) }
+    }
+}
+
+/// Queue-owned kqueue-backed I/O & deadline driver for LibSSH2ShellSession.
+/// Always owns an independent duplicated FD so `rf_connection_destroy` closing the primary
+/// socket FD never races with kqueue registration.
+private final class NativeShellEventDriver: @unchecked Sendable {
+    private let fdGuard: WatchFDGuard
+    private var readSource: (any DispatchSourceRead)?
+    private var writeSource: (any DispatchSourceWrite)?
+    private var timerSource: (any DispatchSourceTimer)?
+    private var readActive = false
+    private var writeActive = false
+    private var timerActive = false
+    private var closing = false
+
+    init?(duplicating rawFD: Int32, queue: DispatchQueue, onEvent: @escaping @Sendable () -> Void) {
+        guard rawFD >= 0 else { return nil }
+        let dupFD = fcntl(rawFD, F_DUPFD_CLOEXEC, 0)
+        guard dupFD >= 0 else { return nil }
+
+        let guardBox = WatchFDGuard(fd: dupFD, sources: 3)
+        self.fdGuard = guardBox
+
+        let rSource = DispatchSource.makeReadSource(fileDescriptor: dupFD, queue: queue)
+        let wSource = DispatchSource.makeWriteSource(fileDescriptor: dupFD, queue: queue)
+        let tSource = DispatchSource.makeTimerSource(queue: queue)
+        self.readSource = rSource
+        self.writeSource = wSource
+        self.timerSource = tSource
+
+        let eventCallback: @Sendable () -> Void = { [weak self] in
+            guard let self, !self.closing else { return }
+            self.disarm()
+            onEvent()
+        }
+        rSource.setEventHandler(handler: eventCallback)
+        wSource.setEventHandler(handler: eventCallback)
+        tSource.setEventHandler(handler: eventCallback)
+
+        let cancelCallback: @Sendable () -> Void = {
+            guardBox.oneSourceCancelled()
+        }
+        rSource.setCancelHandler(handler: cancelCallback)
+        wSource.setCancelHandler(handler: cancelCallback)
+        tSource.setCancelHandler(handler: cancelCallback)
+    }
+
+    func disarm() {
+        guard !closing else { return }
+        if readActive, let source = readSource {
+            source.suspend()
+            readActive = false
+        }
+        if writeActive, let source = writeSource {
+            source.suspend()
+            writeActive = false
+        }
+        if timerActive, let source = timerSource {
+            source.suspend()
+            timerActive = false
+        }
+    }
+
+    func arm(read: Bool, write: Bool, deadline: ContinuousClock.Instant?, now: ContinuousClock.Instant) {
+        guard !closing else { return }
+        if read {
+            if !readActive, let source = readSource {
+                readActive = true
+                source.resume()
+            }
+        } else if readActive, let source = readSource {
+            source.suspend()
+            readActive = false
+        }
+
+        if write {
+            if !writeActive, let source = writeSource {
+                writeActive = true
+                source.resume()
+            }
+        } else if writeActive, let source = writeSource {
+            source.suspend()
+            writeActive = false
+        }
+
+        if let deadline, let source = timerSource {
+            let remaining = now.duration(to: deadline)
+            let (secs, attoseconds) = remaining.components
+            let nanos: Int64
+            if secs < 0 || (secs == 0 && attoseconds <= 0) {
+                nanos = 0
+            } else if secs > 3600 {
+                nanos = 3600 * 1_000_000_000
+            } else {
+                nanos = secs * 1_000_000_000 + attoseconds / 1_000_000_000
+            }
+            let leeway: DispatchTimeInterval = nanos >= 1_000_000_000 ? .milliseconds(5) : .microseconds(500)
+            source.schedule(deadline: .now() + .nanoseconds(Int(clamping: nanos)), repeating: .never, leeway: leeway)
+            if !timerActive {
+                timerActive = true
+                source.resume()
+            }
+        } else if timerActive, let source = timerSource {
+            source.suspend()
+            timerActive = false
+        }
+    }
+
+    func teardown() {
+        guard !closing else { return }
+        closing = true
+        if let source = readSource {
+            readSource = nil
+            source.cancel()
+            if !readActive {
+                readActive = true
+                source.resume()
+            }
+        }
+        if let source = writeSource {
+            writeSource = nil
+            source.cancel()
+            if !writeActive {
+                writeActive = true
+                source.resume()
+            }
+        }
+        if let source = timerSource {
+            timerSource = nil
+            source.cancel()
+            if !timerActive {
+                timerActive = true
+                source.resume()
+            }
+        }
+    }
+
+    func waitDrained(_ continuation: CheckedContinuation<Void, Never>) {
+        fdGuard.waitClosed(continuation)
+    }
 }
 
 private final class NativeShellResources: @unchecked Sendable {
@@ -84,6 +258,7 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     private let queue = DispatchQueue(label: "OpenLXSSH.NativeShell.libssh2", qos: .userInitiated)
     private let resources: NativeShellResources
     private let pumpSteps: NativeShellPumpSteps?
+    private let useEventDrivenPump: Bool
     private func pumpNow() -> ContinuousClock.Instant { pumpSteps?.now() ?? .now }
     private let lifetime = CancellationToken()
     private let interactionTasks: NativeShellInteractionTasks
@@ -111,23 +286,30 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     private var eofDelivered = false
     private var inputEOF = false
     private var pumping = false
+    private var eventDriver: NativeShellEventDriver?
     private var terminalError: NativeShellError?
 
     convenience init(connectedSocket: Int32, options: NativeShellOptions,
                      interactionTasks: NativeShellInteractionTasks = NativeShellInteractionTasks(),
                      trustAttempt: FileHostTrustAttempt = FileHostTrustAttempt()) throws {
         try self.init(ownedSocket: connectedSocket, options: options, interactionTasks: interactionTasks,
-                      trustAttempt: trustAttempt, pumpSteps: nil)
+                      trustAttempt: trustAttempt, pumpSteps: nil, useEventDrivenPump: true)
     }
     /// Only module-internal tests can select this local I/O state. It makes no authentication or
     /// shellReady claim, never handshakes, and retains real native/socket ownership for teardown.
     convenience init(offlinePumpSocket: Int32, options: NativeShellOptions, steps: NativeShellPumpSteps) throws {
         try self.init(ownedSocket: offlinePumpSocket, options: options, interactionTasks: NativeShellInteractionTasks(),
-                      trustAttempt: FileHostTrustAttempt(), pumpSteps: steps)
+                      trustAttempt: FileHostTrustAttempt(), pumpSteps: steps, useEventDrivenPump: false)
+        ready = true
+    }
+    /// Internal test seam exercising the real kqueue DispatchSource event driver over a local socketpair.
+    convenience init(offlineEventDrivenPumpSocket: Int32, options: NativeShellOptions, steps: NativeShellPumpSteps) throws {
+        try self.init(ownedSocket: offlineEventDrivenPumpSocket, options: options, interactionTasks: NativeShellInteractionTasks(),
+                      trustAttempt: FileHostTrustAttempt(), pumpSteps: steps, useEventDrivenPump: true)
         ready = true
     }
     private init(ownedSocket: Int32, options: NativeShellOptions, interactionTasks: NativeShellInteractionTasks,
-                 trustAttempt: FileHostTrustAttempt, pumpSteps: NativeShellPumpSteps?) throws {
+                 trustAttempt: FileHostTrustAttempt, pumpSteps: NativeShellPumpSteps?, useEventDrivenPump: Bool) throws {
         if pumpSteps == nil {
             var actual = rf_tcp_keepalive(), systemError: Int32 = 0
             let code = rf_tcp_keepalive_configure(ownedSocket, Int32(options.keepalive?.interval ?? 0),
@@ -142,6 +324,7 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
             throw NativeShellError(.transport, operation: "adopt-socket")
         }
         resources = NativeShellResources(connection); self.options = options; self.pumpSteps = pumpSteps
+        self.useEventDrivenPump = useEventDrivenPump
         let tasks = interactionTasks
         self.interactionTasks = tasks; interactionDrain = NativeShellDrainHandle(tasks: tasks)
         self.trustAttempt = trustAttempt
@@ -160,8 +343,8 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     deinit {
         lifetime.cancel(); interactionTasks.revoke(); interactionTasks.seal()
         // Destruction never blocks MainActor. Only these independent owners outlive the session.
-        let resources = resources, tasks = interactionTasks
-        queue.async { resources.dispose(); tasks.markNativeClosed() }
+        let resources = resources, tasks = interactionTasks, driver = eventDriver
+        queue.async { driver?.teardown(); resources.dispose(); tasks.markNativeClosed() }
         readBuffer?.deallocate()
     }
     public var pendingInputBytes: Int { admission.pendingInputBytes }
@@ -178,7 +361,13 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             queue.async {
                 self.fail(NativeShellError(.closed, operation: "close", stages: self.stages))
-                self.disposeNative(); continuation.resume()
+                self.disposeNative()
+                if let driver = self.eventDriver {
+                    driver.teardown()
+                    driver.waitDrained(continuation)
+                } else {
+                    continuation.resume()
+                }
             }
         }
         _ = await interactionTasks.drain()
@@ -384,6 +573,8 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     public func write(_ data: Data, token: CancellationToken) async throws {
         try admission.reserveWrite(data.count)
         defer { admission.releaseWrite(data.count) }
+        let cancelObserver = token.addCancelObserver { [weak self] in self?.wakePump() }
+        defer { if let cancelObserver { token.removeCancelObserver(cancelObserver) } }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 queue.async {
@@ -405,6 +596,8 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
             throw NativeShellError(.invalidConfiguration, operation: "receive-bounds")
         }
         try admission.reserveReceive(); defer { admission.releaseReceive() }
+        let cancelObserver = token.addCancelObserver { [weak self] in self?.wakePump() }
+        defer { if let cancelObserver { token.removeCancelObserver(cancelObserver) } }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
@@ -426,6 +619,8 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
     public func sendEOF(token: CancellationToken) async throws { try await submitControl(.eof, token: token) }
     private func submitControl(_ kind: NativeShellControl, token: CancellationToken) async throws {
         try admission.reserveControl(); defer { admission.releaseControl() }
+        let cancelObserver = token.addCancelObserver { [weak self] in self?.wakePump() }
+        defer { if let cancelObserver { token.removeCancelObserver(cancelObserver) } }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 queue.async {
@@ -439,9 +634,40 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
             }
         } onCancel: { token.cancel(); self.cancel() }
     }
+    private func wakePump() {
+        queue.async { self.schedulePump() }
+    }
     private func schedulePump() {
         guard !pumping else { return }; pumping = true
+        eventDriver?.disarm()
         queue.async { self.pump() }
+    }
+    private func ensureEventDriver(_ c: OpaquePointer) throws -> NativeShellEventDriver {
+        if let driver = eventDriver { return driver }
+        let rawFD = rf_connection_socket(c)
+        guard let driver = NativeShellEventDriver(duplicating: rawFD, queue: queue, onEvent: { [weak self] in
+            guard let self, !self.pumping else { return }
+            self.pump()
+        }) else {
+            throw NativeShellError(.transport, operation: "poll", stages: stages)
+        }
+        eventDriver = driver
+        return driver
+    }
+    private func earliestDeadline() -> ContinuousClock.Instant? {
+        var earliest: ContinuousClock.Instant?
+        func consider(_ candidate: ContinuousClock.Instant) {
+            if let current = earliest {
+                if candidate < current { earliest = candidate }
+            } else {
+                earliest = candidate
+            }
+        }
+        for request in writes { consider(request.deadline) }
+        if let control { consider(control.deadline) }
+        if let readProtocolDeadline { consider(readProtocolDeadline) }
+        if pendingOutbound == nil, let reader { consider(reader.deadline) }
+        return earliest
     }
     private func pump() {
         pumping = false
@@ -460,13 +686,18 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                 try checkTokens(control.token)
                 guard pumpNow() < control.deadline else { throw NativeShellError(.timeout, operation: "control", stages: stages) }
             }
+            var madeProgress = false
+            var readReturnedEAGAIN = false
             // A pending transport packet must resume the same API with stable arguments before
             // any other outbound operation (including read's receive-window adjustment).
             if let pending = pendingOutbound {
                 switch pending {
-                case .write: try pumpWrite(c)
-                case .read, .exit: try pumpRead(c)
-                case .control: try pumpControl(c)
+                case .write: madeProgress = try pumpWrite(c)
+                case .read, .exit:
+                    let outcome = try pumpRead(c)
+                    madeProgress = outcome.progressed
+                    readReturnedEAGAIN = outcome.eagain
+                case .control: madeProgress = try pumpControl(c)
                 }
             } else {
                 // Each class gets at most one bounded API step per tick. Rotate first priority
@@ -474,16 +705,50 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                 let first = pumpTurn; pumpTurn = (pumpTurn + 1) % 3
                 for offset in 0..<3 where ready && pendingOutbound == nil {
                     switch (first + offset) % 3 {
-                    case 0: if !writes.isEmpty { try pumpWrite(c) }
-                    case 1: if control != nil { try pumpControl(c) }
-                    default: if reader != nil { try pumpRead(c) }
+                    case 0:
+                        if !writes.isEmpty, try pumpWrite(c) { madeProgress = true }
+                    case 1:
+                        if control != nil, try pumpControl(c) { madeProgress = true }
+                    default:
+                        if reader != nil {
+                            let outcome = try pumpRead(c)
+                            if outcome.progressed { madeProgress = true }
+                            if outcome.eagain { readReturnedEAGAIN = true }
+                        }
                     }
                 }
             }
             if ready && (!writes.isEmpty || reader != nil || control != nil) {
-                pumping = true
-                // Kernel TCP keepalive runs independently; no app idle timer can kill a quiet shell.
-                queue.asyncAfter(deadline: .now() + .milliseconds(5)) { [weak self] in self?.pump() }
+                if !useEventDrivenPump {
+                    pumping = true
+                    // Offline scripted pump tests advance virtual clocks without real socket I/O.
+                    queue.asyncAfter(deadline: .now() + .milliseconds(5)) { [weak self] in self?.pump() }
+                } else if madeProgress {
+                    pumping = true
+                    queue.async { self.pump() }
+                } else {
+                    let events = pumpSteps?.poll(c, lifetime.native) ?? rf_shell_poll(c, lifetime.native)
+                    try check(events, operation: "poll")
+                    if !readReturnedEAGAIN && pendingOutbound == nil && reader != nil && !eofDelivered
+                        && (events & Int32(RF_SHELL_POLL_BUFFERED)) != 0 {
+                        pumping = true
+                        queue.async { self.pump() }
+                    } else {
+                        var wantRead = (events & Int32(RF_SHELL_POLL_INBOUND)) != 0
+                        let wantWrite = (events & Int32(RF_SHELL_POLL_OUTBOUND)) != 0
+                        if !wantRead && !wantWrite { wantRead = true }
+                        let now = pumpNow()
+                        let deadline = earliestDeadline()
+                        if let deadline, deadline <= now {
+                            pumping = true
+                            queue.async { self.pump() }
+                        } else {
+                            // Kernel TCP keepalive runs independently; no app idle timer kills a quiet shell.
+                            let driver = try ensureEventDriver(c)
+                            driver.arm(read: wantRead, write: wantWrite, deadline: deadline, now: now)
+                        }
+                    }
+                }
             }
         } catch { fail(convert(error, operation: "io")) }
     }
@@ -491,27 +756,29 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
         let events = pumpSteps?.poll(c, lifetime.native) ?? rf_shell_poll(c, lifetime.native); try check(events, operation: "poll")
         return events & Int32(RF_SHELL_POLL_OUTBOUND) != 0
     }
-    private func pumpWrite(_ c: OpaquePointer) throws {
-        guard let request = writes.first else { return }
+    private func pumpWrite(_ c: OpaquePointer) throws -> Bool {
+        guard let request = writes.first else { return false }
         guard !inputEOF else { throw NativeShellError(.closed, operation: "input-eof", stages: stages) }
         let rc = pumpSteps?.write(c, request.bytes.stepPointer, request.bytes.stepLength, lifetime.native)
             ?? rf_shell_write_step(c, request.bytes.stepPointer, request.bytes.stepLength, lifetime.native)
         if rc == Int32(LIBSSH2_ERROR_EAGAIN) || rc == 0 {
             // Preserve exact pointer/length even if EAGAIN was inbound-only (remote window).
-            pendingOutbound = try outboundBlocked(c) ? .write : nil; return
+            pendingOutbound = try outboundBlocked(c) ? .write : nil
+            return false
         }
         pendingOutbound = nil; try check(rc, operation: "write")
         guard Int(rc) <= request.bytes.stepLength else { throw NativeShellError(.protocolFailure, operation: "write-count") }
         request.bytes.advance(Int(rc))
         if request.bytes.complete { writes.removeFirst(); request.continuation.resume() }
+        return true
     }
     private func finishRead(_ value: NativeShellReceive) {
         let request = reader; reader = nil
         readBuffer?.deallocate(); readBuffer = nil; readLength = 0
         request?.continuation.resume(returning: value)
     }
-    private func pumpRead(_ c: OpaquePointer) throws {
-        guard let request = reader, let buffer = readBuffer else { return }
+    private func pumpRead(_ c: OpaquePointer) throws -> (progressed: Bool, eagain: Bool) {
+        guard let request = reader, let buffer = readBuffer else { return (false, false) }
         if eofDelivered {
             var result = rf_shell_exit()
             let rc = pumpSteps?.exit(c, &result, lifetime.native) ?? rf_shell_exit_step(c, &result, lifetime.native)
@@ -519,10 +786,11 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                 if try outboundBlocked(c) {
                     pendingOutbound = .exit
                     if readProtocolDeadline == nil { readProtocolDeadline = pumpNow().advanced(by: .seconds(options.operationTimeout)) }
-                    return
+                    return (false, true)
                 }
                 pendingOutbound = nil; readProtocolDeadline = nil
-                if pumpNow() >= request.deadline { finishRead(.wouldBlock) }; return
+                if pumpNow() >= request.deadline { finishRead(.wouldBlock); return (true, false) }
+                return (false, true)
             }
             pendingOutbound = nil; readProtocolDeadline = nil
             try check(rc, operation: "exit-status")
@@ -534,29 +802,30 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
             ready = false; admission.close(); disposeNative()
             finishRead(.exit(exit))
             fail(NativeShellError(.closed, operation: "remote-exit", stages: stages))
-            return
+            return (true, false)
         }
         let rc = pumpSteps?.read(c, buffer, readLength, lifetime.native) ?? rf_shell_read_step(c, buffer, readLength, lifetime.native)
         if rc == Int32(LIBSSH2_ERROR_EAGAIN) {
             if try outboundBlocked(c) {
                 pendingOutbound = .read
                 if readProtocolDeadline == nil { readProtocolDeadline = pumpNow().advanced(by: .seconds(options.operationTimeout)) }
-                return
+                return (false, true)
             }
             pendingOutbound = nil; readProtocolDeadline = nil
-            if pumpNow() >= request.deadline { finishRead(.wouldBlock) }
-            return
+            if pumpNow() >= request.deadline { finishRead(.wouldBlock); return (true, false) }
+            return (false, true)
         }
         pendingOutbound = nil; readProtocolDeadline = nil; try check(rc, operation: "read")
         if rc > 0 {
-            finishRead(.bytes(Data(bytes: buffer, count: Int(rc)))); return
+            finishRead(.bytes(Data(bytes: buffer, count: Int(rc)))); return (true, false)
         }
         let eof = pumpSteps?.eof(c, lifetime.native) ?? rf_shell_eof(c, lifetime.native); try check(eof, operation: "eof")
-        if eof != 0 { eofDelivered = true; finishRead(.eof) }
-        else if pumpNow() >= request.deadline { finishRead(.wouldBlock) }
+        if eof != 0 { eofDelivered = true; finishRead(.eof); return (true, false) }
+        if pumpNow() >= request.deadline { finishRead(.wouldBlock); return (true, false) }
+        return (false, false)
     }
-    private func pumpControl(_ c: OpaquePointer) throws {
-        guard let request = control else { return }
+    private func pumpControl(_ c: OpaquePointer) throws -> Bool {
+        guard let request = control else { return false }
         let rc: Int32
         switch request.kind {
         case .resize(let size):
@@ -564,10 +833,11 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
                 ?? rf_shell_resize_step(c, size.columns, size.rows, lifetime.native)
         case .eof: rc = pumpSteps?.sendEOF(c, lifetime.native) ?? rf_shell_send_eof_step(c, lifetime.native)
         }
-        if rc == Int32(LIBSSH2_ERROR_EAGAIN) { pendingOutbound = .control; return }
+        if rc == Int32(LIBSSH2_ERROR_EAGAIN) { pendingOutbound = .control; return false }
         pendingOutbound = nil; try check(rc, operation: "control")
         if case .eof = request.kind { inputEOF = true }
         control = nil; request.continuation.resume()
+        return true
     }
     private func requireReady(_ token: CancellationToken) throws {
         try checkTokens(token)
@@ -630,7 +900,11 @@ public final class LibSSH2ShellSession: @unchecked Sendable {
             changedHostKey: typed.changedHostKey ?? trustAttempt.changedHostKey,
             interactionDrain: typed.interactionDrain ?? interactionDrain)
     }
-    private func disposeNative() { resources.dispose(); interactionTasks.markNativeClosed() }
+    private func disposeNative() {
+        eventDriver?.teardown()
+        resources.dispose()
+        interactionTasks.markNativeClosed()
+    }
     private func fail(_ error: NativeShellError) {
         lifetime.cancel()
         activeLock.withLock { activeSetupToken?.cancel() }

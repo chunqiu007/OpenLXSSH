@@ -583,7 +583,7 @@ private final class NativeTrustEventRecord: @unchecked Sendable {
             while run.active, !Task.isCancelled {
                 do {
                     run.receiveInFlight = true
-                    let received = try await transport.receive(maxBytes: 64 * 1024, wait: 0.25, token: run.cancellation)
+                    let received = try await transport.receive(maxBytes: 64 * 1024, wait: 60.0, token: run.cancellation)
                     run.receiveInFlight = false
                     guard let self, self.isCurrent(run), !Task.isCancelled else { return }
                     switch received {

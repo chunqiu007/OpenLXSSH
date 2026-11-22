@@ -92,12 +92,37 @@ public struct FileServiceError: Error, Equatable, Sendable {
 }
 public final class CancellationToken: @unchecked Sendable {
     let native: OpaquePointer
+    private let lock = NSLock()
+    private var observers: [UUID: @Sendable () -> Void] = [:]
     public init() { native = rf_cancel_create()! }
     deinit { rf_cancel_destroy(native) }
-    public func cancel() { rf_cancel_set(native) }
+    public func cancel() {
+        rf_cancel_set(native)
+        let handlers: [@Sendable () -> Void] = lock.withLock {
+            let values = Array(observers.values)
+            observers.removeAll()
+            return values
+        }
+        for handler in handlers { handler() }
+    }
     public var isCancelled: Bool { rf_cancelled(native) != 0 }
     public func check() throws {
         if isCancelled || Task<Never, Never>.isCancelled { throw FileServiceError(.cancelled, operation: "cancel") }
+    }
+    /// Registers a one-shot callback fired when `cancel()` is invoked. If already cancelled,
+    /// invokes `handler` immediately and returns `nil`.
+    func addCancelObserver(_ handler: @escaping @Sendable () -> Void) -> UUID? {
+        let id: UUID? = lock.withLock {
+            if rf_cancelled(native) != 0 { return nil }
+            let token = UUID()
+            observers[token] = handler
+            return token
+        }
+        if id == nil { handler() }
+        return id
+    }
+    func removeCancelObserver(_ id: UUID) {
+        lock.withLock { _ = observers.removeValue(forKey: id) }
     }
 }
 public struct FileHandleID: Hashable, Sendable {

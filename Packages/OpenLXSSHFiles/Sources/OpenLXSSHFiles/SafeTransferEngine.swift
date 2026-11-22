@@ -1,29 +1,89 @@
 import CryptoKit
 import Foundation
 
-private actor AsyncGate {
+private final class AsyncGate: @unchecked Sendable {
+    private final class WaiterEntry: @unchecked Sendable {
+        var continuation: CheckedContinuation<Void, any Error>?
+        var settled = false
+    }
     let limit: Int
+    private let lock = NSLock()
     private var active = 0
-    private var waiting: [UUID] = []
+    private var waiters: [WaiterEntry] = []
     init(limit: Int) { self.limit = limit }
     func acquire(_ token: CancellationToken) async throws {
-        guard waiting.count < 128 else { throw FileServiceError(.resourceLimit, operation: "queue") }
-        let id = UUID(); waiting.append(id)
-        do {
-            while true {
-                try token.check()
-                if waiting.first == id && active < limit {
-                    waiting.removeFirst(); active += 1; return
-                }
-                try await Task.sleep(for: .milliseconds(5))
+        try token.check()
+        let acquiredImmediately: Bool = try lock.withLock {
+            if active < limit && waiters.isEmpty {
+                active += 1
+                return true
             }
-        } catch {
-            waiting.removeAll { $0 == id }
-            if error is CancellationError { throw FileServiceError(.cancelled, operation: "queue") }
-            throw error
+            guard waiters.count < 128 else { throw FileServiceError(.resourceLimit, operation: "queue") }
+            return false
+        }
+        if acquiredImmediately { return }
+
+        let entry = WaiterEntry()
+        let observer = token.addCancelObserver { [weak self] in
+            self?.cancel(entry)
+        }
+        defer {
+            if let observer { token.removeCancelObserver(observer) }
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                var immediate: Result<Void, any Error>?
+                self.lock.withLock {
+                    if entry.settled || token.isCancelled || Task<Never, Never>.isCancelled {
+                        entry.settled = true
+                        immediate = .failure(FileServiceError(.cancelled, operation: "queue"))
+                    } else if self.active < self.limit && self.waiters.isEmpty {
+                        entry.settled = true
+                        self.active += 1
+                        immediate = .success(())
+                    } else if self.waiters.count >= 128 {
+                        entry.settled = true
+                        immediate = .failure(FileServiceError(.resourceLimit, operation: "queue"))
+                    } else {
+                        entry.continuation = continuation
+                        self.waiters.append(entry)
+                    }
+                }
+                if let immediate { continuation.resume(with: immediate) }
+            }
+        } onCancel: {
+            self.cancel(entry)
         }
     }
-    func release() { precondition(active > 0); active -= 1 }
+    private func cancel(_ entry: WaiterEntry) {
+        let continuation: CheckedContinuation<Void, any Error>? = lock.withLock {
+            guard !entry.settled else { return nil }
+            entry.settled = true
+            let pending = entry.continuation
+            entry.continuation = nil
+            if pending != nil {
+                waiters.removeAll { $0 === entry }
+            }
+            return pending
+        }
+        continuation?.resume(throwing: FileServiceError(.cancelled, operation: "queue"))
+    }
+    func release() {
+        let next: CheckedContinuation<Void, any Error>? = lock.withLock {
+            precondition(active > 0)
+            while !waiters.isEmpty {
+                let entry = waiters.removeFirst()
+                if !entry.settled, let pending = entry.continuation {
+                    entry.settled = true
+                    entry.continuation = nil
+                    return pending
+                }
+            }
+            active -= 1
+            return nil
+        }
+        next?.resume()
+    }
 }
 /// Inject one scheduler for the application lifetime. All default engines share this global scheduler.
 public actor TransferScheduler {
@@ -47,15 +107,15 @@ public actor TransferScheduler {
             if hostUsers[host] == 0 { hostUsers[host] = nil; hosts[host] = nil }
         }
         try await gate.acquire(token)
-        do { let value = try await body(); await gate.release(); return value }
-        catch { await gate.release(); throw error }
+        do { let value = try await body(); gate.release(); return value }
+        catch { gate.release(); throw error }
     }
     // Internal visibility permits a direct scheduling test without a fake remote service.
     func chunk<T: Sendable>(_ token: CancellationToken,
                                         body: @Sendable () async throws -> T) async throws -> T {
         try await chunks.acquire(token)
-        do { let value = try await body(); await chunks.release(); return value }
-        catch { await chunks.release(); throw error }
+        do { let value = try await body(); chunks.release(); return value }
+        catch { chunks.release(); throw error }
     }
 }
 public enum ConflictDecision: Sendable, Equatable {
@@ -143,7 +203,7 @@ public struct SafeTransferEngine: Sendable {
     public let chunkSize: Int
     public let maxDepth: Int
     public let maxItems: Int
-    public init(scheduler: TransferScheduler = .shared, chunkSize: Int = 65536,
+    public init(scheduler: TransferScheduler = .shared, chunkSize: Int = 262144,
                 maxDepth: Int = 32, maxItems: Int = 10000) {
         precondition((1...1024 * 1024).contains(chunkSize)); precondition(maxDepth >= 0 && maxItems > 0)
         self.scheduler = scheduler; self.chunkSize = chunkSize; self.maxDepth = maxDepth; self.maxItems = maxItems
