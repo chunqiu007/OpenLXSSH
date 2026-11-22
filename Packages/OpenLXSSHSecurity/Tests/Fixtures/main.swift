@@ -21,7 +21,7 @@ struct SecurityFixture {
                       await store.save(secret, as: reference, authorization: .granted) == .failed(.duplicate) else {
                     throw CredentialFailure.invalidData
                 }
-                try await second.close() // first owner must still keep the process noninteractive.
+                try await second.close() // closing another store must not affect this store.
                 guard case .available(let observed) = await store.read(reference), observed.matches(secret) else {
                     throw CredentialFailure.invalidData
                 }

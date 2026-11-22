@@ -508,7 +508,7 @@ struct OwnedPresentation<Content>: Identifiable {
         review?.request.cancel(); review = nil
         reviewHandler?.cancel()
     }
-    deinit { review?.request.cancel() }
+    isolated deinit { review?.request.cancel() }
 }
 
 extension HostConfiguration {
@@ -812,6 +812,6 @@ struct VaultHostDraft: Equatable, Identifiable {
         invalidated = true; request?.resolve(false); request = nil
         if !saving { prompt = nil }
     }
-    deinit { request?.cancel() }
+    isolated deinit { request?.cancel() }
 }
 

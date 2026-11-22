@@ -371,13 +371,12 @@ import OpenLXSSHSecurity
             var host = host(); host.authentication = .privateKey; host.keyRef = keyID
             try await repo.apply([.insertHost(host)])
             let connector = LibSSH2FilesConnector(repository: wrapped, security: security, environment: SessionEnvironment(location: .isolated(root)))
-            // First metadata after the saved read is initialSecret's post-read check.
-            // Pause before obtaining the next snapshot, after that check has returned.
+            // Pause right before prepareAuthentication's final post-read validatePreparedPlan metadata snapshot.
             await wrapped.pauseBeforeFinalMetadataAfterSavedRead(credentials)
             let task = Task { try await self.plan(connector, host: host, input: .init(primary: .saved)) }
             await wrapped.beforeRead.arrived()
             let checks = await wrapped.metadataReadsAfterSavedRead
-            XCTAssertEqual(checks, 2)
+            XCTAssertEqual(checks, 1)
             if replacement {
                 let newRef = UUID()
                 try await repo.apply([.registerCredential(.init(id: newRef, purpose: .privateKeyPassphrase, isSavingAuthorized: true)), .updateKeyPassphrase(keyID: keyID, credentialRef: newRef)])
@@ -665,7 +664,7 @@ private actor FilesAuthRepository: AppRepositoryProtocol {
         pauseNextMetadataRead = false
         if let credentials = savedReadCredentials, await credentials.readCount > 0 {
             metadataReadsAfterSavedRead += 1
-            if metadataReadsAfterSavedRead == 2 {
+            if metadataReadsAfterSavedRead == 1 {
                 savedReadCredentials = nil; shouldPause = true
             }
         }

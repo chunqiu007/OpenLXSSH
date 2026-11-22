@@ -79,29 +79,54 @@ actor LibSSH2FilesConnector: FilesConnecting {
                                isCurrent: @escaping @Sendable () async -> Bool) async throws -> FilesAuthenticationPlan {
         let metadata = try await validate(request, token: token, isCurrent: isCurrent)
         let host = request.host
-        let connection = SSHConnection(host: HostIdentity(address: try HostAddress(host.address), port: try SSHPort(host.port)), user: try SSHUser(host.username))
+        let connection = SSHConnection(
+            host: HostIdentity(address: try HostAddress(host.address), port: try SSHPort(host.port)),
+            user: try SSHUser(host.username)
+        )
         let usedKey: ManagedKeyReference?
         if !input.keyboardOnly && host.authentication.needsKey {
             guard let id = host.keyRef, let key = metadata.keys.first(where: { $0.id == id }) else {
                 throw FileServiceError(.cancelled, operation: "key-authorization-changed")
             }
             usedKey = key
-        } else { usedKey = nil }
+        } else {
+            usedKey = nil
+        }
+
         var usedCredential: OpenLXSSHCore.CredentialReference?
         var authentication: [FileAuthentication] = []
         if !input.keyboardOnly {
             if let usedKey {
                 let material = try await security.keyAuthenticationMaterial(host: host, expectedKey: usedKey)
-                try token.check(); guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "stale-files-material") }
-                try token.check()
-                let phrase = try await initialSecret(input.primary, request: request, key: usedKey, privateKey: true, token: token, isCurrent: isCurrent)
+                try await ensureActive(token: token, isCurrent: isCurrent, operation: "stale-files-material")
+                let phrase = try await initialSecret(
+                    input.primary,
+                    request: request,
+                    metadata: metadata,
+                    key: usedKey,
+                    privateKey: true,
+                    token: token,
+                    isCurrent: isCurrent
+                )
                 usedCredential = phrase.credential
                 if material.encrypted, phrase.secret.withUnsafeBytes({ $0.isEmpty }) {
                     throw FileServiceError(.authentication, operation: "key-passphrase-required")
                 }
-                authentication.append(.publicKey(publicKey: nil, privateKey: material.bytes.withUnsafeBytes { Data($0) }, passphrase: phrase.secret.withUnsafeBytes { Data($0) }))
+                authentication.append(.publicKey(
+                    publicKey: nil,
+                    privateKey: material.bytes.withUnsafeBytes { Data($0) },
+                    passphrase: phrase.secret.withUnsafeBytes { Data($0) }
+                ))
             } else {
-                let password = try await initialSecret(input.primary, request: request, key: nil, privateKey: false, token: token, isCurrent: isCurrent)
+                let password = try await initialSecret(
+                    input.primary,
+                    request: request,
+                    metadata: metadata,
+                    key: nil,
+                    privateKey: false,
+                    token: token,
+                    isCurrent: isCurrent
+                )
                 usedCredential = password.credential
                 authentication.append(.password(password.secret.withUnsafeBytes { Data($0) }))
             }
@@ -110,41 +135,61 @@ actor LibSSH2FilesConnector: FilesConnecting {
         // support a separate, always-manual KI method on this same connection.
         if !authentication.isEmpty || input.keyboardOnly {
             authentication.append(.keyboardInteractive { challenge, reply in
-                keyboard(FilesKeyboardChallenge(name: challenge.name, instruction: challenge.instruction,
-                    prompts: challenge.prompts.map { ($0.bytes, $0.echo) }), reply)
+                keyboard(FilesKeyboardChallenge(
+                    name: challenge.name,
+                    instruction: challenge.instruction,
+                    prompts: challenge.prompts.map { ($0.bytes, $0.echo) }
+                ), reply)
             })
         }
-        let plan = FilesAuthenticationPlan(connection: connection, methods: authentication,
-            authorization: FilesAuthenticationAuthorization(request: request, key: usedKey, credential: usedCredential))
+        let plan = FilesAuthenticationPlan(
+            connection: connection,
+            methods: authentication,
+            authorization: FilesAuthenticationAuthorization(request: request, key: usedKey, credential: usedCredential)
+        )
         try await validatePreparedPlan(plan, request: request, token: token, isCurrent: isCurrent)
         return plan
     }
+
     /// Shared production pre-TCP seam. Regression tests stop here without opening a socket.
     func validatePreparedPlan(_ plan: FilesAuthenticationPlan, request: FilesRequest, token: CancellationToken,
                               isCurrent: @escaping @Sendable () async -> Bool) async throws {
         try token.check()
-        guard plan.authorization.request == request else { throw FileServiceError(.cancelled, operation: "prepared-plan-request-changed") }
+        guard plan.authorization.request == request else {
+            throw FileServiceError(.cancelled, operation: "prepared-plan-request-changed")
+        }
         let metadata = try await validate(request, token: token, isCurrent: isCurrent)
-        try token.check()
         try validateAuthorization(plan.authorization, metadata: metadata)
     }
+
+    private func ensureActive(token: CancellationToken,
+                              isCurrent: @escaping @Sendable () async -> Bool,
+                              operation: String) async throws {
+        try token.check()
+        guard await isCurrent() else { throw FileServiceError(.cancelled, operation: operation) }
+        try token.check()
+    }
+
     @discardableResult private func validate(_ request: FilesRequest, token: CancellationToken,
-                          isCurrent: @escaping @Sendable () async -> Bool) async throws -> SecurityMetadata {
-        try token.check()
-        guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "stale-files-request") }
-        try token.check()
+                                             isCurrent: @escaping @Sendable () async -> Bool) async throws -> SecurityMetadata {
+        try await ensureActive(token: token, isCurrent: isCurrent, operation: "stale-files-request")
         let metadata = try await repository.securityMetadata()
-        try token.check()
-        guard await isCurrent(), metadata.hosts.contains(where: { $0.matchesConnection(of: request.host) }) else { throw FileServiceError(.cancelled, operation: "host-authorization-changed") }
-        try token.check()
+        try await ensureActive(token: token, isCurrent: isCurrent, operation: "host-authorization-changed")
+        guard metadata.hosts.contains(where: { $0.matchesConnection(of: request.host) }) else {
+            throw FileServiceError(.cancelled, operation: "host-authorization-changed")
+        }
         return metadata
     }
+
     private func validateAuthorization(_ authorization: FilesAuthenticationAuthorization, metadata: SecurityMetadata) throws {
         let host = authorization.request.host
-        guard metadata.hosts.contains(where: { $0.matchesConnection(of: host) }) else { throw FileServiceError(.cancelled, operation: "host-authorization-changed") }
+        guard metadata.hosts.contains(where: { $0.matchesConnection(of: host) }) else {
+            throw FileServiceError(.cancelled, operation: "host-authorization-changed")
+        }
         if let key = authorization.key {
             guard host.authentication.needsKey, host.keyRef == key.id,
-                  let currentKey = metadata.keys.first(where: { $0.id == key.id }), currentKey.algorithm == key.algorithm else {
+                  let currentKey = metadata.keys.first(where: { $0.id == key.id }),
+                  currentKey.algorithm == key.algorithm else {
                 throw FileServiceError(.cancelled, operation: "key-authorization-changed")
             }
         }
@@ -162,14 +207,16 @@ actor LibSSH2FilesConnector: FilesConnecting {
             }
         }
     }
-    private func initialSecret(_ source: FilesInitialSecret, request: FilesRequest, key: ManagedKeyReference?, privateKey: Bool,
-                               token: CancellationToken, isCurrent: @escaping @Sendable () async -> Bool) async throws -> (secret: OpenLXSSHSecurity.SecretBytes, credential: OpenLXSSHCore.CredentialReference?) {
-        try token.check(); guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "stale-secret-authorization") }
-        try token.check()
+
+    private func initialSecret(_ source: FilesInitialSecret, request: FilesRequest, metadata: SecurityMetadata,
+                               key: ManagedKeyReference?, privateKey: Bool, token: CancellationToken,
+                               isCurrent: @escaping @Sendable () async -> Bool) async throws
+        -> (secret: OpenLXSSHSecurity.SecretBytes, credential: OpenLXSSHCore.CredentialReference?) {
+        try await ensureActive(token: token, isCurrent: isCurrent, operation: "stale-secret-authorization")
         switch source {
-        case .manual(let secret): return (secret, nil)
+        case .manual(let secret):
+            return (secret, nil)
         case .saved, .configuredCredential:
-            let metadata = try await validate(request, token: token, isCurrent: isCurrent)
             let host = request.host
             let ref: UUID
             let kind: OpenLXSSHSecurity.CredentialReference.Kind
@@ -180,10 +227,16 @@ actor LibSSH2FilesConnector: FilesConnecting {
                       let value = key.passphraseCredentialRef else {
                     throw FileServiceError(.authentication, operation: "saved-passphrase-unavailable")
                 }
-                ref = value; kind = .privateKeyPassphrase; purpose = .privateKeyPassphrase
+                ref = value
+                kind = .privateKeyPassphrase
+                purpose = .privateKeyPassphrase
             } else {
-                guard host.savePasswordAuthorized, let value = host.credentialRef else { throw FileServiceError(.authentication, operation: "saved-password-not-authorized") }
-                ref = value; kind = .password; purpose = .password
+                guard host.savePasswordAuthorized, let value = host.credentialRef else {
+                    throw FileServiceError(.authentication, operation: "saved-password-not-authorized")
+                }
+                ref = value
+                kind = .password
+                purpose = .password
             }
             if case .configuredCredential(let displayedID) = source, displayedID != ref {
                 throw FileServiceError(.cancelled, operation: "secret-authorization-changed")
@@ -191,16 +244,11 @@ actor LibSSH2FilesConnector: FilesConnecting {
             guard let credential = metadata.credentials.first(where: { $0.id == ref && $0.purpose == purpose && $0.isSavingAuthorized }) else {
                 throw FileServiceError(.authentication, operation: "saved-secret-not-authorized")
             }
-            let authorization = FilesAuthenticationAuthorization(request: request, key: key, credential: credential)
-            try token.check(); guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "stale-secret-authorization") }
-            try token.check()
             let result = await security.credentials.read(.init(id: ref, kind: kind))
-            try token.check(); guard await isCurrent() else { throw FileServiceError(.cancelled, operation: "stale-secret-answer") }
-            try token.check()
-            guard case .available(let secret) = result else { throw FileServiceError(.authentication, operation: "saved-secret-unavailable") }
-            let after = try await validate(request, token: token, isCurrent: isCurrent)
-            try token.check()
-            try validateAuthorization(authorization, metadata: after)
+            try await ensureActive(token: token, isCurrent: isCurrent, operation: "stale-secret-answer")
+            guard case .available(let secret) = result else {
+                throw FileServiceError(.authentication, operation: "saved-secret-unavailable")
+            }
             return (secret, credential)
         }
     }

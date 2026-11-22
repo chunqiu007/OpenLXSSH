@@ -1,21 +1,11 @@
 import Foundation
+import LocalAuthentication
 import Security
 import XCTest
 @testable import OpenLXSSHSecurity
 
-final class InteractionStub: InteractionDriver {
-    var allowed = true
-    var sets: [Bool] = []
-    var setFailure: OSStatus?
-    func get() -> (OSStatus, Bool) { (errSecSuccess, allowed) }
-    func set(_ allowed: Bool) -> OSStatus {
-        sets.append(allowed)
-        if let setFailure { return setFailure }
-        self.allowed = allowed
-        return errSecSuccess
-    }
-}
 final class KeychainStub: KeychainBackend, @unchecked Sendable {
+    private let lock = NSLock()
     var addStatus: OSStatus = errSecSuccess
     var readStatus: OSStatus = errSecItemNotFound
     var updateStatus: OSStatus = errSecSuccess
@@ -23,164 +13,234 @@ final class KeychainStub: KeychainBackend, @unchecked Sendable {
     var readData: Data?
     var queries: [[String: Any]] = []
     var updates: [[String: Any]] = []
-    func add(_ query: [String: Any]) -> OSStatus { queries.append(query); return addStatus }
-    func copy(_ query: [String: Any]) -> (OSStatus, Data?) { queries.append(query); return (readStatus, readData) }
-    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
-        queries.append(query); updates.append(attributes); return updateStatus
+
+    func add(_ query: [String: Any]) -> OSStatus {
+        lock.withLock {
+            queries.append(query)
+            return addStatus
+        }
     }
-    func delete(_ query: [String: Any]) -> OSStatus { queries.append(query); return deleteStatus }
+
+    func copy(_ query: [String: Any]) -> (OSStatus, Data?) {
+        lock.withLock {
+            queries.append(query)
+            return (readStatus, readData)
+        }
+    }
+
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        lock.withLock {
+            queries.append(query)
+            updates.append(attributes)
+            return updateStatus
+        }
+    }
+
+    func delete(_ query: [String: Any]) -> OSStatus {
+        lock.withLock {
+            queries.append(query)
+            return deleteStatus
+        }
+    }
 }
 
 @MainActor
 final class CredentialStoreTests: XCTestCase {
     func testStableNamespaceTypesAndRedaction() throws {
-        XCTAssertEqual(CredentialStore.productionService, "org.openlxssh.credentials")
+        XCTAssertEqual(CredentialStore.productionService, "org.openlxssh.credentials.v2")
         let id = UUID()
-        XCTAssertNotEqual(CredentialReference(id: id, kind: .password).account,
-                          CredentialReference(id: id, kind: .privateKeyPassphrase).account)
+        XCTAssertNotEqual(
+            CredentialReference(id: id, kind: .password).account,
+            CredentialReference(id: id, kind: .privateKeyPassphrase).account
+        )
         let secret = try SecretBytes.random()
         XCTAssertEqual(String(describing: secret), "<redacted>")
         XCTAssertEqual(String(reflecting: secret), "<redacted>")
         XCTAssertTrue(Mirror(reflecting: secret).children.isEmpty)
     }
 
-    func testNoAuthorizationNoBackendAndExplicitPolicy() async throws {
-        let driver = InteractionStub(), backend = KeychainStub()
-        let coordinator = KeychainProcessCoordinator(driver: driver)
-        let namespace = UUID(), reference = CredentialReference(kind: .password)
-        let store = try CredentialStore(testNamespace: namespace, backend: backend, coordinator: coordinator)
+    func testStorageModeProbeSelectsDataProtectionOrStandardFallback() {
+        for status in [errSecItemNotFound, errSecSuccess, errSecInteractionNotAllowed] {
+            let backend = KeychainStub()
+            backend.updateStatus = status
+            let store = CredentialStore(testNamespace: UUID(), backend: backend)
+            XCTAssertEqual(store.storageMode, .dataProtection)
+            XCTAssertEqual(backend.queries.count, 1)
+            let probe = backend.queries[0]
+            XCTAssertEqual(probe[kSecUseDataProtectionKeychain as String] as? Bool, true)
+            XCTAssertEqual(probe[kSecAttrSynchronizable as String] as? Bool, false)
+            let context = probe[kSecUseAuthenticationContext as String] as? LAContext
+            XCTAssertEqual(context?.interactionNotAllowed, true)
+            XCTAssertTrue((probe[kSecAttrAccount as String] as? String)?.hasPrefix("probe:") == true)
+            XCTAssertNil(probe[kSecValueData as String])
+        }
+
+        let fallbackBackend = KeychainStub()
+        fallbackBackend.updateStatus = errSecMissingEntitlement
+        let fallbackStore = CredentialStore(testNamespace: UUID(), backend: fallbackBackend)
+        XCTAssertEqual(fallbackStore.storageMode, .standard)
+        XCTAssertEqual(fallbackBackend.queries.count, 1)
+        XCTAssertEqual(fallbackBackend.queries[0][kSecUseDataProtectionKeychain as String] as? Bool, true)
+    }
+
+    func testDataProtectionQueriesAuthorizationAndLAContext() async throws {
+        let backend = KeychainStub()
+        let namespace = UUID()
+        let reference = CredentialReference(kind: .password)
+        let store = CredentialStore(testNamespace: namespace, backend: backend, storageMode: .dataProtection)
         let secret = try SecretBytes.random()
+
         let noSave = await store.save(secret, as: reference, authorization: .notGranted)
         let noReplace = await store.replace(secret, at: reference, authorization: .notGranted)
-        XCTAssertEqual(noSave, .notAuthorized); XCTAssertEqual(noReplace, .notAuthorized)
+        XCTAssertEqual(noSave, .notAuthorized)
+        XCTAssertEqual(noReplace, .notAuthorized)
         XCTAssertTrue(backend.queries.isEmpty)
+
         _ = await store.save(secret, as: reference, authorization: .granted)
         _ = await store.read(reference)
         _ = await store.replace(secret, at: reference, authorization: .granted)
         _ = await store.deleteExact(reference)
+
+        XCTAssertEqual(backend.queries.count, 4)
+        var contexts: [ObjectIdentifier] = []
         for query in backend.queries {
-            XCTAssertEqual(query[kSecAttrService as String] as? String, "org.openlxssh.credentials.test.\(namespace.uuidString)")
+            XCTAssertEqual(query[kSecAttrService as String] as? String, "org.openlxssh.credentials.v2.test.\(namespace.uuidString)")
             XCTAssertEqual(query[kSecAttrAccount as String] as? String, reference.account)
             XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
-            XCTAssertEqual(query[kSecUseDataProtectionKeychain as String] as? Bool, false)
-            for key in [kSecAttrAccess, kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrAccessible, kSecUseAuthenticationContext] {
-                XCTAssertNil(query[key as String])
-            }
+            XCTAssertEqual(query[kSecUseDataProtectionKeychain as String] as? Bool, true)
+            let context = try XCTUnwrap(query[kSecUseAuthenticationContext as String] as? LAContext)
+            XCTAssertTrue(context.interactionNotAllowed)
+            contexts.append(ObjectIdentifier(context))
+            XCTAssertNil(query[kSecAttrAccessGroup as String])
+            XCTAssertNil(query[kSecAttrAccessControl as String])
         }
-        XCTAssertNotNil(backend.queries[0][kSecUseKeychain as String])
-        XCTAssertNotNil(backend.queries[1][kSecMatchSearchList as String])
+        // Every operation gets a fresh per-call LAContext.
+        XCTAssertEqual(Set(contexts).count, 4)
+
+        XCTAssertEqual(backend.queries[0][kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        XCTAssertNil(backend.queries[1][kSecAttrAccessible as String])
+        XCTAssertNil(backend.queries[2][kSecAttrAccessible as String])
+        XCTAssertNil(backend.queries[3][kSecAttrAccessible as String])
+        XCTAssertEqual(backend.updates[0].count, 2)
+        XCTAssertEqual(backend.updates[0][kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        XCTAssertNotNil(backend.updates[0][kSecValueData as String])
+        try await store.close()
+    }
+
+    func testStandardFallbackQueriesUseLAContextWithoutDataProtectionOrLegacyHandles() async throws {
+        let backend = KeychainStub()
+        let namespace = UUID()
+        let reference = CredentialReference(kind: .privateKeyPassphrase)
+        let store = CredentialStore(testNamespace: namespace, backend: backend, storageMode: .standard)
+        let secret = try SecretBytes.random()
+
+        _ = await store.save(secret, as: reference, authorization: .granted)
+        _ = await store.read(reference)
+        _ = await store.replace(secret, at: reference, authorization: .granted)
+        _ = await store.deleteExact(reference)
+
+        XCTAssertEqual(backend.queries.count, 4)
+        for query in backend.queries {
+            XCTAssertEqual(query[kSecAttrService as String] as? String, "org.openlxssh.credentials.v2.test.\(namespace.uuidString)")
+            XCTAssertEqual(query[kSecAttrAccount as String] as? String, reference.account)
+            XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
+            XCTAssertNil(query[kSecUseDataProtectionKeychain as String])
+            XCTAssertNil(query[kSecAttrAccessible as String])
+            let context = try XCTUnwrap(query[kSecUseAuthenticationContext as String] as? LAContext)
+            XCTAssertTrue(context.interactionNotAllowed)
+        }
         XCTAssertEqual(backend.updates[0].count, 1)
+        XCTAssertNotNil(backend.updates[0][kSecValueData as String])
         try await store.close()
-        XCTAssertEqual(driver.sets, [false, true])
     }
 
-    func testTwoOwnersNeverRestoreEarlyAndCloseIsIdempotent() async throws {
-        let driver = InteractionStub()
-        let shared = KeychainProcessCoordinator(driver: driver)
-        let a = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: shared)
-        let b = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: shared)
-        XCTAssertEqual(driver.sets, [false])
-        try await a.close()
-        try await a.close()
-        XCTAssertFalse(driver.allowed)
-        XCTAssertEqual(driver.sets, [false])
+    func testCloseIsIdempotentAndBlocksSubsequentOperations() async throws {
+        let backend = KeychainStub()
+        let store = CredentialStore(testNamespace: UUID(), backend: backend, storageMode: .dataProtection)
         let ref = CredentialReference(kind: .password)
-        let closedSave = await a.save(try .random(), as: ref, authorization: .granted)
-        XCTAssertEqual(closedSave, .failed(.closed))
-        try await b.close()
-        XCTAssertTrue(driver.allowed)
-        XCTAssertEqual(driver.sets, [false, true])
-    }
+        let secret = try SecretBytes.random()
 
-    func testDeinitLastOwnerAndAlreadyDisabledPreviousState() async throws {
-        let driver = InteractionStub()
-        driver.allowed = false
-        let coordinator = KeychainProcessCoordinator(driver: driver)
-        var a: CredentialStore? = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: coordinator)
-        var b: CredentialStore? = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: coordinator)
-        XCTAssertNotNil(a); XCTAssertNotNil(b)
-        a = nil
-        XCTAssertEqual(driver.sets, [false])
-        b = nil
-        XCTAssertEqual(driver.sets, [false, false])
-        XCTAssertFalse(driver.allowed)
-    }
-
-    func testCloseFailureCanBeExplicitlyRetried() async throws {
-        let driver = InteractionStub()
-        let shared = KeychainProcessCoordinator(driver: driver)
-        let store = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: shared)
-        driver.setFailure = errSecNotAvailable
-        do { try await store.close(); XCTFail("Restore failure hidden") }
-        catch let failure as CredentialFailure { XCTAssertEqual(failure, .interactionPolicyRestoreFailed) }
-        let rejected = await store.save(try .random(), as: .init(kind: .password), authorization: .granted)
-        XCTAssertEqual(rejected, .failed(.closed))
-        XCTAssertThrowsError(try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: shared)) {
-            XCTAssertEqual($0 as? CredentialFailure, .interactionPolicyRestoreFailed)
-        }
-        driver.setFailure = nil
         try await store.close()
-        XCTAssertTrue(driver.allowed)
-    }
+        try await store.close()
 
-    func testFailedDeinitRestoreCanRecoverOnNextOwnerWithoutLosingOriginalState() throws {
-        let driver = InteractionStub()
-        let shared = KeychainProcessCoordinator(driver: driver)
-        var store: CredentialStore? = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: shared)
-        XCTAssertNotNil(store)
-        driver.setFailure = errSecNotAvailable
-        store = nil
-        XCTAssertFalse(driver.allowed)
-        driver.setFailure = nil
-        var recovered: CredentialStore? = try CredentialStore(testNamespace: UUID(), backend: KeychainStub(), coordinator: shared)
-        XCTAssertNotNil(recovered)
-        recovered = nil
-        XCTAssertTrue(driver.allowed)
+        let closedSave = await store.save(secret, as: ref, authorization: .granted)
+        XCTAssertEqual(closedSave, .failed(.closed))
+        let unauthSave = await store.save(secret, as: ref, authorization: .notGranted)
+        XCTAssertEqual(unauthSave, .notAuthorized)
+        let closedReplace = await store.replace(secret, at: ref, authorization: .granted)
+        XCTAssertEqual(closedReplace, .failed(.closed))
+        guard case .manualEntryRequired(.closed) = await store.read(ref) else {
+            return XCTFail("Closed read must require manual entry with .closed")
+        }
+        let closedDelete = await store.deleteExact(ref)
+        XCTAssertEqual(closedDelete, .retryRequired(.closed))
+        XCTAssertTrue(backend.queries.isEmpty)
     }
 
     func testManualFallbackMissingDuplicateUpdateAndBoundedDeleteRetry() async throws {
-        let backend = KeychainStub(), driver = InteractionStub()
-        let store = try CredentialStore(testNamespace: UUID(), backend: backend, coordinator: KeychainProcessCoordinator(driver: driver))
+        let backend = KeychainStub()
+        let store = CredentialStore(testNamespace: UUID(), backend: backend, storageMode: .dataProtection)
         let reference = CredentialReference(kind: .privateKeyPassphrase)
-        guard case .missing = await store.read(reference) else { return XCTFail("Missing not preserved") }
+
+        guard case .missing = await store.read(reference) else {
+            return XCTFail("Missing not preserved")
+        }
+
         let cases: [(OSStatus, CredentialFailure)] = [
-            (errSecInteractionNotAllowed, .interactionNotAllowed), (errSecNotAvailable, .unavailable),
-            (errSecNoSuchKeychain, .unavailable), (errSecNoDefaultKeychain, .unavailable),
-            (errSecInvalidKeychain, .unavailable), (errSecUserCanceled, .cancelled),
-            (errSecAuthFailed, .denied), (-12345, .status(-12345))
+            (errSecInteractionNotAllowed, .interactionNotAllowed),
+            (errSecNotAvailable, .unavailable),
+            (errSecNoSuchKeychain, .unavailable),
+            (errSecNoDefaultKeychain, .unavailable),
+            (errSecInvalidKeychain, .unavailable),
+            (errSecUserCanceled, .cancelled),
+            (errSecAuthFailed, .denied),
+            (-12345, .status(-12345))
         ]
         for (status, expected) in cases {
-            backend.readStatus = status; backend.deleteStatus = status
-            guard case .manualEntryRequired(let failure) = await store.read(reference) else { return XCTFail("No manual fallback") }
+            backend.readStatus = status
+            backend.deleteStatus = status
+            guard case .manualEntryRequired(let failure) = await store.read(reference) else {
+                return XCTFail("No manual fallback")
+            }
             XCTAssertEqual(failure, expected)
             let before = backend.queries.count
             let deletion = await store.deleteExact(reference)
             XCTAssertEqual(deletion, .retryRequired(expected))
             XCTAssertEqual(backend.queries.count, before + 1)
         }
+
+        let emptySave = await store.save(SecretBytes(Data()), as: reference, authorization: .granted)
+        XCTAssertEqual(emptySave, .failed(.invalidData))
+
         backend.addStatus = errSecDuplicateItem
         let duplicate = await store.save(try .random(), as: reference, authorization: .granted)
         XCTAssertEqual(duplicate, .failed(.duplicate))
         XCTAssertTrue(backend.updates.isEmpty)
+
         backend.updateStatus = errSecItemNotFound
         let missing = await store.replace(try .random(), at: reference, authorization: .granted)
         XCTAssertEqual(missing, .missing)
+
         backend.deleteStatus = errSecItemNotFound
         let absent = await store.deleteExact(reference)
         XCTAssertEqual(absent, .alreadyAbsent)
+
         try await store.close()
     }
 
-    func testConcurrentOwnersAndCallsSerializeOnePolicyLifetime() async throws {
-        let driver = InteractionStub(), backend = KeychainStub()
-        let coordinator = KeychainProcessCoordinator(driver: driver)
-        let stores = try (0..<8).map { _ in try CredentialStore(testNamespace: UUID(), backend: backend, coordinator: coordinator) }
+    func testConcurrentIndependentStoresOperateWithoutSharedGlobalState() async throws {
+        let backend = KeychainStub()
+        let stores = (0..<8).map { _ in
+            CredentialStore(testNamespace: UUID(), backend: backend, storageMode: .dataProtection)
+        }
         await withTaskGroup(of: Void.self) { group in
             for store in stores {
-                group.addTask { _ = await store.read(.init(kind: .password)); try? await store.close() }
+                group.addTask {
+                    _ = await store.read(.init(kind: .password))
+                    try? await store.close()
+                }
             }
         }
         XCTAssertEqual(backend.queries.count, 8)
-        XCTAssertEqual(driver.sets, [false, true])
     }
 }

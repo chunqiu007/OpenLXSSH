@@ -5,7 +5,7 @@ import OpenLXSSHSecurity
 
 struct KeychainPolicyNotice: View {
     var body: some View {
-        Text("秘密仅保存在当前 Mac 的系统 file-based Keychain，不同步。Keychain 锁定/ACL 拒绝时需人工输入；屏幕锁定不等于 Keychain 已锁定。不提供 OTP 保存入口，也不承诺 Swift 临时输入副本彻底擦除。")
+        Text("秘密仅保存在当前 Mac 的系统 Keychain（具备签名权限时使用 Data Protection Keychain，否则使用非交互标准 Keychain），不同步。Keychain 锁定或拒绝访问时需人工输入。不提供 OTP 保存入口，也不承诺 Swift 临时输入副本彻底擦除。")
             .font(.caption).foregroundStyle(.secondary)
     }
 }

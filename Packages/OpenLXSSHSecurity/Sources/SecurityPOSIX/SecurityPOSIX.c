@@ -82,12 +82,3 @@ int olxs_file_has_extended_acl(int fd, int *present) {
     if (code == 0) *present = has_acl != 0;
     return code;
 }
-
-// The file-based Keychain interaction APIs have no nondeprecated equivalent.
-// Suppression is limited to these three reviewed legacy calls, not to the target.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-OSStatus olxs_interaction_get(Boolean *allowed) { return SecKeychainGetUserInteractionAllowed(allowed); }
-OSStatus olxs_interaction_set(Boolean allowed) { return SecKeychainSetUserInteractionAllowed(allowed); }
-OSStatus olxs_copy_default_keychain(SecKeychainRef *keychain) { return SecKeychainCopyDefault(keychain); }
-#pragma clang diagnostic pop

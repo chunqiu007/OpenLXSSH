@@ -132,31 +132,45 @@ struct AppCloseRequestState {
     mutating func reset() { id = nil; intent = nil; approved = false }
 }
 
-/// The reply can be cancelled from a task/deinitializer without an actor hop. Resuming
-/// outside the lock avoids reentrant delivery; every waiter receives exactly one result.
-private final class WindowCloseReviewReply: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Bool?
+/// Single-resolution MainActor signal shared by close reviews and overlay dismissal.
+@MainActor private final class WindowCloseReviewSignal {
+    private(set) var result: Bool?
     private var waiters: [CheckedContinuation<Bool, Never>] = []
-    var result: Bool? { lock.withLock { value } }
-    func resolve(_ result: Bool) {
-        let pending = lock.withLock { () -> [CheckedContinuation<Bool, Never>] in
-            guard value == nil else { return [] }
-            value = result
-            let pending = waiters; waiters.removeAll(); return pending
+
+    func resolve(_ value: Bool) {
+        guard result == nil else { return }
+        result = value
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume(returning: value)
         }
-        for waiter in pending { waiter.resume(returning: result) }
     }
+
     func wait() async -> Bool {
-        await withTaskCancellationHandler {
+        if let result { return result }
+        if Task.isCancelled {
+            resolve(false)
+            return false
+        }
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let result = lock.withLock { () -> Bool? in
-                    if let value { return value }
-                    waiters.append(continuation); return nil
+                if let result {
+                    continuation.resume(returning: result)
+                } else if Task.isCancelled {
+                    resolve(false)
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append(continuation)
                 }
-                if let result { continuation.resume(returning: result) }
             }
-        } onCancel: { self.resolve(false) }
+        } onCancel: {
+            Task { @MainActor in self.resolve(false) }
+        }
+    }
+
+    isolated deinit {
+        resolve(false)
     }
 }
 
@@ -164,15 +178,15 @@ private final class WindowCloseReviewReply: @unchecked Sendable {
 /// checkpoint so a late answer cannot authorize a later form or workspace generation.
 @MainActor final class WindowCloseReviewRequest {
     let id = UUID()
-    private let reply = WindowCloseReviewReply()
+    private let signal = WindowCloseReviewSignal()
     private var validations: [@MainActor () -> Bool] = []
-    var result: Bool? { reply.result }
+    var result: Bool? { signal.result }
     var isApprovedAndCurrent: Bool { result == true && validations.allSatisfy { $0() } }
     func validateApproval(_ action: @escaping @MainActor () -> Bool) { validations.append(action) }
-    func resolve(_ allowed: Bool) { reply.resolve(allowed) }
-    nonisolated func cancel() { reply.resolve(false) }
-    nonisolated func wait() async -> Bool { await reply.wait() }
-    deinit { reply.resolve(false) }
+    func resolve(_ allowed: Bool) { signal.resolve(allowed) }
+    func cancel() { signal.resolve(false) }
+    func wait() async -> Bool { await signal.wait() }
+    isolated deinit { signal.resolve(false) }
 }
 
 @MainActor final class WindowCloseReviewRegistry {
@@ -183,7 +197,7 @@ private final class WindowCloseReviewReply: @unchecked Sendable {
     }
     private var registration: Registration?
     private var preferencesRegistration: Registration?
-    private var preferencesReview: (owner: UUID, request: WindowCloseReviewRequest, removed: WindowCloseReviewReply)?
+    private var preferencesReview: (owner: UUID, request: WindowCloseReviewRequest, removed: WindowCloseReviewSignal)?
     private var chainTask: Task<Void, Never>?
     private var revision = UUID()
     private var pending: (revision: UUID, request: WindowCloseReviewRequest)?
@@ -194,7 +208,8 @@ private final class WindowCloseReviewReply: @unchecked Sendable {
     }
     func clear(owner: UUID) {
         guard registration?.owner == owner else { return }
-        cancelAttempt(); registration = nil
+        cancelAttempt()
+        registration = nil
     }
     /// Settings is an overlay, not a replacement for the mounted Vault editor guard.
     func registerPreferences(owner: UUID, begin: @escaping @MainActor (WindowCloseReviewRequest) -> Void,
@@ -209,28 +224,38 @@ private final class WindowCloseReviewReply: @unchecked Sendable {
             // The exact approved sheet has actually left the hierarchy. Only now may
             // the underlying owner present its own Save / Discard / Cancel review.
             review.removed.resolve(true)
-        } else { cancelAttempt() }
+        } else {
+            cancelAttempt()
+        }
     }
     func request() -> WindowCloseReviewRequest {
         if let pending, pending.request.result == nil { return pending.request }
         let request = WindowCloseReviewRequest()
         pending = (revision, request)
         if let overlay = preferencesRegistration {
-            let child = WindowCloseReviewRequest(), removed = WindowCloseReviewReply()
+            let child = WindowCloseReviewRequest()
+            let removed = WindowCloseReviewSignal()
             preferencesReview = (overlay.owner, child, removed)
             request.validateApproval { child.isApprovedAndCurrent }
             chainTask = Task { @MainActor [weak self] in
                 guard await child.wait(), await removed.wait(), !Task.isCancelled,
                       let self, self.pending?.request === request,
                       self.pending?.revision == self.revision, child.isApprovedAndCurrent else {
-                    request.resolve(false); return
+                    request.resolve(false)
+                    return
                 }
-                if let registration = self.registration { registration.begin(request) }
-                else { request.resolve(true) }
+                if let registration = self.registration {
+                    registration.begin(request)
+                } else {
+                    request.resolve(true)
+                }
             }
             overlay.begin(child)
-        } else if let registration { registration.begin(request) }
-        else { request.resolve(true) }
+        } else if let registration {
+            registration.begin(request)
+        } else {
+            request.resolve(true)
+        }
         return request
     }
     func isCurrent(_ request: WindowCloseReviewRequest) -> Bool {
@@ -239,15 +264,27 @@ private final class WindowCloseReviewReply: @unchecked Sendable {
     func finishAttempt() { cancelAttempt() }
     private func cancelAttempt() {
         revision = UUID()
-        pending?.request.cancel(); pending = nil
-        preferencesReview?.request.cancel(); preferencesReview?.removed.resolve(false); preferencesReview = nil
-        chainTask?.cancel(); chainTask = nil
-        registration?.cancel(); preferencesRegistration?.cancel()
+        pending?.request.cancel()
+        pending = nil
+        preferencesReview?.request.cancel()
+        preferencesReview?.removed.resolve(false)
+        preferencesReview = nil
+        chainTask?.cancel()
+        chainTask = nil
+        registration?.cancel()
+        preferencesRegistration?.cancel()
     }
     func invalidate() {
-        cancelAttempt(); registration = nil; preferencesRegistration = nil
+        cancelAttempt()
+        registration = nil
+        preferencesRegistration = nil
     }
-    deinit { pending?.request.cancel(); preferencesReview?.request.cancel(); preferencesReview?.removed.resolve(false); chainTask?.cancel() }
+    isolated deinit {
+        pending?.request.cancel()
+        preferencesReview?.request.cancel()
+        preferencesReview?.removed.resolve(false)
+        chainTask?.cancel()
+    }
 }
 
 struct HostConnectionIdentity: Equatable {
@@ -932,7 +969,7 @@ struct SettingsClosePrompt: Identifiable { let id = UUID() }
         if !closeApproval { closeRequest?.resolve(false) }
         closeRequest = nil; prompt = nil; resetReview = nil
     }
-    deinit { closeRequest?.cancel() }
+    isolated deinit { closeRequest?.cancel() }
 }
 
 enum DiagnosticCategory: String, CaseIterable, Identifiable {

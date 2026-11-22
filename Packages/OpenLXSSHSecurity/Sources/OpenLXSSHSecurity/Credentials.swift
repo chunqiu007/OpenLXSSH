@@ -35,7 +35,7 @@ public enum RememberAuthorization: Sendable { case notGranted, granted }
 
 public enum CredentialFailure: Error, Equatable, Sendable {
     case cancelled, interactionNotAllowed, unavailable, denied, duplicate, invalidData, closed
-    case interactionPolicyRestoreFailed, status(Int32)
+    case status(Int32)
     static func from(_ status: OSStatus) -> CredentialFailure {
         switch status {
         case errSecUserCanceled: .cancelled
