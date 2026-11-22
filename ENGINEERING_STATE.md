@@ -41,7 +41,7 @@
 ## 已知限制与历史既有测试项（原样保留）
 
 - **未覆盖范围**：M1–M6 尚未连接真实远端 SSH/SFTP 服务器复测，尚未发布高于 2.0.4 的签名/公证 DMG，也未在第二台 Mac 上做安装/升级人工回归；为保护本机真实 `Application Support` 数据，未直接启动未隔离的 `OpenLXSSH.app`。
-- **Keychain v2 升级说明**：从 2.0.4（v1 命名空间）升级至 `main` 的 v2（`org.openlxssh.credentials.v2`）时，旧凭据不静默迁移，首次连接按提示重新输入并勾选「记住」即可保存至 v2。
+- **Keychain v2 升级说明**：从 2.0.4（v1 命名空间）升级至 `main` 的 v2（`org.openlxssh.credentials.v2`）时，旧凭据不静默迁移，且 SSH 连接弹窗为「仅本次使用，不保存」；升级后如需重新记住密码，在「保险箱」编辑对应主机并勾选「记住密码」；如需重新记住加密私钥口令，在「密钥与凭据」选择对应私钥并点击「记住口令…」/「重新记住口令…」。
 - **既有历史失败项（未改绿）**：
   - `InitialDirectoryTests.testNativeOwnerWithoutSFTPDoesNotResolveOrSendAnyBytes`（1 项，始于 `9e405ad`）。
   - `DualPaneFilesTests` 中 4 项旧计划审查用例。

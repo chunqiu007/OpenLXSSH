@@ -11,7 +11,7 @@ struct KeychainPolicyNotice: View {
 }
 
 private struct SecurityPresentation: Identifiable {
-    enum Content { case creation(KeyCreation), deletion(UUID), recovery(RecoveryReview), publicKey(UUID), unlink(UUID) }
+    enum Content { case creation(KeyCreation), deletion(UUID), recovery(RecoveryReview), publicKey(UUID), unlink(UUID), rememberPassphrase(UUID) }
     let id = UUID()
     let content: Content
 }
@@ -147,6 +147,7 @@ struct SecurityManagerView: View {
             case .recovery(let review): SecurityRecoveryView(model: model, review: review) { presentations.dismiss(value.id) }
             case .publicKey(let id): SecurityPublicKeyView(model: model, keyID: id, ownsPresentation: { presentations.owns(value.id) }) { presentations.dismiss(value.id) }
             case .unlink(let id): SecurityKeyUnlinkView(app: app, model: model, keyID: id, ownsPresentation: { presentations.owns(value.id) }) { presentations.dismiss(value.id) }
+            case .rememberPassphrase(let id): KeyPassphraseRememberView(app: app, model: model, keyID: id, ownsPresentation: { presentations.owns(value.id) }) { presentations.dismiss(value.id) }
             }
         }
     }
@@ -225,6 +226,13 @@ struct SecurityManagerView: View {
                     }
                     if !model.hostReferences(key.id).isEmpty {
                         Button("处理并解除主机引用…") { _ = presentations.present(.unlink(key.id)) }.disabled(model.busy)
+                    }
+                    if model.encryptedKeys[key.id] != false || key.passphraseCredentialRef != nil {
+                        Button(key.passphraseCredentialRef == nil ? "记住口令…" : "重新记住口令…") {
+                            _ = presentations.present(.rememberPassphrase(key.id))
+                        }
+                        .disabled(model.busy)
+                        .accessibilityIdentifier("key.passphrase.remember.open")
                     }
                     if key.passphraseCredentialRef != nil {
                         Button("忘记已记住口令") { Task { _ = await model.forgetKeyPassphrase(key.id); _ = await app.reload() } }.disabled(model.busy)
@@ -340,6 +348,74 @@ private struct SecurityKeyUnlinkView: View {
                 }.disabled(model.busy || selected.isEmpty || !acknowledged)
             }
         }.padding(24).frame(width: 540)
+    }
+}
+
+private struct KeyPassphraseRememberView: View {
+    let app: AppModel
+    let model: SecurityViewModel
+    let keyID: UUID
+    var ownsPresentation: @MainActor () -> Bool = { true }
+    let dismiss: () -> Void
+    @State private var passphrase = ""
+
+    private var key: ManagedKeyReference? {
+        model.metadata.keys.first(where: { $0.id == keyID })
+    }
+    private var hasExisting: Bool {
+        key?.passphraseCredentialRef != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(hasExisting ? "重新记住私钥口令" : "记住私钥口令").font(.title3).bold()
+            if let key {
+                Text(model.label(for: key)).font(.subheadline).foregroundStyle(.secondary)
+            }
+            Text("系统会先使用 ssh-keygen 校验口令能否解锁此私钥，验证通过后再写入当前 Mac 的本机 Keychain（v2）。私钥文件不会被修改；若已有旧口令关联，保存后将替换为新关联并清理旧条目。")
+                .font(.caption).foregroundStyle(.secondary)
+            NativeSecureField(id: "key.passphrase.remember.input", placeholder: "输入私钥口令", text: $passphrase)
+                .frame(height: 26)
+                .disabled(model.busy)
+            KeychainPolicyNotice()
+            IssueView(issue: model.issue) { model.issue = nil }
+            if model.busy {
+                ProgressView("正在校验并保存口令…").controlSize(.small)
+            }
+            HStack {
+                Spacer()
+                Button("取消") {
+                    passphrase = ""
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(model.busy)
+                .accessibilityIdentifier("key.passphrase.remember.cancel")
+                Button("保存口令") { submit() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.busy || passphrase.isEmpty)
+                    .accessibilityIdentifier("key.passphrase.remember.save")
+            }
+        }
+        .padding(24)
+        .frame(width: 500)
+        .onAppear { model.issue = nil }
+        .onDisappear { passphrase = "" }
+    }
+
+    private func submit() {
+        guard ownsPresentation(), !model.busy, !passphrase.isEmpty else { return }
+        let secret = SecretBytes(utf8: passphrase)
+        passphrase = ""
+        Task {
+            guard ownsPresentation() else { return }
+            let saved = await model.rememberKeyPassphrase(keyID, passphrase: secret)
+            if saved {
+                _ = await app.reload()
+                if ownsPresentation() { dismiss() }
+            }
+        }
     }
 }
 

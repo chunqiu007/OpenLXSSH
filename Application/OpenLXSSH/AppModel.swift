@@ -613,7 +613,25 @@ struct AppIssue: Identifiable, Equatable {
     @discardableResult func copyFolder(_ id: UUID) async -> Bool {
         await write { _ = try await repository.copyFolder(id: id) }
     }
-    @discardableResult func saveSettings(_ value: AppSettings) async -> Bool {
+    static func mergedSettings(edited: AppSettings, base: AppSettings, onto latest: AppSettings) -> AppSettings {
+        var result = latest
+        if edited.historyLines != base.historyLines { result.historyLines = edited.historyLines }
+        if edited.fontName != base.fontName { result.fontName = edited.fontName }
+        if edited.fontSize != base.fontSize { result.fontSize = edited.fontSize }
+        if edited.theme != base.theme { result.theme = edited.theme }
+        if edited.foregroundColor != base.foregroundColor { result.foregroundColor = edited.foregroundColor }
+        if edited.backgroundColor != base.backgroundColor { result.backgroundColor = edited.backgroundColor }
+        if edited.cursorColor != base.cursorColor { result.cursorColor = edited.cursorColor }
+        if edited.keepaliveInterval != base.keepaliveInterval { result.keepaliveInterval = edited.keepaliveInterval }
+        if edited.keepaliveCountMax != base.keepaliveCountMax { result.keepaliveCountMax = edited.keepaliveCountMax }
+        if edited.cursorShape != base.cursorShape { result.cursorShape = edited.cursorShape }
+        if edited.cursorBlink != base.cursorBlink { result.cursorBlink = edited.cursorBlink }
+        if edited.startupPage != base.startupPage { result.startupPage = edited.startupPage }
+        if edited.fileConflictPolicy != base.fileConflictPolicy { result.fileConflictPolicy = edited.fileConflictPolicy }
+        return result
+    }
+
+    @discardableResult func saveSettings(_ value: AppSettings, base: AppSettings? = nil) async -> Bool {
         guard (0...50_000).contains(value.historyLines) else {
             issue = .sanitized(RepositoryError.invalidField("historyLines")); return false
         }
@@ -626,15 +644,20 @@ struct AppIssue: Identifiable, Equatable {
         guard !isWriting else { return false }
         isWriting = true
         defer { isWriting = false }
+        var committed = value
         do {
-            try await repository.apply([.saveSettings(value)])
+            if let base {
+                let latest = try await repository.loadSettings()
+                committed = Self.mergedSettings(edited: value, base: base, onto: latest)
+            }
+            try await repository.apply([.saveSettings(committed)])
             // A committed preference is usable even if the later catalog refresh fails.
-            settings = value; sessions.updateSettings(value); files.updateTransferPreference(value.fileConflictPolicy)
+            settings = committed; sessions.updateSettings(committed); files.updateTransferPreference(committed.fileConflictPolicy)
             _ = await reload()
             return true
         } catch is AppStorageFailure {
             // The preference transaction committed; repeating Save cannot repair ACL.
-            settings = value; sessions.updateSettings(value); files.updateTransferPreference(value.fileConflictPolicy)
+            settings = committed; sessions.updateSettings(committed); files.updateTransferPreference(committed.fileConflictPolicy)
             issue = .sanitized(AppStorageFailure.committedStorageUnsafe)
             return true
         } catch {
@@ -912,6 +935,7 @@ struct SettingsClosePrompt: Identifiable { let id = UUID() }
             }
         }
     }
+    var selectedCategory: PreferencesCategory
     private(set) var isWriting = false
     private(set) var isActive = true
     private(set) var prompt: SettingsClosePrompt?
@@ -921,12 +945,24 @@ struct SettingsClosePrompt: Identifiable { let id = UUID() }
     @ObservationIgnored private var normalizingDraft = false
     @ObservationIgnored private var closeRequest: WindowCloseReviewRequest?
     private(set) var closeApproval = false
-    init(_ settings: AppSettings) {
+    init(_ settings: AppSettings, category: PreferencesCategory = .general) {
         let initial = SettingsDraft(settings)
-        draft = initial; baseline = initial
+        draft = initial; baseline = initial; selectedCategory = category
     }
+    /// Snapshot of the normalized baseline settings captured when this editor opened (or last synced).
+    var initial: AppSettings { baseline.value }
     var isDirty: Bool { draft != baseline }
     var canEdit: Bool { isActive && !isWriting && !closeApproval }
+    /// Syncs externally committed settings when the user has no unsaved edits in progress.
+    func syncExternal(_ latest: AppSettings) {
+        guard canEdit, !isDirty, resetReview == nil else { return }
+        let updated = SettingsDraft(latest)
+        guard updated != baseline else { return }
+        normalizingDraft = true
+        draft = updated
+        baseline = updated
+        normalizingDraft = false
+    }
     func attemptClose() -> Bool {
         guard canEdit, resetReview == nil else { return false }
         if !isDirty { return true }

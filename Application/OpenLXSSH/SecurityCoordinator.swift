@@ -37,7 +37,7 @@ actor SystemCredentials: CredentialAccess {
 
 enum SecurityUIFailure: Error {
     case credential(CredentialFailure), key(KeyFailure), journal, busy, notAuthorized, pendingCleanup, preparedIntent, staleRecoveryReview
-    case staleKeyImportReview, duplicatePublicKey
+    case staleKeyImportReview, duplicatePublicKey, keyNotEncrypted
 }
 enum PasswordChoice: Sendable { case preserve, manual, forget, remember(SecretBytes) }
 enum KeyCreation: Sendable { case generate, importFile(URL) }
@@ -202,6 +202,10 @@ actor SecurityCoordinator {
     func publicKey(_ id: UUID) async throws -> PublicKey {
         guard try await repository.securityMetadata().keys.contains(where: { $0.id == id }) else { throw RepositoryError.notFound }
         return try await storage().0.publicKey(for: id)
+    }
+    func managedKey(_ id: UUID) async throws -> ManagedKey {
+        guard try await repository.securityMetadata().keys.contains(where: { $0.id == id }) else { throw RepositoryError.notFound }
+        return try await storage().0.key(id: id)
     }
 
     @discardableResult func saveHost(_ supplied: HostConfiguration, isNew: Bool, password: PasswordChoice, tagIDs: Set<UUID>? = nil) async throws -> SecuritySaveOutcome {
@@ -464,6 +468,73 @@ actor SecurityCoordinator {
             do { try journal.remove(passphraseIntent.id) } catch { cleanupPending = true }
         }
         return KeyCreationOutcome(id: keyID, cleanupPending: cleanupPending)
+    }
+
+    @discardableResult
+    func rememberKeyPassphrase(
+        keyID: UUID,
+        passphrase: SecretBytes,
+        authorization: RememberAuthorization
+    ) async throws -> ManagedKeyReference {
+        guard authorization == .granted else { throw SecurityUIFailure.notAuthorized }
+        let nonEmpty = passphrase.withUnsafeBytes { !$0.isEmpty }
+        guard nonEmpty else { throw SecurityUIFailure.notAuthorized }
+        try begin(); defer { busy = false }
+        let (keys, journal) = try storage()
+        let metadata = try await repository.securityMetadata()
+        guard let original = metadata.keys.first(where: { $0.id == keyID }) else { throw RepositoryError.notFound }
+        let managed = try await keys.key(id: keyID)
+        guard (original.algorithm == .ed25519 && managed.publicKey.algorithm == .ed25519)
+                || (original.algorithm == .rsa && managed.publicKey.algorithm == .rsa) else {
+            throw KeyFailure.invalidOpenSSH
+        }
+        guard managed.encrypted else { throw SecurityUIFailure.keyNotEncrypted }
+        _ = try await keys.verifyPassphrase(passphrase, for: keyID)
+        try Task.checkCancellation()
+
+        // Re-check current key metadata after verification before writing to Keychain.
+        let beforeSave = try await repository.securityMetadata()
+        guard let current = beforeSave.keys.first(where: { $0.id == keyID }) else { throw RepositoryError.notFound }
+
+        var intent = SecurityIntent(id: UUID(), kind: .privateKeyPassphrase, state: .prepared)
+        try journal.set(intent)
+        switch await credentials.save(passphrase, as: .init(id: intent.id, kind: .privateKeyPassphrase), authorization: .granted) {
+        case .saved:
+            intent.state = .created
+            do { try journal.set(intent) } catch { try await compensate(intent); throw error }
+        case .notAuthorized:
+            try journal.remove(intent.id)
+            throw SecurityUIFailure.notAuthorized
+        case .failed(let reason):
+            try journal.remove(intent.id)
+            throw SecurityUIFailure.credential(reason)
+        }
+
+        let changes: [RepositoryChange] = [
+            .registerCredential(.init(id: intent.id, purpose: .privateKeyPassphrase, isSavingAuthorized: true)),
+            .updateKeyPassphrase(keyID: keyID, credentialRef: intent.id)
+        ]
+        var updated = current
+        updated.passphraseCredentialRef = intent.id
+        do {
+            try await repository.apply(changes)
+        } catch is AppStorageFailure {
+            return updated
+        } catch {
+            try await compensate(intent)
+            throw error
+        }
+
+        do {
+            try journal.remove(intent.id)
+            if let old = current.passphraseCredentialRef, old != intent.id {
+                try await deleteIfUnusedCredential(old)
+            }
+        } catch {
+            // The new credential reference is already committed. Any pending cleanup
+            // remains visible via SecurityOverview for explicit retry.
+        }
+        return updated
     }
 
     @discardableResult func forgetKeyPassphrase(_ keyID: UUID) async throws -> SecuritySaveOutcome {

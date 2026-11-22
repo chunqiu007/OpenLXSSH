@@ -10,6 +10,7 @@ final class KeychainStub: KeychainBackend, @unchecked Sendable {
     var readStatus: OSStatus = errSecItemNotFound
     var updateStatus: OSStatus = errSecSuccess
     var deleteStatus: OSStatus = errSecSuccess
+    var deleteStatusByService: [String: OSStatus] = [:]
     var readData: Data?
     var queries: [[String: Any]] = []
     var updates: [[String: Any]] = []
@@ -39,6 +40,10 @@ final class KeychainStub: KeychainBackend, @unchecked Sendable {
     func delete(_ query: [String: Any]) -> OSStatus {
         lock.withLock {
             queries.append(query)
+            if let service = query[kSecAttrService as String] as? String,
+               let mapped = deleteStatusByService[service] {
+                return mapped
+            }
             return deleteStatus
         }
     }
@@ -48,6 +53,7 @@ final class KeychainStub: KeychainBackend, @unchecked Sendable {
 final class CredentialStoreTests: XCTestCase {
     func testStableNamespaceTypesAndRedaction() throws {
         XCTAssertEqual(CredentialStore.productionService, "org.openlxssh.credentials.v2")
+        XCTAssertEqual(CredentialStore.legacyProductionService, "org.openlxssh.credentials")
         let id = UUID()
         XCTAssertNotEqual(
             CredentialReference(id: id, kind: .password).account,
@@ -101,9 +107,9 @@ final class CredentialStoreTests: XCTestCase {
         _ = await store.replace(secret, at: reference, authorization: .granted)
         _ = await store.deleteExact(reference)
 
-        XCTAssertEqual(backend.queries.count, 4)
+        XCTAssertEqual(backend.queries.count, 5)
         var contexts: [ObjectIdentifier] = []
-        for query in backend.queries {
+        for query in backend.queries.prefix(4) {
             XCTAssertEqual(query[kSecAttrService as String] as? String, "org.openlxssh.credentials.v2.test.\(namespace.uuidString)")
             XCTAssertEqual(query[kSecAttrAccount as String] as? String, reference.account)
             XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
@@ -114,13 +120,22 @@ final class CredentialStoreTests: XCTestCase {
             XCTAssertNil(query[kSecAttrAccessGroup as String])
             XCTAssertNil(query[kSecAttrAccessControl as String])
         }
+        let legacyDelete = backend.queries[4]
+        XCTAssertEqual(legacyDelete[kSecAttrService as String] as? String, "org.openlxssh.credentials.test.\(namespace.uuidString)")
+        XCTAssertEqual(legacyDelete[kSecAttrAccount as String] as? String, reference.account)
+        XCTAssertEqual(legacyDelete[kSecAttrSynchronizable as String] as? Bool, false)
+        XCTAssertNil(legacyDelete[kSecUseDataProtectionKeychain as String])
+        let legacyContext = try XCTUnwrap(legacyDelete[kSecUseAuthenticationContext as String] as? LAContext)
+        XCTAssertTrue(legacyContext.interactionNotAllowed)
+        contexts.append(ObjectIdentifier(legacyContext))
         // Every operation gets a fresh per-call LAContext.
-        XCTAssertEqual(Set(contexts).count, 4)
+        XCTAssertEqual(Set(contexts).count, 5)
 
         XCTAssertEqual(backend.queries[0][kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
         XCTAssertNil(backend.queries[1][kSecAttrAccessible as String])
         XCTAssertNil(backend.queries[2][kSecAttrAccessible as String])
         XCTAssertNil(backend.queries[3][kSecAttrAccessible as String])
+        XCTAssertNil(backend.queries[4][kSecAttrAccessible as String])
         XCTAssertEqual(backend.updates[0].count, 2)
         XCTAssertEqual(backend.updates[0][kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
         XCTAssertNotNil(backend.updates[0][kSecValueData as String])
@@ -139,8 +154,8 @@ final class CredentialStoreTests: XCTestCase {
         _ = await store.replace(secret, at: reference, authorization: .granted)
         _ = await store.deleteExact(reference)
 
-        XCTAssertEqual(backend.queries.count, 4)
-        for query in backend.queries {
+        XCTAssertEqual(backend.queries.count, 5)
+        for query in backend.queries.prefix(4) {
             XCTAssertEqual(query[kSecAttrService as String] as? String, "org.openlxssh.credentials.v2.test.\(namespace.uuidString)")
             XCTAssertEqual(query[kSecAttrAccount as String] as? String, reference.account)
             XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
@@ -149,6 +164,13 @@ final class CredentialStoreTests: XCTestCase {
             let context = try XCTUnwrap(query[kSecUseAuthenticationContext as String] as? LAContext)
             XCTAssertTrue(context.interactionNotAllowed)
         }
+        let legacyDelete = backend.queries[4]
+        XCTAssertEqual(legacyDelete[kSecAttrService as String] as? String, "org.openlxssh.credentials.test.\(namespace.uuidString)")
+        XCTAssertEqual(legacyDelete[kSecAttrAccount as String] as? String, reference.account)
+        XCTAssertEqual(legacyDelete[kSecAttrSynchronizable as String] as? Bool, false)
+        XCTAssertNil(legacyDelete[kSecUseDataProtectionKeychain as String])
+        let legacyContext = try XCTUnwrap(legacyDelete[kSecUseAuthenticationContext as String] as? LAContext)
+        XCTAssertTrue(legacyContext.interactionNotAllowed)
         XCTAssertEqual(backend.updates[0].count, 1)
         XCTAssertNotNil(backend.updates[0][kSecValueData as String])
         try await store.close()
@@ -242,5 +264,120 @@ final class CredentialStoreTests: XCTestCase {
             }
         }
         XCTAssertEqual(backend.queries.count, 8)
+    }
+
+    func testDeleteExactRemovesLegacyV1ItemWhenV2IsAbsent() async throws {
+        let backend = KeychainStub()
+        let namespace = UUID()
+        let v2Service = "org.openlxssh.credentials.v2.test.\(namespace.uuidString)"
+        let v1Service = "org.openlxssh.credentials.test.\(namespace.uuidString)"
+        backend.deleteStatusByService = [
+            v2Service: errSecItemNotFound,
+            v1Service: errSecSuccess
+        ]
+        let store = CredentialStore(testNamespace: namespace, backend: backend, storageMode: .dataProtection)
+        let reference = CredentialReference(kind: .password)
+
+        let result = await store.deleteExact(reference)
+        XCTAssertEqual(result, .deleted)
+        XCTAssertEqual(backend.queries.count, 2)
+        XCTAssertEqual(backend.queries[0][kSecAttrService as String] as? String, v2Service)
+        XCTAssertEqual(backend.queries[0][kSecUseDataProtectionKeychain as String] as? Bool, true)
+        XCTAssertEqual(backend.queries[1][kSecAttrService as String] as? String, v1Service)
+        XCTAssertEqual(backend.queries[1][kSecAttrAccount as String] as? String, reference.account)
+        XCTAssertEqual(backend.queries[1][kSecAttrSynchronizable as String] as? Bool, false)
+        XCTAssertNil(backend.queries[1][kSecUseDataProtectionKeychain as String])
+        let legacyContext = try XCTUnwrap(backend.queries[1][kSecUseAuthenticationContext as String] as? LAContext)
+        XCTAssertTrue(legacyContext.interactionNotAllowed)
+
+        // Also verify production v2 -> production legacy v1 mapping.
+        let prodBackend = KeychainStub()
+        prodBackend.deleteStatusByService = [
+            CredentialStore.productionService: errSecItemNotFound,
+            CredentialStore.legacyProductionService: errSecSuccess
+        ]
+        let prodStore = CredentialStore(service: CredentialStore.productionService, backend: prodBackend, storageMode: .dataProtection)
+        let prodResult = await prodStore.deleteExact(reference)
+        XCTAssertEqual(prodResult, .deleted)
+        XCTAssertEqual(prodBackend.queries.count, 2)
+        XCTAssertEqual(prodBackend.queries[0][kSecAttrService as String] as? String, CredentialStore.productionService)
+        XCTAssertEqual(prodBackend.queries[1][kSecAttrService as String] as? String, CredentialStore.legacyProductionService)
+        XCTAssertNil(prodBackend.queries[1][kSecUseDataProtectionKeychain as String])
+        try await store.close()
+        try await prodStore.close()
+    }
+
+    func testDeleteExactRequiresRetryWhenV2AbsentAndLegacyV1DeleteFails() async throws {
+        let backend = KeychainStub()
+        let namespace = UUID()
+        let v2Service = "org.openlxssh.credentials.v2.test.\(namespace.uuidString)"
+        let v1Service = "org.openlxssh.credentials.test.\(namespace.uuidString)"
+        backend.deleteStatusByService = [
+            v2Service: errSecItemNotFound,
+            v1Service: errSecInteractionNotAllowed
+        ]
+        let store = CredentialStore(testNamespace: namespace, backend: backend, storageMode: .dataProtection)
+        let reference = CredentialReference(kind: .privateKeyPassphrase)
+
+        let result = await store.deleteExact(reference)
+        XCTAssertEqual(result, .retryRequired(.interactionNotAllowed))
+        XCTAssertEqual(backend.queries.count, 2)
+        XCTAssertEqual(backend.queries[0][kSecAttrService as String] as? String, v2Service)
+        XCTAssertEqual(backend.queries[1][kSecAttrService as String] as? String, v1Service)
+
+        // Even when v2 succeeded, a legacy v1 delete failure must report retryRequired.
+        backend.deleteStatusByService[v2Service] = errSecSuccess
+        backend.deleteStatusByService[v1Service] = errSecAuthFailed
+        let partialFailure = await store.deleteExact(reference)
+        XCTAssertEqual(partialFailure, .retryRequired(.denied))
+        try await store.close()
+    }
+
+    func testDeleteExactReturnsAlreadyAbsentOnlyWhenBothV2AndLegacyV1AreAbsent() async throws {
+        let backend = KeychainStub()
+        let namespace = UUID()
+        let v2Service = "org.openlxssh.credentials.v2.test.\(namespace.uuidString)"
+        let v1Service = "org.openlxssh.credentials.test.\(namespace.uuidString)"
+        backend.deleteStatusByService = [
+            v2Service: errSecItemNotFound,
+            v1Service: errSecItemNotFound
+        ]
+        let store = CredentialStore(testNamespace: namespace, backend: backend, storageMode: .dataProtection)
+        let reference = CredentialReference(kind: .password)
+
+        let absent = await store.deleteExact(reference)
+        XCTAssertEqual(absent, .alreadyAbsent)
+        XCTAssertEqual(backend.queries.count, 2)
+
+        // If v2 existed and legacy v1 was absent, result must be .deleted.
+        backend.deleteStatusByService[v2Service] = errSecSuccess
+        let deletedV2Only = await store.deleteExact(reference)
+        XCTAssertEqual(deletedV2Only, .deleted)
+        try await store.close()
+    }
+
+    func testReadSaveAndReplaceNeverQueryLegacyV1Service() async throws {
+        let backend = KeychainStub()
+        let namespace = UUID()
+        let v2Service = "org.openlxssh.credentials.v2.test.\(namespace.uuidString)"
+        let v1Service = "org.openlxssh.credentials.test.\(namespace.uuidString)"
+        let store = CredentialStore(testNamespace: namespace, backend: backend, storageMode: .dataProtection)
+        let reference = CredentialReference(kind: .password)
+        let secret = try SecretBytes.random()
+
+        backend.readStatus = errSecItemNotFound
+        guard case .missing = await store.read(reference) else {
+            return XCTFail("Missing v2 item must not fall back to legacy v1")
+        }
+        _ = await store.save(secret, as: reference, authorization: .granted)
+        _ = await store.replace(secret, at: reference, authorization: .granted)
+
+        XCTAssertEqual(backend.queries.count, 3)
+        for query in backend.queries {
+            let service = query[kSecAttrService as String] as? String
+            XCTAssertEqual(service, v2Service)
+            XCTAssertNotEqual(service, v1Service)
+        }
+        try await store.close()
     }
 }

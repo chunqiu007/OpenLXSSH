@@ -1227,6 +1227,63 @@ extension OpenLXSSHAppTests {
         XCTAssertNil(model1.files.selectedHost)
     }
 
+    func testConcurrentSettingsSaveAcrossTwoWindowsMergesChangedFieldsWithoutOverwriting() async throws {
+        let (repository, directory) = try repository()
+        let location = AppDataLocation.isolated(directory)
+        let security = SecurityCoordinator(repository: repository, location: location, credentials: FakeCredentials())
+        let environment = SessionEnvironment(location: location)
+
+        let windowA = AppModel(repository: repository, security: security, sessionEnvironment: environment, location: location)
+        let windowB = AppModel(repository: repository, security: security, sessionEnvironment: environment, location: location)
+        addTeardownBlock {
+            await windowA.files.closeForWindow()
+            await windowB.files.closeForWindow()
+            try await security.close()
+            try await repository.close()
+        }
+
+        XCTAssertTrue(awaiting: await windowA.reload())
+        XCTAssertTrue(awaiting: await windowB.reload())
+
+        // Both windows open Settings editors from the same initial snapshot.
+        let editorA = SettingsEditorModel(windowA.settings)
+        let editorB = SettingsEditorModel(windowB.settings)
+
+        // Window A edits fileConflictPolicy and saves.
+        editorA.draft.value.fileConflictPolicy = .overwrite
+        let baseA = editorA.initial
+        let savedA = await editorA.save(using: { await windowA.saveSettings($0, base: baseA) })
+        XCTAssertTrue(savedA)
+
+        // Window B edits fontSize (without knowing about Window A's save) and saves using its original base.
+        editorB.draft.size = "16"
+        let baseB = editorB.initial
+        let savedB = await editorB.save(using: { await windowB.saveSettings($0, base: baseB) })
+        XCTAssertTrue(savedB)
+
+        // Persisted settings must contain BOTH edits without overwriting Window A's change.
+        let persisted = try await repository.loadSettings()
+        XCTAssertEqual(persisted.fileConflictPolicy, .overwrite)
+        XCTAssertEqual(persisted.fontSize, 16)
+
+        // Also verify clean editor syncs external updates while dirty editor keeps its draft intact.
+        let cleanEditor = SettingsEditorModel(persisted)
+        let dirtyEditor = SettingsEditorModel(persisted)
+        dirtyEditor.draft.value.cursorBlink = false
+
+        var external = persisted
+        external.theme = .dark
+        cleanEditor.syncExternal(external)
+        dirtyEditor.syncExternal(external)
+
+        XCTAssertFalse(cleanEditor.isDirty)
+        XCTAssertEqual(cleanEditor.draft.value.theme, .dark)
+        XCTAssertEqual(cleanEditor.initial.theme, .dark)
+        XCTAssertTrue(dirtyEditor.isDirty)
+        XCTAssertEqual(dirtyEditor.draft.value.cursorBlink, false)
+        XCTAssertEqual(dirtyEditor.draft.value.theme, persisted.theme)
+    }
+
     func testClosingSecondaryWindowLeavesPrimaryWindowSessionsSFTPAndSharedRepositoryIntact() async throws {
         _ = NSApplication.shared
         let (repository, directory) = try repository()

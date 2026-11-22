@@ -41,7 +41,11 @@ public enum KeychainStorageMode: String, Equatable, Sendable {
 /// Core owns metadata and shared-reference authorization before deleteExact().
 public actor CredentialStore {
     public static let productionService = "org.openlxssh.credentials.v2"
+    public static let legacyProductionService = "org.openlxssh.credentials"
+    private static let testServicePrefix = "org.openlxssh.credentials.v2.test."
+    private static let legacyTestServicePrefix = "org.openlxssh.credentials.test."
     public nonisolated let service: String
+    private nonisolated let legacyService: String?
     public nonisolated let storageMode: KeychainStorageMode
     private let backend: any KeychainBackend
     private var closed = false
@@ -53,7 +57,7 @@ public actor CredentialStore {
     /// UUID-only namespace injection for isolated tests. Never use production namespace in tests.
     public init(testNamespace: UUID) throws {
         self.init(
-            service: "org.openlxssh.credentials.v2.test.\(testNamespace.uuidString)",
+            service: Self.testServicePrefix + testNamespace.uuidString,
             backend: SystemKeychainBackend(),
             storageMode: nil
         )
@@ -61,14 +65,21 @@ public actor CredentialStore {
 
     init(testNamespace: UUID, backend: any KeychainBackend, storageMode: KeychainStorageMode? = nil) {
         self.init(
-            service: "org.openlxssh.credentials.v2.test.\(testNamespace.uuidString)",
+            service: Self.testServicePrefix + testNamespace.uuidString,
             backend: backend,
             storageMode: storageMode
         )
     }
 
-    private init(service: String, backend: any KeychainBackend, storageMode: KeychainStorageMode?) {
+    init(service: String, backend: any KeychainBackend, storageMode: KeychainStorageMode?) {
         self.service = service
+        if service == Self.productionService {
+            self.legacyService = Self.legacyProductionService
+        } else if service.hasPrefix(Self.testServicePrefix) {
+            self.legacyService = Self.legacyTestServicePrefix + service.dropFirst(Self.testServicePrefix.count)
+        } else {
+            self.legacyService = nil
+        }
         self.backend = backend
         self.storageMode = storageMode ?? Self.probeStorageMode(backend: backend, service: service)
     }
@@ -166,13 +177,38 @@ public actor CredentialStore {
         }
     }
 
-    /// Only Core can decide that no host/key still references this item. One attempt only.
+    private func legacyDeleteQuery(_ reference: CredentialReference, legacyService: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: legacyService,
+            kSecAttrAccount as String: reference.account,
+            kSecAttrSynchronizable as String: false,
+            kSecUseAuthenticationContext as String: Self.nonInteractiveContext()
+        ]
+    }
+
+    /// Only Core can decide that no host/key still references this item.
+    /// Deletes from the current v2 namespace and, when a matching legacy v1 namespace exists,
+    /// also attempts exact deletion from standard Keychain v1 so "Forget" never silently leaves
+    /// an old v1 secret behind. Never reads or migrates legacy v1 items.
     public func deleteExact(_ reference: CredentialReference) -> CredentialDeleteResult {
         guard !closed else { return .retryRequired(.closed) }
-        switch backend.delete(baseQuery(reference)) {
-        case errSecSuccess: return .deleted
-        case errSecItemNotFound: return .alreadyAbsent
-        case let status: return .retryRequired(.from(status))
+        let v2Status = backend.delete(baseQuery(reference))
+        guard v2Status == errSecSuccess || v2Status == errSecItemNotFound else {
+            return .retryRequired(.from(v2Status))
+        }
+        let deletedV2 = (v2Status == errSecSuccess)
+        guard let legacyService else {
+            return deletedV2 ? .deleted : .alreadyAbsent
+        }
+        let legacyStatus = backend.delete(legacyDeleteQuery(reference, legacyService: legacyService))
+        switch legacyStatus {
+        case errSecSuccess:
+            return .deleted
+        case errSecItemNotFound:
+            return deletedV2 ? .deleted : .alreadyAbsent
+        default:
+            return .retryRequired(.from(legacyStatus))
         }
     }
 }

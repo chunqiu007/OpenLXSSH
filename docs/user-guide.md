@@ -11,7 +11,7 @@ OpenLXSSH 面向 **Apple Silicon（M 系列芯片）Mac**，要求 **macOS 26 �
 - **本机数据与 Keychain v2**：
   - 主机与设置数据库位于当前用户的 `资源库/Application Support/OpenLXSSH/Data/OpenLXSSH.sqlite`。
   - 导入或生成的私钥副本存放在 App 专属受限目录中，不修改原始文件。
-  - 选择「记住」的密码与私钥口令保存在现代本机 macOS 钥匙串（服务命名空间 `org.openlxssh.credentials.v2`，启用签名授权时使用本机 Data Protection Keychain，不通过 iCloud 同步；一次性验证码 OTP 从不保存）。从使用旧版钥匙串命名空间（v1）的版本升级时，旧条目不会静默迁移，首次连接按提示输入并勾选「记住」即可保存至 v2。
+  - 选择「记住」的密码与私钥口令保存在现代本机 macOS 钥匙串（服务命名空间 `org.openlxssh.credentials.v2`，启用签名授权时使用本机 Data Protection Keychain，不通过 iCloud 同步；一次性验证码 OTP 从不保存）。从使用旧版钥匙串命名空间（v1）的版本升级时，旧条目不会静默迁移，且 SSH 连接弹窗仅为「仅本次使用，不保存」：如需重新记住主机密码，请在「保险箱」编辑对应主机并勾选「记住密码」；如需重新记住加密私钥口令，请在「密钥与凭据」选择对应私钥并点击「记住口令…」/「重新记住口令…」。
 - **卸载**：如需清除已保存凭据与私钥，先在应用内的「密钥与凭据」中逐项忘记密码/口令、解除主机关联并删除不再使用的私钥副本，确认后退出应用并将 `OpenLXSSH.app` 移到废纸篓。移除应用本身不会自动删除 `Application Support/OpenLXSSH` 目录或本机钥匙串条目。
 
 ## 添加主机并连接

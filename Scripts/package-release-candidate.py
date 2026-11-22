@@ -82,17 +82,29 @@ def verify_info_plist(app: Path) -> dict[str, Any]:
     return {"bundle_id": bundle_id, "version": version, "build": build, "executable": executable, "min_macos": min_os}
 
 
-def stage_app(source_app: Path, output_dir: Path) -> Path:
+def stage_app(source_app: Path, work_dir: Path) -> Path:
     if not source_app.is_dir():
         raise PackagingError(f"Source app bundle not found: {source_app}")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    staged_app = output_dir / "OpenLXSSH.app"
-    if staged_app.resolve() == source_app.resolve():
-        raise PackagingError("Output directory must not overwrite the source .app in place")
+    staged_app = work_dir / "OpenLXSSH.app"
     if staged_app.exists():
         shutil.rmtree(staged_app)
     run(["ditto", str(source_app), str(staged_app)])
     return staged_app
+
+
+def replace_directory_atomically(new_dir: Path, target_dir: Path, backup_dir: Path) -> None:
+    had_existing = target_dir.exists() or target_dir.is_symlink()
+    if had_existing:
+        os.replace(target_dir, backup_dir)
+    try:
+        os.replace(new_dir, target_dir)
+    except BaseException:
+        if had_existing and backup_dir.exists() and not target_dir.exists():
+            try:
+                os.replace(backup_dir, target_dir)
+            except OSError:
+                pass
+        raise
 
 
 def verify_binary(binary: Path) -> dict[str, Any]:
@@ -158,14 +170,14 @@ def sign_bundle(staged_app: Path, identity: str, use_timestamp: bool) -> None:
 
 
 def build_dmg(
-    staged_app: Path, output_dir: Path, version: str, sign_identity: str | None, use_timestamp: bool
+    staged_app: Path, work_dir: Path, version: str, sign_identity: str | None, use_timestamp: bool
 ) -> tuple[Path, Path, str]:
-    dmg_path = output_dir / f"OpenLXSSH-{version}-arm64.dmg"
+    dmg_path = work_dir / f"OpenLXSSH-{version}-arm64.dmg"
     sha_path = Path(f"{dmg_path}.sha256")
     if dmg_path.exists():
         dmg_path.unlink()
 
-    with tempfile.TemporaryDirectory(prefix="openlxssh-dmg-", dir=output_dir) as tmp:
+    with tempfile.TemporaryDirectory(prefix="dmg-stage-", dir=work_dir) as tmp:
         stage_dir = Path(tmp)
         run(["ditto", str(staged_app), str(stage_dir / "OpenLXSSH.app")])
         os.symlink("/Applications", stage_dir / "Applications")
@@ -216,38 +228,63 @@ def main(argv: list[str] | None = None) -> int:
         run([str(REPO_ROOT / "Scripts/build-app.sh"), "Release", "build"], cwd=REPO_ROOT)
 
     source_app, output_dir = args.app.resolve(), args.output.resolve()
+    if not source_app.is_dir():
+        raise PackagingError(f"Source app bundle not found: {source_app}")
+    final_app = output_dir / "OpenLXSSH.app"
+    if final_app.resolve() == source_app.resolve():
+        raise PackagingError("Output directory must not overwrite the source .app in place")
+
     info = verify_info_plist(source_app)
-    staged_app = stage_app(source_app, output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    binary = staged_app / "Contents/MacOS" / info["executable"]
-    if not args.no_strip:
-        run(["strip", "-x", str(binary)])
+    # Perform all staging, stripping, verification, signing, and DMG creation inside a private
+    # temporary directory on the same filesystem so any mid-run failure preserves previous outputs.
+    with tempfile.TemporaryDirectory(prefix=".openlxssh-pkg-", dir=output_dir) as tmp_root:
+        work_dir = Path(tmp_root)
+        tmp_app = stage_app(source_app, work_dir)
 
-    binary_info = verify_binary(binary)
-    verify_bundle_contents(staged_app)
-    if args.sign:
-        sign_bundle(staged_app, args.sign, args.timestamp)
+        binary = tmp_app / "Contents/MacOS" / info["executable"]
+        if not args.no_strip:
+            run(["strip", "-x", str(binary)])
 
-    receipt: dict[str, Any] = {
-        "bundle_id": info["bundle_id"],
-        "version": info["version"],
-        "build": info["build"],
-        "min_macos": info["min_macos"],
-        "archs": binary_info["archs"],
-        "macho_minos": binary_info["minos"],
-        "stripped": not args.no_strip,
-        "signed": bool(args.sign),
-        "timestamp": bool(args.timestamp),
-        "staged_app": str(staged_app),
-    }
-    if not args.no_dmg:
-        dmg_path, sha_path, digest = build_dmg(staged_app, output_dir, info["version"], args.sign, args.timestamp)
-        receipt.update({
-            "dmg": str(dmg_path),
-            "dmg_bytes": dmg_path.stat().st_size,
-            "dmg_sha256": digest,
-            "sha256_file": str(sha_path),
-        })
+        binary_info = verify_binary(binary)
+        verify_bundle_contents(tmp_app)
+        if args.sign:
+            sign_bundle(tmp_app, args.sign, args.timestamp)
+
+        tmp_dmg: Path | None = None
+        tmp_sha: Path | None = None
+        digest: str | None = None
+        if not args.no_dmg:
+            tmp_dmg, tmp_sha, digest = build_dmg(tmp_app, work_dir, info["version"], args.sign, args.timestamp)
+
+        # Atomic publish phase: only reached after every build, verify, and sign check succeeds.
+        backup_app = work_dir / "OpenLXSSH.app.previous"
+        replace_directory_atomically(tmp_app, final_app, backup_app)
+
+        receipt: dict[str, Any] = {
+            "bundle_id": info["bundle_id"],
+            "version": info["version"],
+            "build": info["build"],
+            "min_macos": info["min_macos"],
+            "archs": binary_info["archs"],
+            "macho_minos": binary_info["minos"],
+            "stripped": not args.no_strip,
+            "signed": bool(args.sign),
+            "timestamp": bool(args.timestamp),
+            "staged_app": str(final_app),
+        }
+        if tmp_dmg is not None and tmp_sha is not None and digest is not None:
+            final_dmg = output_dir / tmp_dmg.name
+            final_sha = output_dir / tmp_sha.name
+            os.replace(tmp_dmg, final_dmg)
+            os.replace(tmp_sha, final_sha)
+            receipt.update({
+                "dmg": str(final_dmg),
+                "dmg_bytes": final_dmg.stat().st_size,
+                "dmg_sha256": digest,
+                "sha256_file": str(final_sha),
+            })
 
     print(json.dumps(receipt, indent=2, ensure_ascii=False))
     return 0

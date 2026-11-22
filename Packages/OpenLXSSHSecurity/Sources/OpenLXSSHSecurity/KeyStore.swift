@@ -190,6 +190,25 @@ public actor KeyStore {
     }
     public func publicKey(for id: UUID) throws -> PublicKey { try key(id: id).publicKey }
 
+    /// Verifies that `passphrase` decrypts this managed encrypted private key via system ssh-keygen,
+    /// without modifying or exporting the private key file.
+    public func verifyPassphrase(_ passphrase: SecretBytes, for id: UUID) async throws -> ManagedKey {
+        guard !mutating else { throw KeyFailure.busy }
+        let directory = try open()
+        let name = finalName(id)
+        let bytes = try directory.read(name)
+        let envelope = try OpenSSHEnvelope(bytes)
+        guard envelope.encrypted else { throw KeyFailure.invalidPassphraseInput }
+        try directory.validatePrivateFile(name)
+        let observed = try await tool.publicKey(
+            at: rootURL.appendingPathComponent(name).path,
+            protection: .passphrase(passphrase)
+        )
+        try directory.validatePrivateFile(name)
+        guard observed == envelope.publicKey else { throw KeyFailure.invalidOpenSSH }
+        return ManagedKey(id: id, publicKey: observed, encrypted: envelope.encrypted)
+    }
+
     /// Returns this exact managed UUID's OpenSSH private bytes in memory only, for a direct,
     /// user-authorized authentication boundary. The caller must first validate the Core
     /// host/key reference and user authorization; this store has no reference database.

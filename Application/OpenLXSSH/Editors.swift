@@ -48,18 +48,29 @@ struct FolderEditor: View {
 struct SettingsEditor: View {
     let model: AppModel
     @Bindable var editor: SettingsEditorModel
-    @State private var category: PreferencesCategory = .general
     @State private var diagnosticCategories: Set<DiagnosticCategory> = [.version]
     @State private var diagnosticSnapshot: PublicDiagnosticSnapshot?
     @State private var copied = false
     private let fonts = TerminalPreferences.availableFonts()
     private let presentationHeight: CGFloat
+    private let registersWindowCloseReview: Bool
     var dismiss: () -> Void
-    init(model: AppModel, editor: SettingsEditorModel, initialCategory: PreferencesCategory = .general, dismiss: @escaping () -> Void) {
-        self.model = model; _editor = Bindable(wrappedValue: editor); self.dismiss = dismiss
-        _category = State(initialValue: initialCategory)
-        let parentHeight = (NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow)?.contentView?.bounds.height ?? 680
-        presentationHeight = min(620, max(420, parentHeight - 60))
+    private var category: PreferencesCategory { editor.selectedCategory }
+    init(
+        model: AppModel,
+        editor: SettingsEditorModel,
+        presentationHeightOverride: CGFloat? = nil,
+        registersWindowCloseReview: Bool = true,
+        dismiss: @escaping () -> Void
+    ) {
+        self.model = model; _editor = Bindable(wrappedValue: editor)
+        self.registersWindowCloseReview = registersWindowCloseReview; self.dismiss = dismiss
+        if let presentationHeightOverride {
+            presentationHeight = presentationHeightOverride
+        } else {
+            let parentHeight = (NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow)?.contentView?.bounds.height ?? 680
+            presentationHeight = min(620, max(420, parentHeight - 60))
+        }
     }
 
     var body: some View {
@@ -82,7 +93,7 @@ struct SettingsEditor: View {
                     VStack(alignment: .leading, spacing: 5) {
                         ForEach(PreferencesCategory.allCases) { item in
                             let selected = category == item
-                            Button { category = item } label: {
+                            Button { editor.selectedCategory = item } label: {
                                 Label(item.title, systemImage: item.symbol)
                                     .font(.system(size: 13, weight: selected ? .semibold : .regular))
                                     .foregroundStyle(selected ? Color.accentColor : .primary)
@@ -126,14 +137,20 @@ struct SettingsEditor: View {
         .background(DesktopStyle.background).foregroundStyle(.primary)
         .preferredColorScheme(editor.draft.value.theme == .system ? nil : (editor.draft.value.theme == .dark ? .dark : .light))
         .onAppear {
+            guard registersWindowCloseReview else { return }
             model.registerPreferencesCloseReview(owner: editor.id, begin: { [weak editor] request in
                 guard let editor, editor.resetReview == nil else { request.resolve(false); return }
                 editor.beginCloseReview(request, dismiss: dismiss)
             }, cancel: { [weak editor] in editor?.cancelClose() })
         }
+        .onChange(of: model.settings) { _, latest in
+            editor.syncExternal(latest)
+        }
         .onDisappear {
             editor.deactivate()
-            model.clearPreferencesCloseReview(owner: editor.id)
+            if registersWindowCloseReview {
+                model.clearPreferencesCloseReview(owner: editor.id)
+            }
         }
         .nativeSheet(item: closePrompt, onAttemptDismiss: { editor.cancelClose(); return !editor.isWriting }) { prompt in
             VStack(alignment: .leading, spacing: 16) {
@@ -351,7 +368,8 @@ struct SettingsEditor: View {
         (diagnosticSnapshot ?? PublicDiagnosticSnapshot(model: model)).preview(categories: diagnosticCategories)
     }
     private func save(reviewID: UUID? = nil) {
-        Task { if await editor.save(reviewID: reviewID, using: { await model.saveSettings($0) }) { dismiss() } }
+        let base = editor.initial
+        Task { if await editor.save(reviewID: reviewID, using: { await model.saveSettings($0, base: base) }) { dismiss() } }
     }
     private func field(_ title: String, range: String, id: String, binding: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 5) {

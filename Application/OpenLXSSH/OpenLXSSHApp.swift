@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import OpenLXSSHCore
 import OpenLXSSHTransport
 
 @main enum OpenLXSSHEntry {
@@ -42,7 +43,7 @@ import OpenLXSSHTransport
 
     /// Unknown system sheets/open panels are never force-ended or replaced by the
     /// global review. Owned editor sheets route their exact nested prompt themselves.
-    func allowsGlobalCloseReview(managedWindows: [ManagedWorkspaceWindow]) -> Bool {
+    func allowsGlobalCloseReview(managedWindows: [ManagedWorkspaceWindow], additionalOwnedWindows: [NSWindow] = []) -> Bool {
         var sheet = window.attachedSheet
         while let current = sheet {
             guard current is NativeOwnedSheetWindow else {
@@ -59,7 +60,8 @@ import OpenLXSSHTransport
         if let key = NSApp.keyWindow,
            key !== window,
            !(key is NativeOwnedSheetWindow),
-           !managedWindows.contains(where: { $0.window === key }) {
+           !managedWindows.contains(where: { $0.window === key }),
+           !additionalOwnedWindows.contains(where: { $0 === key }) {
             return false
         }
         return true
@@ -76,14 +78,20 @@ import OpenLXSSHTransport
 
     /// Closes ONLY this window: dirty-editor review -> freeze admission -> active-transfer
     /// confirmation -> close this window's sessions & SFTP -> performClose.
-    func requestClose(managedWindowsProvider: @escaping @MainActor () -> [ManagedWorkspaceWindow]) {
+    func requestClose(
+        managedWindowsProvider: @escaping @MainActor () -> [ManagedWorkspaceWindow],
+        additionalOwnedWindowsProvider: @escaping @MainActor () -> [NSWindow] = { [] }
+    ) {
         let startsFlow = closeRequest.request(.window)
         guard startsFlow else { return }
         windowClosing = true
         closeFlow = Task { @MainActor [self] in
             // Review runs before admission revocation, transfer snapshots, credential
             // reads, or any cleanup. A cancelled review is purely presentation state.
-            guard allowsGlobalCloseReview(managedWindows: managedWindowsProvider()) else {
+            guard allowsGlobalCloseReview(
+                managedWindows: managedWindowsProvider(),
+                additionalOwnedWindows: additionalOwnedWindowsProvider()
+            ) else {
                 cancelCloseAttempt(focusWindow: true)
                 return false
             }
@@ -136,10 +144,16 @@ import OpenLXSSHTransport
     /// Phase 1 of app termination for this window: runs presentation review, freezes
     /// admission, and confirms cancelling active transfers without tearing down
     /// connections until every open window has approved.
-    func reviewForTermination(managedWindows: [ManagedWorkspaceWindow]) async -> WindowCloseReviewRequest? {
+    func reviewForTermination(
+        managedWindows: [ManagedWorkspaceWindow],
+        additionalOwnedWindows: [NSWindow] = []
+    ) async -> WindowCloseReviewRequest? {
         guard closeRequest.request(.quit) else { return nil }
         windowClosing = true
-        guard allowsGlobalCloseReview(managedWindows: managedWindows) else {
+        guard allowsGlobalCloseReview(
+            managedWindows: managedWindows,
+            additionalOwnedWindows: additionalOwnedWindows
+        ) else {
             cancelCloseAttempt(focusWindow: true)
             return nil
         }
@@ -319,15 +333,89 @@ import OpenLXSSHTransport
     }
 }
 
+/// Owns the single app-wide Settings window so pressing ⌘, or opening Diagnostics
+/// from any workspace window shares one authoritative preferences editor.
+@MainActor final class ManagedSettingsWindow {
+    let window: NSWindow
+    let model: AppModel
+    let editor: SettingsEditorModel
+    private(set) var closeApproved = false
+    private var closing = false
+
+    init(window: NSWindow, model: AppModel, editor: SettingsEditorModel) {
+        self.window = window
+        self.model = model
+        self.editor = editor
+    }
+
+    func focus(category: PreferencesCategory?) {
+        if let category {
+            editor.selectedCategory = category
+        }
+        if window.attachedSheet == nil {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func allowsCloseReview() -> Bool {
+        var sheet = window.attachedSheet
+        while let current = sheet {
+            guard current is NativeOwnedSheetWindow else {
+                return false
+            }
+            sheet = current.attachedSheet
+        }
+        if NSApp.modalWindow != nil {
+            return false
+        }
+        return true
+    }
+
+    func approveAndClose() {
+        guard !closing else { return }
+        closing = true
+        closeApproved = true
+        var sheets: [NSWindow] = []
+        var current = window.attachedSheet
+        while let sheet = current {
+            sheets.append(sheet)
+            current = sheet.attachedSheet
+        }
+        for sheet in sheets.reversed() {
+            sheet.sheetParent?.endSheet(sheet)
+        }
+        window.close()
+    }
+
+    func handleDidClose() {
+        window.delegate = nil
+        window.contentView = nil
+        editor.deactivate()
+        model.windowClosed()
+        let files = model.files
+        Task { @MainActor in
+            await files.closeForWindow()
+        }
+    }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     let sharedRepository: AppRepository
     let sharedSecurity: SecurityCoordinator
     let sharedEnvironment: SessionEnvironment
 
     private(set) var windows: [ManagedWorkspaceWindow] = []
+    private(set) var settingsWindow: ManagedSettingsWindow?
     private var terminating = false
     private var terminationReplyPending = false
     private var terminationFlow: Task<Void, Never>?
+
+    private var additionalOwnedWindows: [NSWindow] {
+        settingsWindow.map { [$0.window] } ?? []
+    }
 
     var activeWindow: ManagedWorkspaceWindow? {
         managedWindow(for: NSApp.keyWindow)
@@ -425,6 +513,57 @@ import OpenLXSSHTransport
     }
 
     @discardableResult
+    func openSettingsWindow(category: PreferencesCategory? = nil) -> ManagedSettingsWindow? {
+        guard !terminating, !terminationReplyPending else { return nil }
+        if let existing = settingsWindow {
+            existing.focus(category: category)
+            return existing
+        }
+
+        let initialSettings = activeWindow?.model.settings ?? AppSettings()
+        let model = AppModel(
+            repository: sharedRepository,
+            security: sharedSecurity,
+            sessionEnvironment: sharedEnvironment,
+            location: .applicationSupport,
+            preferencesDefaults: nil
+        )
+        let editor = SettingsEditorModel(initialSettings, category: category ?? .general)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "设置"
+        window.identifier = NSUserInterfaceItemIdentifier("OpenLXSSH.settings")
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        let managed = ManagedSettingsWindow(window: window, model: model, editor: editor)
+        window.contentView = NSHostingView(rootView: SettingsEditor(
+            model: model,
+            editor: editor,
+            presentationHeightOverride: 620,
+            registersWindowCloseReview: false
+        ) { [weak self, weak managed] in
+            guard let self, let managed, self.settingsWindow === managed else { return }
+            managed.approveAndClose()
+        })
+        window.delegate = self
+        settingsWindow = managed
+
+        managed.focus(category: nil)
+        Task { @MainActor [weak model, weak editor] in
+            guard let model, let editor else { return }
+            if await model.reload() {
+                editor.syncExternal(model.settings)
+            }
+        }
+        return managed
+    }
+
+    @discardableResult
     private func ensureActiveWindow() -> ManagedWorkspaceWindow? {
         guard !terminating, !terminationReplyPending else { return nil }
         if let active = activeWindow {
@@ -456,16 +595,30 @@ import OpenLXSSHTransport
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let managedSettings = settingsWindow, managedSettings.window === sender {
+            if managedSettings.closeApproved { return true }
+            guard !terminating, !terminationReplyPending else { return false }
+            guard sender.attachedSheet == nil else { return false }
+            return managedSettings.editor.attemptClose()
+        }
         guard let managed = windows.first(where: { $0.window === sender }) else { return true }
         if managed.windowCloseApproved { return true }
         guard !terminating, !terminationReplyPending else { return false }
-        managed.requestClose(managedWindowsProvider: { [weak self] in self?.windows ?? [] })
+        managed.requestClose(
+            managedWindowsProvider: { [weak self] in self?.windows ?? [] },
+            additionalOwnedWindowsProvider: { [weak self] in self?.additionalOwnedWindows ?? [] }
+        )
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard let sender = notification.object as? NSWindow,
-              let index = windows.firstIndex(where: { $0.window === sender }) else { return }
+        guard let sender = notification.object as? NSWindow else { return }
+        if let managedSettings = settingsWindow, managedSettings.window === sender {
+            settingsWindow = nil
+            managedSettings.handleDidClose()
+            return
+        }
+        guard let index = windows.firstIndex(where: { $0.window === sender }) else { return }
         let managed = windows.remove(at: index)
         managed.handleDidClose(terminating: terminating)
     }
@@ -514,7 +667,30 @@ import OpenLXSSHTransport
             }
         }
 
-        // Phase 1: coordinate close review sequentially across all currently open windows.
+        // Phase 1a: if the app-wide Settings window is open, review its draft first.
+        if let managedSettings = settingsWindow {
+            guard managedSettings.allowsCloseReview() else {
+                managedSettings.focus(category: nil)
+                abortTermination()
+                return
+            }
+            if managedSettings.editor.isDirty {
+                managedSettings.focus(category: nil)
+            }
+            let settingsReview = WindowCloseReviewRequest()
+            managedSettings.editor.beginCloseReview(settingsReview) { [weak managedSettings] in
+                managedSettings?.approveAndClose()
+            }
+            let approved = await settingsReview.wait()
+            guard approved, settingsReview.isApprovedAndCurrent else {
+                managedSettings.editor.cancelClose()
+                managedSettings.focus(category: nil)
+                abortTermination()
+                return
+            }
+        }
+
+        // Phase 1b: coordinate close review sequentially across all currently open windows.
         let snapshot = windows
         for managed in snapshot {
             if let inFlightResult = await managed.awaitInFlightCloseIfNeeded() {
@@ -525,7 +701,10 @@ import OpenLXSSHTransport
                 continue
             }
             guard windows.contains(where: { $0 === managed }) else { continue }
-            guard let review = await managed.reviewForTermination(managedWindows: windows) else {
+            guard let review = await managed.reviewForTermination(
+                managedWindows: windows,
+                additionalOwnedWindows: additionalOwnedWindows
+            ) else {
                 abortTermination(focusing: managed)
                 return
             }
@@ -754,6 +933,26 @@ import OpenLXSSHTransport
         !terminating && !terminationReplyPending && NSApp.modalWindow == nil && !hasAnyTransferClosePrompt
     }
 
+    private func isSettingsWindowHierarchy(_ window: NSWindow?) -> Bool {
+        guard let target = settingsWindow?.window else { return false }
+        var current = window
+        while let candidate = current {
+            if candidate === target { return true }
+            current = candidate.sheetParent
+        }
+        return false
+    }
+
+    private var allowsSettingsWindow: Bool {
+        guard !terminating, !terminationReplyPending, NSApp.modalWindow == nil, !hasAnyTransferClosePrompt else {
+            return false
+        }
+        if let existing = settingsWindow, isSettingsWindowHierarchy(NSApp.keyWindow) {
+            return existing.window.attachedSheet == nil
+        }
+        return allowsWorkspaceActions(for: activeWindow)
+    }
+
     private func allowsWorkspaceActions(for managed: ManagedWorkspaceWindow?) -> Bool {
         guard !terminating, !terminationReplyPending else { return false }
         if let managed {
@@ -778,9 +977,16 @@ import OpenLXSSHTransport
             return allowsNewWindow
         }
 
+        if menuItem.action == #selector(openSettings) || menuItem.action == #selector(showDiagnostics) {
+            return allowsSettingsWindow
+        }
+
         let managed = activeWindow
         if menuItem.action == #selector(closeWorkspace) {
             guard !hasAnyTransferClosePrompt else { return false }
+            if isSettingsWindowHierarchy(NSApp.keyWindow) {
+                return true
+            }
             if let managed {
                 return !managed.windowClosing || (!managed.closeApproved && managed.window.attachedSheet != nil)
             }
@@ -845,8 +1051,8 @@ import OpenLXSSHTransport
     }
 
     @objc private func openSettings() {
-        guard allowsWorkspaceActions(for: activeWindow), let managed = ensureActiveWindow() else { return }
-        managed.model.sendWorkspaceCommand(.settings)
+        guard allowsSettingsWindow else { return }
+        _ = openSettingsWindow(category: nil)
     }
 
     @objc private func showVault() {
@@ -895,8 +1101,8 @@ import OpenLXSSHTransport
     }
 
     @objc private func showDiagnostics() {
-        guard allowsWorkspaceActions(for: activeWindow), let managed = ensureActiveWindow() else { return }
-        managed.model.sendWorkspaceCommand(.diagnostics)
+        guard allowsSettingsWindow else { return }
+        _ = openSettingsWindow(category: .privacy)
     }
 
     @objc private func showLicenses() {
@@ -987,6 +1193,18 @@ import OpenLXSSHTransport
 
     @objc private func closeWorkspace() {
         guard !terminating, !hasAnyTransferClosePrompt else { return }
+        if let managedSettings = settingsWindow, isSettingsWindowHierarchy(NSApp.keyWindow) {
+            if let sheet = managedSettings.window.attachedSheet {
+                var current = sheet
+                while let nested = current.attachedSheet {
+                    current = nested
+                }
+                _ = NativeSheetCloseRouting.attemptClose(current)
+            } else {
+                managedSettings.window.performClose(nil)
+            }
+            return
+        }
         let managed = activeWindow
         if let sheet = managed?.window.attachedSheet {
             var current = sheet

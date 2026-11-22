@@ -46,6 +46,7 @@ extension AppIssue {
         case .staleRecoveryReview: return AppIssue(code: "security.staleRecoveryReview", message: "恢复记录或关联已变化，此确认已失效。请刷新并重新核对；未删除任何文件或 Keychain 项目。")
         case .staleKeyImportReview: return AppIssue(code: "key.importReviewExpired", message: "导入审查已过期，或源文件／已登记密钥已变化。未采用替换文件或保存新口令；请取消后重新选择文件核对。")
         case .duplicatePublicKey: return AppIssue(code: "key.duplicatePublicKey", message: "相同公钥已存在。未创建副本或保存新口令；请在导入审查中选择复用已有密钥，或取消。")
+        case .keyNotEncrypted: return AppIssue(code: "key.notEncrypted", message: "此私钥未加密，无需保存口令。")
         }
     }
 }
@@ -56,6 +57,7 @@ extension AppIssue {
     private(set) var publicKeys: [UUID: String] = [:]
     private(set) var fingerprints: [UUID: String] = [:]
     private(set) var publicKeyBits: [UUID: Int] = [:]
+    private(set) var encryptedKeys: [UUID: Bool] = [:]
     private(set) var pendingCount = 0
     private(set) var uncertainCount = 0
     private(set) var recoveryReviews: [RecoveryReview] = []
@@ -73,17 +75,18 @@ extension AppIssue {
         let generation = loadGeneration
         do {
             let overview = try await coordinator.overview()
-            var values: [UUID: String] = [:], prints: [UUID: String] = [:], bits: [UUID: Int] = [:]
+            var values: [UUID: String] = [:], prints: [UUID: String] = [:], bits: [UUID: Int] = [:], encrypted: [UUID: Bool] = [:]
             for key in overview.metadata.keys {
-                if let value = try? await coordinator.publicKey(key.id) {
-                    values[key.id] = value.copyString
-                    if let info = Self.publicInformation(value.copyString) { prints[key.id] = info.fingerprint; bits[key.id] = info.bits }
+                if let managed = try? await coordinator.managedKey(key.id) {
+                    values[key.id] = managed.publicKey.copyString
+                    encrypted[key.id] = managed.encrypted
+                    if let info = Self.publicInformation(managed.publicKey.copyString) { prints[key.id] = info.fingerprint; bits[key.id] = info.bits }
                 }
             }
             guard generation == loadGeneration else { return }
             metadata = overview.metadata; pendingCount = overview.pendingCount; uncertainCount = overview.uncertainCount
             recoveryReviews = overview.recoveryReviews
-            publicKeys = values; fingerprints = prints; publicKeyBits = bits
+            publicKeys = values; fingerprints = prints; publicKeyBits = bits; encryptedKeys = encrypted
         } catch { if generation == loadGeneration { issue = .security(error) } }
     }
     func label(for key: ManagedKeyReference) -> String { key.label.isEmpty ? key.algorithm.rawValue.uppercased() + " · " + key.id.uuidString.prefix(8) : key.label }
@@ -201,6 +204,23 @@ extension AppIssue {
     }
     func publishCreatedKey(_ outcome: KeyCreationOutcome, label: String) {
         lastCreatedKey = outcome; lastCreatedKeyLabel = label
+    }
+    func rememberKeyPassphrase(_ keyID: UUID, passphrase: SecretBytes) async -> Bool {
+        guard !busy else { return false }
+        busy = true; defer { busy = false }
+        do {
+            _ = try await coordinator.rememberKeyPassphrase(keyID: keyID, passphrase: passphrase, authorization: .granted)
+            issue = nil
+            await load()
+            if !metadata.tickets.isEmpty {
+                issue = .security(SecurityUIFailure.pendingCleanup)
+            }
+            return true
+        } catch {
+            issue = .security(error)
+            await load()
+            return false
+        }
     }
     func forgetKeyPassphrase(_ id: UUID) async -> Bool {
         guard !busy else { return false }

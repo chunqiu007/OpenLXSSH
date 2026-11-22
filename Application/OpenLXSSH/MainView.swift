@@ -5,8 +5,9 @@ import OpenLXSSHCore
 @MainActor private struct SettingsPresentation: Identifiable {
     let id = UUID()
     let editor: SettingsEditorModel
-    let category: PreferencesCategory
-    init(_ settings: AppSettings, category: PreferencesCategory = .general) { editor = SettingsEditorModel(settings); self.category = category }
+    init(_ settings: AppSettings, category: PreferencesCategory = .general) {
+        editor = SettingsEditorModel(settings, category: category)
+    }
 }
 
 struct MainView: View {
@@ -48,7 +49,7 @@ struct MainView: View {
             if request?.command == .diagnostics, settingsPresentation == nil { settingsPresentation = SettingsPresentation(model.settings, category: .privacy) }
         }
         .nativeSheet(item: $settingsPresentation, onAttemptDismiss: { settingsPresentation?.editor.attemptClose() ?? true }) { presentation in
-            SettingsEditor(model: model, editor: presentation.editor, initialCategory: presentation.category) { settingsPresentation = nil }
+            SettingsEditor(model: model, editor: presentation.editor) { settingsPresentation = nil }
         }
     }
 }

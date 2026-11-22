@@ -30,6 +30,7 @@ struct AppSnapshot: Sendable {
 
 protocol AppRepositoryProtocol: Sendable {
     func snapshot(query: HostQuery) async throws -> AppSnapshot
+    func loadSettings() async throws -> AppSettings
     /// A single-direction invalidation channel. Reads never publish, including refreshes by consumers.
     func metadataChanges() async -> AsyncStream<Void>
     func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot
@@ -56,6 +57,7 @@ struct SecurityMetadata: Sendable {
 extension AppRepositoryProtocol {
     // Older test repositories need not implement the new metadata surface. Unsupported operations
     // fail explicitly instead of fabricating an empty catalog, a zero impact, or a successful save.
+    func loadSettings() async throws -> AppSettings { try await snapshot(query: HostQuery()).settings }
     func metadataChanges() async -> AsyncStream<Void> { AsyncStream { $0.finish() } }
     func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot { throw RepositoryError.notFound }
     func folderDeletionImpact(id: UUID) async throws -> FolderDeletionImpact { throw RepositoryError.notFound }
@@ -157,6 +159,12 @@ actor AppRepository: AppRepositoryProtocol {
             folderPaths: filtered.folders, tags: filtered.tags, hostMetadata: filtered.hosts, allHostMetadata: catalog)
         _ = try location.databaseDirectory()
         return snapshot
+    }
+
+    func loadSettings() throws -> AppSettings {
+        let value = try opened().settings()
+        _ = try location.databaseDirectory()
+        return value
     }
 
     func vaultMetadata(query: HostQuery) async throws -> VaultMetadataSnapshot {

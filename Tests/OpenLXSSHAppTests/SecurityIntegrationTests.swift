@@ -206,6 +206,83 @@ import OpenLXSSHTrust
         try await coordinator.close(); try await repo.close()
     }
 
+    func testRememberKeyPassphraseInPlaceValidatesRejectsWrongOrUnencryptedAndCleansUpReplacedRef() async throws {
+        let (_, repo, credentials, coordinator) = try fixture()
+        let viewModel = SecurityViewModel(coordinator: coordinator)
+
+        // 1. Unencrypted key must be rejected without touching Keychain.
+        let unencryptedID = try await coordinator.createKey(.generate, protection: .unencrypted, rememberPassphrase: nil).id
+        await viewModel.load()
+        checkEqual(viewModel.encryptedKeys[unencryptedID], false)
+        let unencryptedSaved = await viewModel.rememberKeyPassphrase(unencryptedID, passphrase: SecretBytes(utf8: "any-passphrase"))
+        checkFalse(unencryptedSaved)
+        checkEqual(viewModel.issue?.code, "key.notEncrypted")
+        checkEqual(await credentials.saveCount, 0)
+
+        // 2. Encrypted key initially without a remembered passphrase.
+        let phrase = SecretBytes(utf8: UUID().uuidString)
+        let encryptedID = try await coordinator.createKey(.generate, protection: .passphrase(phrase), rememberPassphrase: nil).id
+        await viewModel.load()
+        checkEqual(viewModel.encryptedKeys[encryptedID], true)
+        checkNil(viewModel.metadata.keys.first { $0.id == encryptedID }?.passphraseCredentialRef)
+
+        // Unauthorized and empty passphrases are rejected without touching Keychain.
+        await expectFailure {
+            _ = try await coordinator.rememberKeyPassphrase(keyID: encryptedID, passphrase: phrase, authorization: .notGranted)
+        }
+        await expectFailure {
+            _ = try await coordinator.rememberKeyPassphrase(keyID: encryptedID, passphrase: SecretBytes(Data()), authorization: .granted)
+        }
+        checkEqual(await credentials.saveCount, 0)
+
+        // Wrong passphrase must fail ssh-keygen verification without writing to Keychain or DB.
+        let wrongSaved = await viewModel.rememberKeyPassphrase(encryptedID, passphrase: SecretBytes(utf8: "wrong-passphrase"))
+        checkFalse(wrongSaved)
+        checkEqual(viewModel.issue?.code, "key.operationFailed")
+        checkEqual(await credentials.saveCount, 0)
+        checkNil(try await repo.securityMetadata().keys.first { $0.id == encryptedID }?.passphraseCredentialRef)
+
+        // Valid passphrase saves into Keychain v2 and updates key metadata.
+        let remembered = await viewModel.rememberKeyPassphrase(encryptedID, passphrase: phrase)
+        checkTrue(remembered)
+        checkNil(viewModel.issue)
+        let firstMetadata = try await repo.securityMetadata()
+        let firstRef = try XCTUnwrap(firstMetadata.keys.first { $0.id == encryptedID }?.passphraseCredentialRef)
+        if case .available(let stored) = await credentials.read(.init(id: firstRef, kind: .privateKeyPassphrase)) {
+            checkTrue(stored.matches(phrase))
+        } else {
+            XCTFail("Expected saved passphrase in Keychain v2")
+        }
+
+        // 3. Re-remembering passphrase replaces old ref and schedules cleanup if old delete fails.
+        await credentials.setDeleteFailure(.denied)
+        let reRemembered = await viewModel.rememberKeyPassphrase(encryptedID, passphrase: phrase)
+        checkTrue(reRemembered)
+        checkEqual(viewModel.issue?.code, "security.cleanupPending")
+        let metadataAfterReplace = try await repo.securityMetadata()
+        let secondRef = try XCTUnwrap(metadataAfterReplace.keys.first { $0.id == encryptedID }?.passphraseCredentialRef)
+        XCTAssertNotEqual(secondRef, firstRef)
+        checkEqual(metadataAfterReplace.tickets.count, 1)
+        checkEqual(metadataAfterReplace.tickets.first?.resourceID, firstRef)
+        checkEqual(await credentials.count, 2)
+
+        // Retrying cleanup deletes the retired old ref while keeping the active new ref intact.
+        await credentials.setDeleteFailure(nil)
+        try await coordinator.retryCleanup()
+        checkTrue(try await repo.securityMetadata().tickets.isEmpty)
+        checkEqual(await credentials.count, 1)
+        if case .missing = await credentials.read(.init(id: firstRef, kind: .privateKeyPassphrase)) {} else {
+            XCTFail("Retired passphrase credential should have been deleted")
+        }
+        if case .available(let stored) = await credentials.read(.init(id: secondRef, kind: .privateKeyPassphrase)) {
+            checkTrue(stored.matches(phrase))
+        } else {
+            XCTFail("Active passphrase credential must remain available")
+        }
+
+        try await coordinator.close(); try await repo.close()
+    }
+
     func testCommittedForgetReturnsCleanupWarningWithoutReinsertingHost() async throws {
         let (_, repo, credentials, coordinator) = try fixture()
         let original = host()
