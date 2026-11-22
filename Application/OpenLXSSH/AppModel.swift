@@ -105,7 +105,7 @@ enum MainWindowFramePreferences {
     }
 }
 
-enum WorkspaceCommand: Equatable { case newConnection, newHost, settings, diagnostics, search, connectionInfo }
+enum WorkspaceCommand: Equatable { case newConnection, newHost, newFilesHost, settings, diagnostics, search, connectionInfo }
 struct WorkspaceCommandRequest: Identifiable, Equatable {
     let id = UUID()
     let command: WorkspaceCommand

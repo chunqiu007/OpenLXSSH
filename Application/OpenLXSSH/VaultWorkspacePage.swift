@@ -4,7 +4,7 @@ import OpenLXSSHCore
 
 private struct VaultPresentation: Identifiable {
     enum Content {
-        case host(HostConfiguration?), folder(HostFolder?, UUID?), tag(HostTag?), newHostInFolder(UUID)
+        case host(HostConfiguration?, forFiles: Bool = false), folder(HostFolder?, UUID?), tag(HostTag?), newHostInFolder(UUID)
         case batch(VaultBatchConfirmation), deleteFolder(FolderDeletionImpact), deleteTag(TagDeletionImpact)
     }
     let id = UUID()
@@ -45,7 +45,7 @@ struct VaultWorkspacePage: View {
     private var allowsHostTerminationReview: Bool {
         guard let content = presentations.item?.content else { return false }
         switch content {
-        case .host(_), .newHostInFolder(_): return true
+        case .host, .newHostInFolder: return true
         default: return false
         }
     }
@@ -115,6 +115,7 @@ struct VaultWorkspacePage: View {
         }
         switch request.command {
         case .newHost: page = .hosts; presentHost(nil)
+        case .newFilesHost: page = .hosts; _ = presentations.present(.host(nil, forFiles: true))
         case .search:
             switch page {
             case .hosts: _ = app.focusHostSearch(for: request)
@@ -178,8 +179,8 @@ struct VaultWorkspacePage: View {
 
     @ViewBuilder private func presentationContent(_ item: OwnedPresentation<VaultPresentation.Content>) -> some View {
             switch item.content {
-            case .host(let host):
-                VaultHostEditor(app: app, vault: model, host: host, folderID: model.section.folderID,
+            case .host(let host, let forFiles):
+                VaultHostEditor(app: app, vault: model, host: host, folderID: model.section.folderID, forFiles: forFiles,
                     transientConnection: transientConnection, ownsPresentation: { presentations.owns(item.id) },
                     registerClose: { presentations.registerClose(item.id, action: $0) }, clearClose: { presentations.clearClose(item.id) },
                     registerWindowCloseReview: { begin, cancel in presentations.registerWindowCloseReview(item.id, begin: begin, cancel: cancel) },

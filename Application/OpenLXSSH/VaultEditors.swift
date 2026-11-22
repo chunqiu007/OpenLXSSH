@@ -16,6 +16,7 @@ struct VaultHostEditor: View {
     @State private var security: SecurityViewModel
     @State private var editor: VaultHostEditorModel
     @State private var closeReview: VaultHostCloseReview
+    @State private var organizing = false
     @State private var advanced = false
     @State private var sheets = PresentationOwner<VaultEditorSheet.Content>()
     @State private var showsValidationErrors = false
@@ -30,7 +31,8 @@ struct VaultHostEditor: View {
     @State private var presentationHeight: CGFloat
     private let transientConnection: VaultTransientConnectionHandler?
     let dismiss: () -> Void
-    init(app: AppModel, vault: VaultDesktopModel, host: HostConfiguration?, folderID: UUID?,
+    private let forFiles: Bool
+    init(app: AppModel, vault: VaultDesktopModel, host: HostConfiguration?, folderID: UUID?, forFiles: Bool = false,
          transientConnection: VaultTransientConnectionHandler? = nil,
          closeRequest: Binding<(@MainActor () -> Bool)?> = .constant(nil),
          ownsPresentation: @escaping @MainActor () -> Bool = { true },
@@ -39,6 +41,7 @@ struct VaultHostEditor: View {
          clearWindowCloseReview: (() -> Void)? = nil,
          completeWindowCloseReview: (@MainActor (WindowCloseReviewRequest) -> Void)? = nil,
          dismiss: @escaping () -> Void) {
+        self.forFiles = forFiles
         self.app = app; self.vault = vault; self.transientConnection = transientConnection; self.dismiss = dismiss
         self.registerClose = registerClose; self.clearClose = clearClose
         self.registerWindowCloseReview = registerWindowCloseReview; self.clearWindowCloseReview = clearWindowCloseReview
@@ -51,7 +54,10 @@ struct VaultHostEditor: View {
         let editor = VaultHostEditorModel(draft: VaultHostDraft(host: host, settings: app.settings, folderID: folderID,
             tagIDs: host.flatMap { vault.snapshot?.hostTagIDs[$0.id] } ?? []), ownsPresentation: ownsPresentation)
         _editor = State(initialValue: editor)
-        _closeReview = State(initialValue: VaultHostCloseReview(editor: editor, dismiss: { dismiss() }, complete: completeWindowCloseReview))
+        _closeReview = State(initialValue: VaultHostCloseReview(editor: editor, dismiss: {
+            dismiss()
+            if forFiles { app.showWorkspace(.sftp) }
+        }, complete: completeWindowCloseReview))
     }
     private var canConnect: Bool { !editor.hasTransientInput || transientConnection != nil }
     private func input<Value>(_ key: ReferenceWritableKeyPath<VaultHostEditorModel, Value>) -> Binding<Value> {
@@ -76,43 +82,32 @@ struct VaultHostEditor: View {
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 34, height: 34)
                     .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(draft.isNew ? "新建主机" : "编辑主机").font(.title3).bold()
-                    Text("配置 SSH 地址、认证方式与保活选项").font(.caption).foregroundStyle(.secondary)
-                }
+                Text(draft.isNew ? "新建主机" : "编辑主机").font(.title3.weight(.semibold))
                 Spacer()
-                Button { requestClose() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭主机编辑")
+                Button { requestClose() } label: { Image(systemName: "xmark").frame(width: 22, height: 22) }
+                    .buttonStyle(.borderless).help("关闭").accessibilityLabel("关闭主机编辑")
             }.padding(.horizontal, 20).padding(.vertical, 16)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    section("地址", icon: "network") { field("服务器地址", key: "address", text: draftInput.configuration.address) }
-                    section("常规", icon: "server.rack") {
-                        field("名称", key: "name", text: draftInput.configuration.name)
-                        Text("父分组").font(.caption).foregroundStyle(.secondary)
-                        NativePopup(id: "host.folder", items: [PopupItem(value: "", title: "未分组")] + vault.folders.map { PopupItem(value: $0.id.uuidString, title: vault.folderLabel($0)) },
-                            selection: Binding(get: { draft.configuration.folderID?.uuidString ?? "" }, set: { draft.configuration.folderID = UUID(uuidString: $0) })).frame(height: 28)
-                        if !vault.tags.isEmpty {
-                            Text("标签").font(.caption).foregroundStyle(.secondary)
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 110))], alignment: .leading) {
-                                ForEach(vault.tags) { tag in
-                                    Toggle(tag.name, isOn: Binding(get: { draft.tagIDs.contains(tag.id) }, set: { if $0 { draft.tagIDs.insert(tag.id) } else { draft.tagIDs.remove(tag.id) } }))
-                                        .toggleStyle(.checkbox).font(.caption)
-                                }
-                            }
+                    section("连接信息", icon: "terminal") {
+                        HStack(alignment: .top, spacing: 12) {
+                            field("服务器地址", key: "address", text: draftInput.configuration.address,
+                                  placeholder: "主机名、IP 或 SSH 连接命令", next: "port")
+                            field("端口", key: "port", text: draftInput.port, next: "username").frame(width: 96)
                         }
-                        Toggle("收藏", isOn: draftInput.configuration.isFavorite).toggleStyle(.checkbox)
+                        HStack(alignment: .top, spacing: 12) {
+                            field("用户名", key: "username", text: draftInput.configuration.username, placeholder: "SSH 登录用户", next: "name")
+                            field("主机名称", key: "name", text: draftInput.configuration.name, placeholder: "在保险箱中显示的名称",
+                                  next: draft.configuration.authentication.needsKey ? "key" : (forFiles && !remember ? "remember" : "password"))
+                        }
                     }
-                    section("SSH", icon: "terminal") {
-                        field("端口", key: "port", text: draftInput.port)
-                        field("用户名", key: "username", text: draftInput.configuration.username)
-                    }
-                    section("凭据", icon: "key") {
+                    section("身份认证", icon: "key") {
                         Picker("主认证方式", selection: Binding(get: { draft.primaryMethod }, set: {
                             draft.changePrimaryMethod($0); clearPassword(); remember = false; forgetExisting = false
                         })) {
                             Text("密码").tag("password"); Text("SSH 密钥").tag("key")
-                        }.pickerStyle(.segmented)
+                        }.pickerStyle(.segmented).labelsHidden()
                         if draft.configuration.authentication.needsKey {
                             let key = vault.snapshot?.keys.first { $0.id == draft.configuration.keyRef } ?? security.metadata.keys.first { $0.id == draft.configuration.keyRef }
                             HStack {
@@ -122,6 +117,7 @@ struct VaultHostEditor: View {
                                 }
                                 Spacer()
                                 Button("选择或添加…") { _ = sheets.present(.keys) }
+                                    .focused($focusedField, equals: "key")
                                     .accessibilityIdentifier("host.key.choose")
                             }
                             fieldError("key")
@@ -130,27 +126,25 @@ struct VaultHostEditor: View {
                                 HStack {
                                     Label("已保存密码", systemImage: "checkmark.shield").font(.caption)
                                     Spacer()
-                                    Button("保存时忘记此关联") { forgetExisting = true }.font(.caption)
+                                    Button("解除密码关联") { forgetExisting = true }.font(.caption)
                                 }
-                                Text("不会读取或填入已保存密码；输入新密码时，明确勾选记住才替换保存。").font(.caption).foregroundStyle(.secondary)
+                                Text("要更换已保存的密码，请输入新密码并勾选“记住密码”。").font(.caption).foregroundStyle(.secondary)
                             } else if forgetExisting {
                                 HStack { Text("保存时将仅解除此主机的密码关联。").font(.caption); Button("保留") { forgetExisting = false }.font(.caption) }
                             }
-                            HStack {
-                                Group {
-                                    if showPassword { TextField("本次密码", text: input(\.password)) }
-                                    else { SecureField("本次密码", text: input(\.password)) }
-                                }.textFieldStyle(.roundedBorder).focused($focusedField, equals: "password").accessibilityIdentifier("host.password")
-                                    .onSubmit { Task { _ = await save(connect: false) } }
-                                Button { showPassword.toggle(); focusedField = "password" } label: { Image(systemName: showPassword ? "eye.slash" : "eye") }
-                                    .buttonStyle(.plain).accessibilityLabel(showPassword ? "隐藏密码" : "临时显示密码")
-                            }
-                            Toggle("记住密码", isOn: input(\.remember)).toggleStyle(.checkbox).accessibilityIdentifier("host.remember")
+                            if forFiles { rememberToggle }
+                            if !forFiles || remember { passwordField }
+                            if !forFiles { rememberToggle }
                             if remember && password.isEmpty { Text("记住新密码需要输入非空密码。").font(.caption).foregroundStyle(.red) }
-                            Text("仅保存且不记住：关闭后丢弃输入。保存并连接：本次密码只交给新会话，重连不会复用。").font(.caption).foregroundStyle(.secondary)
+                            if forFiles && !remember {
+                                Text("本次连接的密码可在 SFTP 页面输入。").font(.caption).foregroundStyle(.secondary)
+                            } else if !password.isEmpty && !remember {
+                                Text("本次密码仅用于“保存并连接”，单独保存主机时会丢弃。").font(.caption).foregroundStyle(.secondary)
+                            }
                         }
-                        Text("附加验证按服务器实际提示人工回答；不会把本次密码自动填入附加问题。").font(.caption2).foregroundStyle(.secondary)
+                        Text("如需验证码或其他验证，连接时会提示。").font(.caption).foregroundStyle(.secondary)
                     }
+                    organizationSection
                     DisclosureGroup(isExpanded: $advanced) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 6) {
@@ -166,28 +160,23 @@ struct VaultHostEditor: View {
                                     .tint(active ? .accentColor : .secondary)
                                 }
                             }
-                            field("TCP 保活间隔（秒）", key: "interval", text: draftInput.interval)
+                            field("TCP 保活间隔（秒）", key: "interval", text: draftInput.interval, next: "count")
                             field("TCP 失败探测次数", key: "count", text: draftInput.count)
-                            Text("系统使用此空闲/重试间隔及失败探测次数检测 TCP 失联，不申请额外 SSH 通道。实际时刻由系统调度；TCP 仍响应时不代表 SSH 程序正常。间隔 0 关闭；修改只影响新连接。").font(.caption).foregroundStyle(.secondary)
-                            Text("TCP 保活不执行远端命令；不能保证远端任务在断线后继续。").font(.caption).foregroundStyle(.secondary)
+                            Text("设置仅对新连接生效。间隔为 0 时关闭 TCP 保活。").font(.caption).foregroundStyle(.secondary)
                         }.padding(.top, 10)
                     } label: {
                         HStack(spacing: 8) {
                             Text("高级 · 长连接保活")
                             Spacer()
-                            DesktopBadge(
-                                text: draft.configuration.keepaliveInterval == 0 ? "保活已关闭" : "保活 \(draft.configuration.keepaliveInterval) 秒",
-                                color: draft.configuration.keepaliveInterval == 0 ? .secondary : DesktopStyle.statusGreen,
-                                fill: draft.configuration.keepaliveInterval == 0 ? DesktopStyle.separator : DesktopStyle.statusGreen.opacity(0.14)
-                            )
+                            Text(keepaliveSummary).font(.caption).foregroundStyle(.secondary)
                         }
                     }.padding(16)
                         .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
                     if !canConnect { Text("当前编辑器暂时无法发起连接。可先保存配置后从主机列表连接；未记住的本次输入会在关闭后清除。").font(.caption).foregroundStyle(.secondary) }
-                    IssueView(issue: issue) { issue = nil }
                 }.padding(20).disabled(!editor.canEdit)
             }.frame(minHeight: 0, maxHeight: .infinity)
+            if let issue { IssueView(issue: issue) { editor.issue = nil }.padding(.horizontal, 16) }
             if editor.committedAwaitingRefresh {
                 Text("已保存，待刷新。当前表单只读；重试只读取已提交配置，不会再次保存密码。")
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
@@ -200,12 +189,20 @@ struct VaultHostEditor: View {
                 Button("取消") { requestClose() }.keyboardShortcut(.cancelAction).disabled(writing)
                 Spacer()
                 if writing { ProgressView().controlSize(.small) }
-                Button("保存") { Task { _ = await save(connect: false) } }.disabled(writing || !validForSave)
-                Button("保存并连接") { Task { _ = await save(connect: true) } }.buttonStyle(.borderedProminent)
-                    .disabled(writing || !validForSave || !canConnect)
+                if forFiles {
+                    Button("保存并返回 SFTP") { Task { _ = await save(connect: false) } }
+                        .buttonStyle(.borderedProminent).keyboardShortcut("s", modifiers: .command)
+                        .disabled(writing || !validForSave)
+                } else {
+                    Button("保存") { Task { _ = await save(connect: false) } }
+                        .keyboardShortcut("s", modifiers: .command).disabled(writing || !validForSave)
+                    Button("保存并连接") { Task { _ = await save(connect: true) } }.buttonStyle(.borderedProminent)
+                        .disabled(writing || !validForSave || !canConnect)
+                }
             }.padding(16)
         }.frame(width: 500, height: presentationHeight)
         .background(DesktopStyle.background)
+        .defaultFocus($focusedField, "address")
         .task { await security.load() }
         .onAppear {
             let close: @MainActor () -> Bool = { [weak review = closeReview, weak sheets] in
@@ -249,6 +246,71 @@ struct VaultHostEditor: View {
             }
         }
     }
+    private var rememberToggle: some View {
+        Toggle("记住密码", isOn: Binding(get: { remember }, set: { enabled in
+            remember = enabled
+            if forFiles && !enabled { password = ""; showPassword = false }
+        }))
+        .toggleStyle(.checkbox).focused($focusedField, equals: "remember").accessibilityIdentifier("host.remember")
+    }
+
+    private var passwordField: some View {
+        HStack {
+            let prompt = remember ? "要保存的密码" : "本次密码（可留空）"
+            Group {
+                if showPassword { TextField(prompt, text: input(\.password)) }
+                else { SecureField(prompt, text: input(\.password)) }
+            }
+            .textFieldStyle(.roundedBorder).focused($focusedField, equals: "password").accessibilityIdentifier("host.password")
+            .onSubmit { Task { _ = await save(connect: false) } }
+            Button { showPassword.toggle(); focusedField = "password" } label: {
+                Image(systemName: showPassword ? "eye.slash" : "eye")
+            }.buttonStyle(.plain).accessibilityLabel(showPassword ? "隐藏密码" : "临时显示密码")
+        }
+    }
+
+    private var organizationSection: some View {
+        DisclosureGroup(isExpanded: $organizing) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("分组").font(.caption).foregroundStyle(.secondary)
+                NativePopup(id: "host.folder", items: [PopupItem(value: "", title: "未分组")] + vault.folders.map {
+                    PopupItem(value: $0.id.uuidString, title: vault.folderLabel($0))
+                }, selection: Binding(get: { draft.configuration.folderID?.uuidString ?? "" }, set: {
+                    draft.configuration.folderID = UUID(uuidString: $0)
+                })).frame(height: 28)
+                if !vault.tags.isEmpty {
+                    Text("标签").font(.caption).foregroundStyle(.secondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 110))], alignment: .leading) {
+                        ForEach(vault.tags) { tag in
+                            Toggle(tag.name, isOn: Binding(get: { draft.tagIDs.contains(tag.id) }, set: {
+                                if $0 { draft.tagIDs.insert(tag.id) } else { draft.tagIDs.remove(tag.id) }
+                            })).toggleStyle(.checkbox).font(.caption)
+                        }
+                    }
+                }
+                Toggle("收藏", isOn: draftInput.configuration.isFavorite).toggleStyle(.checkbox)
+            }.padding(.top, 8)
+        } label: {
+            HStack {
+                Text("分组、标签与收藏")
+                Spacer()
+                Text(draft.configuration.folderID.map(vault.path(for:)) ?? "未分组")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                if draft.configuration.isFavorite {
+                    Image(systemName: "star.fill").foregroundStyle(.orange).accessibilityLabel("已收藏")
+                }
+            }
+        }
+        .padding(16)
+        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+    }
+
+    private var keepaliveSummary: String {
+        guard draft.fieldErrors["interval"] == nil, draft.fieldErrors["count"] == nil else { return "检查保活设置" }
+        return Int(draft.interval) == 0 ? "已关闭" : "间隔 \(draft.interval) 秒"
+    }
+
     private var validForSave: Bool {
         editor.validForSave && !editor.committedAwaitingRefresh
     }
@@ -264,7 +326,9 @@ struct VaultHostEditor: View {
         guard editor.canEdit, !connect || canConnect else { return false }
         guard validForSave else {
             showsValidationErrors = true
-            focusedField = ["address", "name", "port", "username", "key", "interval", "count"].first { draft.fieldErrors[$0] != nil }
+            let first = ["address", "port", "username", "name", "key", "interval", "count"].first { draft.fieldErrors[$0] != nil }
+            if first == "interval" || first == "count" { advanced = true }
+            focusedField = first ?? "password"
             return false
         }
         let usesTransient = editor.hasTransientInput
@@ -279,6 +343,14 @@ struct VaultHostEditor: View {
         } else { prepareConnection = nil }
         let afterDismiss: (@MainActor (HostConfiguration) -> Void)?
         if connect && !usesTransient { afterDismiss = { saved in app.requestSession(hostID: saved.id, mode: .newSession) } }
+        else if forFiles {
+            afterDismiss = { saved in
+                vault.choose(saved.id)
+                app.selectedHostID = saved.id
+                app.showWorkspace(.sftp)
+            }
+        }
+        else if !connect && draft.isNew { afterDismiss = { saved in vault.choose(saved.id) } }
         else { afterDismiss = nil }
         return await editor.saveAndFinish(security: app.security, vault: vault, prepareConnection: prepareConnection,
             dismiss: { closeReview.cancelPending(); dismiss() }, afterDismiss: afterDismiss)
@@ -295,35 +367,31 @@ struct VaultHostEditor: View {
         .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
     }
-    private func field(_ title: String, key: String, text: Binding<String>) -> some View {
+    private func field(_ title: String, key: String, text: Binding<String>, placeholder: String? = nil, next: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            TextField(title, text: text)
+            TextField(title, text: text, prompt: Text(placeholder ?? title))
                 .textFieldStyle(.roundedBorder)
                 .focused($focusedField, equals: key)
                 .accessibilityIdentifier("host." + key)
                 .onChange(of: text.wrappedValue) { _, _ in editedFields.insert(key) }
-                .onSubmit { Task { _ = await save(connect: false) } }
+                .onSubmit {
+                    editedFields.insert(key)
+                    guard draft.fieldErrors[key] == nil else { return }
+                    if let next { focusedField = next }
+                    else { Task { _ = await save(connect: false) } }
+                }
             fieldError(key)
         }
     }
     @ViewBuilder private func fieldError(_ key: String) -> some View {
-        if let error = draft.fieldErrors[key] {
-            let showUrgent = !draft.isNew || showsValidationErrors || editedFields.contains(key)
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(showUrgent ? DesktopStyle.statusRed : .secondary)
-            if key == "address", VaultHostDraft.parsedSSHCommand(draft.configuration.address) != nil {
-                Button("识别到 SSH 连接命令，点击自动填入地址、端口与用户名") {
-                    _ = draft.applySSHCommand(draft.configuration.address)
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-            } else if key == "username", VaultHostDraft.parsedSSHCommand(draft.configuration.username) != nil {
-                Button("识别到 SSH 连接命令，点击自动填入地址、端口与用户名") {
-                    _ = draft.applySSHCommand(draft.configuration.username)
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-            }
+        let raw = key == "address" ? draft.configuration.address : draft.configuration.username
+        if (key == "address" || key == "username"), VaultHostDraft.parsedSSHCommand(raw) != nil {
+            Button("从 SSH 命令填入连接信息") { _ = draft.applySSHCommand(raw) }
+                .buttonStyle(.link)
+        } else if let error = draft.fieldErrors[key],
+                  !draft.isNew || showsValidationErrors || editedFields.contains(key) {
+            Text(error).font(.caption).foregroundStyle(DesktopStyle.statusRed)
         }
     }
 }

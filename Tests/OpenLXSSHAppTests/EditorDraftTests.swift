@@ -75,6 +75,24 @@ import OpenLXSSHTransport
         XCTAssertTrue(draft.isDirty)
         XCTAssertEqual(draft.id, host.id)
     }
+    func testNewHostCloseReviewOnlyPromptsForActualChanges() {
+        let folder = UUID()
+        let editor = VaultHostEditorModel(draft: VaultHostDraft(settings: AppSettings(), folderID: folder))
+        var dismissCount = 0
+        let review = VaultHostCloseReview(editor: editor, dismiss: { dismissCount += 1 })
+        review.begin()
+        XCTAssertEqual(dismissCount, 1)
+        XCTAssertNil(review.prompt)
+        editor.password = "temporary input"
+        review.begin()
+        XCTAssertEqual(review.prompt?.kind, .dirty)
+        XCTAssertEqual(dismissCount, 1)
+        editor.password = ""
+        editor.draft.configuration.folderID = nil
+        XCTAssertTrue(editor.dirty)
+        editor.draft.configuration.folderID = folder
+        XCTAssertFalse(editor.dirty)
+    }
     func testCommittedNewDraftKeepsIDButRetriesAsUpdate() throws {
         var draft = VaultHostDraft(settings: AppSettings())
         draft.configuration.name = "new"; draft.configuration.address = "new.invalid"; draft.configuration.username = "fixture"

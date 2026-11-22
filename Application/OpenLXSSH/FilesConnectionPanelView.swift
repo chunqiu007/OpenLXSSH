@@ -47,6 +47,8 @@ struct FilesConnectionPanelView: View {
     let files: FilesController
     @Bindable var initialInput: FilesInitialInputOwner
     let inputContext: FilesInitialInputOwner.Context
+    let needsFirstHost: Bool
+    let onCreateHost: () -> Void
     let onChooseHost: () -> Void
     let onCancelConnection: () -> Void
     let onConnect: (FilesInitialInputOwner.Context) -> Void
@@ -88,10 +90,10 @@ struct FilesConnectionPanelView: View {
                 }
             }
             if files.selectedHost == nil {
-                Text("从保险箱选择主机，浏览远端文件。").font(.callout).foregroundStyle(.secondary)
-                Button("选择主机", action: onChooseHost)
+                Text(needsFirstHost ? "先在保险箱中保存一台主机，即可在这里浏览和传输文件。" : "选择已保存的主机，浏览远端文件。").font(.callout).foregroundStyle(.secondary)
+                Button(needsFirstHost ? "新建主机…" : "选择主机…", action: needsFirstHost ? onCreateHost : onChooseHost)
                     .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("files.remote.empty.choose")
+                    .accessibilityIdentifier(needsFirstHost ? "files.remote.empty.create" : "files.remote.empty.choose")
             } else if let host = files.selectedHost {
                 Divider()
                 if files.state == .failed {
@@ -156,8 +158,10 @@ struct FilesConnectionPanelView: View {
 struct FilesHostChooserSheet: View {
     let app: AppModel
     let files: FilesController
-    @Binding var hostSearch: String
-    @Binding var hostFilter: String
+    @State private var hostSearch = ""
+    @State private var hostFilter = "all"
+    @State private var focusRequest = UUID()
+    let onCreateHost: () -> Void
     let onSelect: (HostConfiguration) -> Void
     let onCancel: () -> Void
 
@@ -172,7 +176,7 @@ struct FilesHostChooserSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("选择远端主机").font(.title2.weight(.semibold))
-            DesktopSearchField(placeholder: "搜索名称、地址或用户名", id: "files.host.search", text: $hostSearch)
+            DesktopSearchField(placeholder: "搜索名称、地址或用户名", id: "files.host.search", text: $hostSearch, focusRequest: focusRequest)
             Picker("范围", selection: $hostFilter) { Text("全部").tag("all"); Text("收藏").tag("favorites"); Text("最近").tag("recent") }.pickerStyle(.segmented)
             let matches = filteredHosts
             Group {
@@ -189,7 +193,7 @@ struct FilesHostChooserSheet: View {
                             .font(.title2).foregroundStyle(.secondary)
                         Text(app.connectionHosts.isEmpty ? "保险箱中尚无主机" : "没有匹配的主机").font(.headline)
                         if app.connectionHosts.isEmpty {
-                            Text("在保险箱中新建主机后，即可在这里选择。").font(.caption).foregroundStyle(.secondary)
+                            Button("在保险箱新建主机…", action: onCreateHost)
                         } else {
                             Button("显示所有主机") { hostFilter = "all"; hostSearch = "" }
                         }

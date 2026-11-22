@@ -55,13 +55,17 @@ struct FilesPaneHeaderView: View {
                     }
                 }
                 Spacer(minLength: 4)
+                if localSide {
+                    Button("选择文件夹…", action: onChooseLocalDirectory)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("files.local.chooseDirectory")
+                }
                 Menu {
                     Button(localSide ? "上传所选" : "下载到左侧当前目录", action: onTransfer).disabled(!canTransferSelected)
                     Divider()
                     Button("新建目录…", action: onNewDirectory).disabled(!canNewDirectory)
                     Button("刷新", action: onRefresh)
-                    if localSide { Button("选择本地目录…", action: onChooseLocalDirectory) }
-                    else {
+                    if !localSide {
                         Button("更换主机…", action: onChooseHost)
                         Button("断开连接", action: onDisconnect).disabled(!canDisconnect)
                         Divider()
@@ -81,7 +85,7 @@ struct FilesPaneHeaderView: View {
                     onFocus: onFocus,
                     clearLabel: "清除筛选"
                 )
-                Toggle("隐藏项", isOn: $hidden)
+                Toggle("显示隐藏文件", isOn: $hidden)
                     .toggleStyle(.checkbox)
                     .controlSize(.small)
                     .font(.caption)
@@ -213,6 +217,7 @@ struct FilesNavigationBar: View {
     let refresh: () -> Void
     let navigate: (RemotePath) -> Void
     var onActivate: () -> Void = {}
+    @State private var pathFocusRequest: UUID?
     @State private var editing = false
     @State private var draft = ""
     var body: some View {
@@ -225,7 +230,7 @@ struct FilesNavigationBar: View {
             }.buttonStyle(.borderless).font(.system(size: 11, weight: .medium))
 
             if editing {
-                NativeField(placeholder: "绝对路径", id: prefix + ".path", text: $draft,
+                NativeField(placeholder: "绝对路径", id: prefix + ".path", text: $draft, focusRequest: pathFocusRequest,
                     onSubmit: { _ in go(draft); editing = false }, onCancel: { draft = ""; editing = false }, onFocus: onActivate, borderless: true)
                     .frame(height: 24)
                     .padding(.horizontal, 8)
@@ -256,7 +261,7 @@ struct FilesNavigationBar: View {
             Button {
                 onActivate()
                 if editing { editing = false }
-                else { draft = path.flatMap { String(data: $0.bytes, encoding: .utf8) } ?? ""; editing = true }
+                else { draft = path.flatMap { String(data: $0.bytes, encoding: .utf8) } ?? ""; pathFocusRequest = UUID(); editing = true }
             } label: {
                 Image(systemName: editing ? "xmark" : "pencil").frame(width: 22, height: 22)
             }

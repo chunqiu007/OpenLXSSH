@@ -523,9 +523,14 @@ struct TerminalSplitState: Equatable, Sendable {
         syncTerminalVisibility()
         if workspaceVisible { selectedTab?.focusTerminal() }
     }
+    func reusableTab(for host: HostConfiguration) -> SessionTab? {
+        tabs.filter { $0.hostID == host.id && $0.host?.connectionIdentity == host.connectionIdentity && $0.isReusable }
+            .max { $0.lastActivity < $1.lastActivity }
+    }
+
     @discardableResult func open(_ host: HostConfiguration, mode: SessionOpenMode) -> UUID? {
         guard !closingAll, !terminating, !windowCleanupAdmissionClosed else { return nil }
-        if mode == .reuse, let existing = tabs.filter({ $0.hostID == host.id && $0.host?.connectionIdentity == host.connectionIdentity && $0.isReusable }).max(by: { $0.lastActivity < $1.lastActivity }) {
+        if mode == .reuse, let existing = reusableTab(for: host) {
             select(existing.id); return existing.id
         }
         let tab = SessionTab(host: host); tab.builder = builder

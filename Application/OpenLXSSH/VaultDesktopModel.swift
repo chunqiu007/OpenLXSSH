@@ -523,23 +523,22 @@ struct VaultHostDraft: Equatable, Identifiable {
     var interval: String
     var count: String
     var tagIDs: Set<UUID>
-    private(set) var original: HostConfiguration?
+    private var baseline: HostConfiguration
+    private(set) var isNew: Bool
     private var originalTags: Set<UUID>
     var id: UUID { configuration.id }
-    var isNew: Bool { original == nil }
-    var editPrecondition: HostEditPrecondition? { original.map { .init(host: $0, tagIDs: originalTags) } }
+    var editPrecondition: HostEditPrecondition? { isNew ? nil : .init(host: baseline, tagIDs: originalTags) }
     var primaryMethod: String { configuration.authentication.needsKey ? "key" : "password" }
     init(host: HostConfiguration? = nil, settings: AppSettings, folderID: UUID? = nil, tagIDs: Set<UUID> = []) {
         let value = host ?? HostConfiguration(name: "", address: "", username: "", folderID: folderID,
             keepaliveInterval: settings.keepaliveInterval, keepaliveCountMax: settings.keepaliveCountMax)
-        configuration = value; original = host; port = String(value.port)
+        configuration = value; baseline = value; isNew = host == nil; port = String(value.port)
         interval = String(value.keepaliveInterval); count = String(value.keepaliveCountMax)
         self.tagIDs = tagIDs; originalTags = tagIDs
     }
     var isDirty: Bool {
-        guard let original else { return true }
-        return configuration != original || port != String(original.port) || interval != String(original.keepaliveInterval)
-            || count != String(original.keepaliveCountMax) || tagIDs != originalTags
+        configuration != baseline || port != String(baseline.port) || interval != String(baseline.keepaliveInterval)
+            || count != String(baseline.keepaliveCountMax) || tagIDs != originalTags
     }
     mutating func changePrimaryMethod(_ value: String) {
         guard value != primaryMethod else { return }
@@ -564,7 +563,7 @@ struct VaultHostDraft: Equatable, Identifiable {
         return value
     }
     mutating func markCommitted(_ value: HostConfiguration) {
-        configuration = value; original = value; originalTags = tagIDs
+        configuration = value; baseline = value; isNew = false; originalTags = tagIDs
         port = String(value.port); interval = String(value.keepaliveInterval); count = String(value.keepaliveCountMax)
     }
     static func validText(_ value: String, limit: Int) -> Bool {

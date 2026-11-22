@@ -291,6 +291,8 @@ struct DesktopSearchField: View {
     var focusRequest: UUID? = nil
     var onFocus: (() -> Void)? = nil
     var clearLabel = "清除搜索"
+    var onSubmit: ((Bool) -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -302,6 +304,8 @@ struct DesktopSearchField: View {
                 id: id,
                 text: $text,
                 focusRequest: focusRequest,
+                onSubmit: onSubmit,
+                onCancel: onCancel,
                 onFocus: onFocus,
                 borderless: true
             )

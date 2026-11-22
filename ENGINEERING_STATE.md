@@ -2,6 +2,14 @@
 
 更新：2026-11-22（Asia/Shanghai）。本文件记录 `main` 分支当前工程基线、验证结果与已知限制；**2.0.4 及以前的历史阶段工程日志与报告已完整归档于 Git 标签 `v2.0.4`（`ac8b967`）及提交 `084b043`**。
 
+## 2026-11-22 桌面操作体验验收
+
+- 在 `1d14b11` 的多窗口基线上完成本轮界面改进。主机编辑器优先显示连接信息与认证，保留真实草稿的关闭确认。新连接面板按当前主机能否复用会话显示操作。SFTP 首次建主机后返回文件页并预选目标，本地文件夹可直接选择。
+- 工作分工与复核：UI-01 主机表单由 host_editor 起草、主会话接手完成；UI-02 新连接面板和 SFTP 接线由主会话完成。QA-01 由 ui_smoke 在临时 HOME、独立 bundle 的原生窗口执行。主会话复核 Swift 差异、窗口截图和测试结果。
+- `Scripts/build-app.sh Debug build-for-testing`、`Scripts/build-app.sh Release` 通过。`xcodebuild test-without-building` 运行本轮涉及的草稿、关闭、保险箱、双栏和会话路由用例，57 项通过。结果保留在 `DerivedData/UIIntuitionQA/flows.xcresult`。
+- 常规窗口与紧凑窗口已实测。覆盖粘贴 SSH 命令并填表、空表单取消、有修改时保留草稿、SFTP 保存返回、路径输入、⌘T 零个／一个／多个匹配与 Esc。截图保留在 `DerivedData/UIIntuitionQA/`。SSH 入口只用回环拒绝连接验证路由；真实远端认证和文件传输不在本轮复测范围。
+- 当前交付为本地 Release App，发布与双机验收状态沿用下方记录。
+
 ## 当前目标与交付基线
 
 - **产品定位**：Apple Silicon（arm64）/ macOS 26+ 原生轻量 SSH + SFTP 桌面客户端（Swift 6、SwiftUI + AppKit、静态 `libssh2 + OpenSSL`、SwiftTerm、GRDB/SQLite、现代本机 Keychain v2）。
@@ -41,4 +49,4 @@
 
 ## 下一步
 
-- 主会话审查并提交 M6；后续如需发布新版本 DMG，递增版本号、执行真实 SSH/SFTP 与多窗口/分屏手工冒烟后，使用 `Scripts/package-release-candidate.py --build --sign "<Developer ID>"` 打包。
+- M6 已提交为 `1d14b11`。后续如需发布新版本 DMG，递增版本号、执行真实 SSH/SFTP 与多窗口/分屏手工冒烟后，使用 `Scripts/package-release-candidate.py --build --sign "<Developer ID>"` 打包。

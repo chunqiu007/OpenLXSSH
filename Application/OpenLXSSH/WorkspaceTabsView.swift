@@ -660,6 +660,7 @@ private struct SessionBatchCloseView: View {
 private struct ConnectionChooser: View {
     let model: AppModel
     @State private var search = ""
+    @State private var searchFocus = UUID()
     let dismiss: () -> Void
     private var hosts: [HostConfiguration] {
         model.connectionHosts.filter { search.isEmpty || [$0.name, $0.address, $0.username].contains(where: { $0.localizedStandardContains(search) }) }
@@ -667,24 +668,37 @@ private struct ConnectionChooser: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                Image(systemName: "bolt.horizontal.circle.fill")
+                Image(systemName: "terminal")
+                    .accessibilityHidden(true)
                     .font(.system(size: 18))
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 34, height: 34)
                     .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("新连接").font(.title3).bold()
-                    Text("选择已有主机快速建立终端会话").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("新建主机…") { dismiss(); model.showWorkspace(.vault); model.sendWorkspaceCommand(.newHost) }
             }
-            DesktopSearchField(placeholder: "搜索已有主机", id: "connection.search", text: $search)
-            if model.connectionHosts.isEmpty {
+            DesktopSearchField(placeholder: "搜索名称、地址或用户名", id: "connection.search", text: $search,
+                               focusRequest: searchFocus, onSubmit: { _ in
+                let matches = hosts
+                if matches.count == 1, let host = matches.first { open(host, mode: .reuse) }
+            }, onCancel: dismiss)
+            if !model.didLoad && model.isLoading {
+                ProgressView("正在读取主机").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !model.didLoad && model.issue != nil {
+                ContentUnavailableView {
+                    Label("无法读取主机列表", systemImage: "exclamationmark.triangle")
+                } actions: { Button("重试") { Task { _ = await model.reload() } } }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.connectionHosts.isEmpty {
                 ContentUnavailableView("尚无主机", systemImage: "server.rack", description: Text("先创建主机配置，再建立连接。"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if hosts.isEmpty {
-                ContentUnavailableView.search(text: search)
+                ContentUnavailableView {
+                    Label("没有匹配的主机", systemImage: "magnifyingglass")
+                } actions: { Button("清除搜索") { search = ""; searchFocus = UUID() } }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -697,6 +711,11 @@ private struct ConnectionChooser: View {
         }.padding(24).frame(width: 620, height: 460).background(DesktopStyle.background)
     }
 
+    private func open(_ host: HostConfiguration, mode: SessionOpenMode) {
+        model.requestSession(hostID: host.id, mode: mode)
+        dismiss()
+    }
+
     private func hostRow(_ host: HostConfiguration) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "server.rack")
@@ -706,15 +725,19 @@ private struct ConnectionChooser: View {
                 .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 3) {
                 Text(host.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text("\(host.username)@\(host.address):\(host.port)")
+                Text(verbatim: host.username + "@" + host.vaultEndpoint)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
-            Button("新会话") { model.requestSession(hostID: host.id, mode: .newSession); dismiss() }
-            Button("连接") { model.requestSession(hostID: host.id, mode: .reuse); dismiss() }
+            let canResume = model.sessions.reusableTab(for: host) != nil
+            if canResume {
+                Button("另开会话") { open(host, mode: .newSession) }
+            }
+            Button(canResume ? "切换到会话" : "连接") { open(host, mode: .reuse) }
                 .buttonStyle(.borderedProminent)
+                .help(hosts.count == 1 ? "在搜索框按回车也可打开此主机" : "打开此主机的终端")
         }
         .padding(12)
         .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))

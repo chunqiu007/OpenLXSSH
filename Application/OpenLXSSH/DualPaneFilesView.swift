@@ -15,8 +15,6 @@ struct DualPaneFilesView: View {
     @State private var remoteHidden = false
     @State private var remoteSort = FilesSort()
     @State private var dialog: DualFilesDialog?
-    @State private var hostSearch = ""
-    @State private var hostFilter = "all"
     @State private var initialInput = FilesInitialInputOwner()
     @State private var pendingChange: FilesConnectionChangeReview?
     @State private var operationDialog: FilesDialog?
@@ -200,6 +198,8 @@ struct DualPaneFilesView: View {
                         files: files,
                         initialInput: initialInput,
                         inputContext: inputContext,
+                        needsFirstHost: app.didLoad && app.connectionHosts.isEmpty,
+                        onCreateHost: createHost,
                         onChooseHost: { dialog = DualFilesDialog(content: .host) },
                         onCancelConnection: { requestChange(nil, disconnect: true) },
                         onConnect: connectInitial
@@ -281,6 +281,12 @@ struct DualPaneFilesView: View {
         )
     }
 
+    private func createHost() {
+        guard app.workspacePage == .sftp else { return }
+        app.showWorkspace(.vault)
+        app.sendWorkspaceCommand(.newFilesHost)
+    }
+
     private func requestChange(_ host: HostConfiguration?, disconnect: Bool) {
         if let review = files.prepareConnectionChange(host: host, disconnect: disconnect) { pendingChange = review }
     }
@@ -294,6 +300,8 @@ struct DualPaneFilesView: View {
 
     private func chooseLocalDirectory() {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.resolvesAliases = false
+        panel.prompt = "选择文件夹"
+        panel.directoryURL = local.path.map(FilesLocalPaths.url)
         panel.begin { response in if response == .OK, let url = panel.url { Task { @MainActor in do { local.navigate(try FilesLocalPaths.rawPath(FilesLocalPaths.components(url))) } catch { local.issue = .files(error) } } } }
     }
 
@@ -403,7 +411,8 @@ struct DualPaneFilesView: View {
             switch value.content {
             case .host:
                 FilesHostChooserSheet(
-                    app: app, files: files, hostSearch: $hostSearch, hostFilter: $hostFilter,
+                    app: app, files: files,
+                    onCreateHost: { dismissDialog(value); createHost() },
                     onSelect: { host in requestChange(host, disconnect: false); dialog = nil },
                     onCancel: { dialog = nil }
                 )
