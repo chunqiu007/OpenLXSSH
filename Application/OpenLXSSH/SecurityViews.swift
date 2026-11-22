@@ -17,19 +17,19 @@ private struct SecurityPresentation: Identifiable {
 }
 
 struct SecurityManagerView: View {
-    @ObservedObject var app: AppModel
-    @StateObject private var model: SecurityViewModel
-    @StateObject private var presentations = PresentationOwner<SecurityPresentation.Content>()
+    let app: AppModel
+    @State private var model: SecurityViewModel
+    @State private var presentations = PresentationOwner<SecurityPresentation.Content>()
     @State private var search = ""
     @State private var descending = false
-    @StateObject private var selection = KeyLabelSelectionModel()
+    @State private var selection = KeyLabelSelectionModel()
     var dismiss: () -> Void
     let embedded: Bool
     let searchFocusRequest: UUID?
     init(app: AppModel, embedded: Bool = false, searchFocusRequest: UUID? = nil, dismiss: @escaping () -> Void) {
         self.app = app; self.dismiss = dismiss; self.embedded = embedded
         self.searchFocusRequest = searchFocusRequest
-        _model = StateObject(wrappedValue: SecurityViewModel(coordinator: app.security))
+        _model = State(initialValue: SecurityViewModel(coordinator: app.security))
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -290,8 +290,8 @@ private func recoveryStatus(_ review: RecoveryReview) -> String {
 }
 
 private struct SecurityKeyDeletionView: View {
-    @ObservedObject var app: AppModel
-    @ObservedObject var model: SecurityViewModel
+    let app: AppModel
+    let model: SecurityViewModel
     let keyID: UUID
     var ownsPresentation: @MainActor () -> Bool = { true }
     var dismiss: () -> Void
@@ -315,8 +315,8 @@ private struct SecurityKeyDeletionView: View {
 }
 
 private struct SecurityKeyUnlinkView: View {
-    @ObservedObject var app: AppModel
-    @ObservedObject var model: SecurityViewModel
+    let app: AppModel
+    let model: SecurityViewModel
     let keyID: UUID
     var ownsPresentation: @MainActor () -> Bool = { true }
     let dismiss: () -> Void
@@ -344,7 +344,7 @@ private struct SecurityKeyUnlinkView: View {
 }
 
 private struct SecurityPublicKeyView: View {
-    @ObservedObject var model: SecurityViewModel
+    let model: SecurityViewModel
     let keyID: UUID
     var ownsPresentation: @MainActor () -> Bool = { true }
     var dismiss: () -> Void
@@ -362,7 +362,7 @@ private struct SecurityPublicKeyView: View {
 }
 
 private struct SecurityRecoveryView: View {
-    @ObservedObject var model: SecurityViewModel
+    let model: SecurityViewModel
     let review: RecoveryReview
     var dismiss: () -> Void
     var body: some View {
@@ -384,10 +384,10 @@ private struct SecurityRecoveryView: View {
 }
 
 struct KeyCreationEditor: View {
-    @ObservedObject var model: SecurityViewModel
+    let model: SecurityViewModel
     let creation: KeyCreation
     var ownsPresentation: @MainActor () -> Bool = { true }
-    @StateObject private var editor = KeyCreationEditorState()
+    @State private var editor = KeyCreationEditorState()
     @State private var label = ""
     @State private var encrypted = true
     @State private var remember = false

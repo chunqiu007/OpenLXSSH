@@ -56,7 +56,7 @@ private struct FilesTaskDetailPresentation: Identifiable, Equatable {
 
 /// Mounted at the MainView root, not inside FilesPanelView or a terminal tab.
 struct FilesApplicationUI: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     var showsTasks = true
     @State private var dialog: FilesDialog?
     @State private var ownerWindow: NSWindow?
@@ -129,10 +129,10 @@ struct FilesApplicationUI: View {
 }
 
 struct FilesTasksView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     var showsSharedIssue = true
     let decision: (TransferDecisionRequest) -> Void
-    @StateObject private var historyOwner = FilesHistoryRemovalOwner()
+    @State private var historyOwner = FilesHistoryRemovalOwner()
     @State private var detailPresentation: FilesTaskDetailPresentation?
     @State private var selectedDetail: FilesTaskDetailPresentation?
 
@@ -652,7 +652,7 @@ struct FilesTasksView: View {
 }
 
 struct FilesTransferDecisionView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let request: TransferDecisionRequest
     let dismiss: () -> Void
     @State private var batch = false
@@ -757,7 +757,7 @@ struct FilesTransferDecisionView: View {
 
 /// A compact, application-owned summary. View visibility never owns the jobs.
 struct FilesTransferStatus: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     @State private var completionHidden = false
     @State private var dialog: FilesDialog?
     private var active: [TransferJobSnapshot] { model.transferSnapshot.jobs.filter { $0.state.isActive } }

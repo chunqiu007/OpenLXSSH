@@ -10,10 +10,10 @@ import OpenLXSSHCore
 }
 
 struct MainView: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject private var files: FilesController
+    let model: AppModel
+    private let files: FilesController
     @State private var settingsPresentation: SettingsPresentation?
-    @StateObject private var windowChrome = WorkspaceWindowChromeState()
+    @State private var windowChrome = WorkspaceWindowChromeState()
     init(model: AppModel) { self.model = model; files = model.files }
     private var managementAppearance: NSAppearance.Name? {
         switch model.settings.theme { case .system: nil; case .light: .aqua; case .dark: .darkAqua }

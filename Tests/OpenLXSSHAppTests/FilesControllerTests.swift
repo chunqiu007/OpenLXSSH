@@ -1,7 +1,8 @@
-import Combine
 import AppKit
 import Darwin
 import Foundation
+import Observation
+import os
 import SwiftUI
 import XCTest
 import OpenLXSSHCore
@@ -651,14 +652,30 @@ import OpenLXSSHTrust
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)), ["target"])
         await model.closeForWindow()
     }
-    private func nextRisk(_ model: FilesController) async -> UUID {
-        await withCheckedContinuation { reply in
-            var subscription: AnyCancellable?
-            subscription = model.$riskID.sink { value in
-                guard let value else { return }
-                reply.resume(returning: value); subscription?.cancel(); subscription = nil
+    private func waitForObserved<T>(_ read: @escaping @MainActor () -> T?) async -> T {
+        while true {
+            if let value = read() { return value }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumed = OSAllocatedUnfairLock(initialState: false)
+                let trigger: @Sendable () -> Void = {
+                    let shouldResume = resumed.withLock { state -> Bool in
+                        if state { return false }
+                        state = true
+                        return true
+                    }
+                    if shouldResume { continuation.resume() }
+                }
+                let value = withObservationTracking {
+                    read()
+                } onChange: {
+                    trigger()
+                }
+                if value != nil { trigger() }
             }
         }
+    }
+    private func nextRisk(_ model: FilesController) async -> UUID {
+        await waitForObserved { model.riskID }
     }
     func testManagerLeaseKeepsBlockedBrowseAliveAndHostChangeAwaitsOldCleanup() async throws {
         let root = try root(), pause = FilesTestPause()
@@ -852,35 +869,20 @@ import OpenLXSSHTrust
         _ = await connector.emit(1, changed: changed); XCTAssertNil(model.trustPrompt)
     }
     private func nextKeyboard(_ model: FilesController, excluding: UUID? = nil) async -> FilesKeyboardPrompt {
-        await withCheckedContinuation { reply in
-            var subscription: AnyCancellable?
-            subscription = model.$keyboardPrompt.sink { value in
-                guard let value, value.id != excluding else { return }
-                reply.resume(returning: value); subscription?.cancel(); subscription = nil
-            }
+        await waitForObserved {
+            guard let value = model.keyboardPrompt, value.id != excluding else { return nil }
+            return value
         }
     }
     private func nextTrust(_ model: FilesController) async -> FilesTrustPrompt {
-        await withCheckedContinuation { reply in
-            var subscription: AnyCancellable?
-            subscription = model.$trustPrompt.sink { value in
-                guard let value else { return }
-                reply.resume(returning: value); subscription?.cancel(); subscription = nil
-            }
-        }
+        await waitForObserved { model.trustPrompt }
     }
     func testCallbackCancelAndHostSwitchRejectOldKeyboardAnswers() async throws {
         let root = try root(), connector = KeyboardFilesTestConnector(root: root)
         let model = FilesController(connector: connector, idleTimeout: nil)
         model.show(host: host()); await model.waitUntilCurrentWorkCompletes()
-        await withCheckedContinuation { (arrived: CheckedContinuation<Void, Never>) in
-            var subscription: AnyCancellable?
-            subscription = model.$keyboardPrompt.sink { prompt in
-                guard prompt != nil else { return }
-                arrived.resume(); subscription?.cancel(); subscription = nil
-            }
-            model.connect(input())
-        }
+        model.connect(input())
+        _ = await waitForObserved { model.keyboardPrompt }
         let old = try XCTUnwrap(model.keyboardPrompt)
         model.hide(); XCTAssertNotNil(model.keyboardPrompt)
         var next = host(); next.id = UUID(); next.username = "next"

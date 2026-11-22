@@ -262,11 +262,11 @@ private struct ConnectionChooserPresentation: Identifiable { let id = UUID() }
 }
 
 struct WorkspaceTabBar: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject private var sessions: SessionController
-    @ObservedObject private var files: FilesController
+    let model: AppModel
+    private let sessions: SessionController
+    private let files: FilesController
     @State private var chooser: ConnectionChooserPresentation?
-    @StateObject private var batchClose = SessionBatchCloseOwner()
+    @State private var batchClose = SessionBatchCloseOwner()
     @State private var renamePresentation: TabRenamePresentation?
     @StateObject private var tabDrag = WorkspaceTabDragOwner()
     @State private var tabContentWidth: CGFloat?
@@ -274,10 +274,10 @@ struct WorkspaceTabBar: View {
     @State private var tabFrames: [UUID: CGRect] = [:]
     @State private var hoveredFixedID: String?
     @FocusState private var focusedFixedID: String?
-    @ObservedObject private var windowChrome: WorkspaceWindowChromeState
+    private let windowChrome: WorkspaceWindowChromeState
     init(model: AppModel, windowChrome: WorkspaceWindowChromeState? = nil) {
         self.model = model; sessions = model.sessions; files = model.files
-        _windowChrome = ObservedObject(wrappedValue: windowChrome ?? WorkspaceWindowChromeState())
+        self.windowChrome = windowChrome ?? WorkspaceWindowChromeState()
     }
     var body: some View {
         HStack(spacing: 4) {
@@ -472,8 +472,8 @@ private struct TabMiddleClickTarget: NSViewRepresentable {
 }
 
 private struct WorkspaceSessionTab: View {
-    @ObservedObject var tab: SessionTab
-    @ObservedObject var controller: SessionController
+    let tab: SessionTab
+    let controller: SessionController
     let dragOwner: WorkspaceTabDragOwner
     let order: () -> [UUID]
     let active: Bool
@@ -568,7 +568,7 @@ private struct WorkspaceSessionTab: View {
     }
 }
 private struct TabRenameView: View {
-    @ObservedObject var controller: SessionController
+    let controller: SessionController
     let presentation: TabRenamePresentation
     let dismiss: () -> Void
     @State private var title: String
@@ -594,8 +594,8 @@ private struct TabRenameView: View {
     private func save() { guard valid, exists else { return }; controller.renameTab(presentation.tabID, title: title); dismiss() }
 }
 private struct SessionBatchCloseView: View {
-    @ObservedObject var controller: SessionController
-    @ObservedObject var owner: SessionBatchCloseOwner
+    let controller: SessionController
+    let owner: SessionBatchCloseOwner
     let review: SessionBatchCloseReview
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -631,7 +631,7 @@ private struct SessionBatchCloseView: View {
 }
 
 private struct ConnectionChooser: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
     @State private var search = ""
     let dismiss: () -> Void
     private var hosts: [HostConfiguration] {

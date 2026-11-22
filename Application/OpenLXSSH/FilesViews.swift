@@ -10,7 +10,7 @@ struct FilesDialog: Identifiable {
     let content: Content
 }
 struct FilesPanelView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     var returnToVault: (() -> Void)? = nil
     @State private var dialog: FilesDialog?
     @State private var selected: Set<FileName> = []

@@ -1463,7 +1463,7 @@ extension NativeSessionAdapterTests {
 // R3 reproduction only: these roots use the production container and session views.
 // The placeholder preserves Vault routing, not an assertion that MainView is exercised.
 @MainActor private struct WeakHostedSessionRoot: View {
-    @ObservedObject var app: AppModel
+    let app: AppModel
     var includeTabBar = false
     var body: some View {
         VStack(spacing: 0) {
@@ -1514,11 +1514,11 @@ private struct NativePageSchemeIndicator: NSViewRepresentable {
 /// Real AppKit-owned sheet levels using the production presenter. The public draft
 /// is synthetic; this does not import a key, touch Keychain, or create a connection.
 @MainActor private struct NestedKeyEditorSheetRoot: View {
-    @ObservedObject var parent: PresentationOwner<UUID>
-    @ObservedObject var picker: PresentationOwner<UUID>
-    @ObservedObject var creation: PresentationOwner<UUID>
-    @ObservedObject var editor: VaultHostEditorModel
-    @ObservedObject var vault: VaultDesktopModel
+    @Bindable var parent: PresentationOwner<UUID>
+    let picker: PresentationOwner<UUID>
+    let creation: PresentationOwner<UUID>
+    let editor: VaultHostEditorModel
+    let vault: VaultDesktopModel
     var body: some View {
         Text("synthetic catalog \(vault.hosts.count)")
             .nativeSheet(item: $parent.item) { _ in
@@ -1527,9 +1527,9 @@ private struct NativePageSchemeIndicator: NSViewRepresentable {
     }
 }
 @MainActor private struct NestedKeyEditorSheetParent: View {
-    @ObservedObject var picker: PresentationOwner<UUID>
-    @ObservedObject var creation: PresentationOwner<UUID>
-    @ObservedObject var editor: VaultHostEditorModel
+    @Bindable var picker: PresentationOwner<UUID>
+    let creation: PresentationOwner<UUID>
+    @Bindable var editor: VaultHostEditorModel
     var body: some View {
         VStack {
             Text("synthetic dirty host editor")
@@ -1543,7 +1543,7 @@ private struct NativePageSchemeIndicator: NSViewRepresentable {
     }
 }
 @MainActor private struct NestedKeyPickerSheetChild: View {
-    @ObservedObject var creation: PresentationOwner<UUID>
+    @Bindable var creation: PresentationOwner<UUID>
     @State private var search = ""
     var body: some View {
         VStack { Text("synthetic key picker"); TextField("synthetic key filter", text: $search) }

@@ -60,7 +60,7 @@ struct FilesRiskDescription: View {
 }
 
 struct FilesNameEditor: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let entry: DirectoryEntry?
     @State private var target: FilesOperationTarget?
     @State private var name = ""
@@ -105,7 +105,7 @@ struct FilesNameEditor: View {
     }
 }
 struct FilesDeleteOptions: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let entry: DirectoryEntry
     @State private var target: FilesOperationTarget?
     @State private var linkOnly = false
@@ -135,7 +135,7 @@ struct FilesDeleteOptions: View {
     }
 }
 struct FilesDeletePlanView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let review: FilesDeleteReview
     var dismiss: () -> Void
     var body: some View {
@@ -172,7 +172,7 @@ struct FilesDeletePlanView: View {
     private func action(_ value: DeleteItem.Action) -> String { switch value { case .removeFile: "删除文件"; case .removeEmptyDirectory: "删除核实后空目录"; case .removeSymbolicLink: "仅删除链接自身" } }
 }
 struct FilesProbeView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let review: FilesProbeReview
     @State private var approved = false
     var dismiss: () -> Void
@@ -191,7 +191,7 @@ struct FilesProbeView: View {
     }
 }
 struct FilesRiskView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let risk: TransferRisk
     let requestID: UUID
     var dismiss: () -> Void
@@ -207,7 +207,7 @@ struct FilesRiskView: View {
     }
 }
 struct FilesTrustView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let prompt: FilesTrustPrompt
     @State private var management = false
     var dismiss: () -> Void
@@ -241,7 +241,7 @@ struct FilesTrustView: View {
     }
 }
 struct FilesKeyboardView: View {
-    @ObservedObject var model: FilesController
+    let model: FilesController
     let prompt: FilesKeyboardPrompt
     @State private var answers: [String]
     var dismiss: () -> Void

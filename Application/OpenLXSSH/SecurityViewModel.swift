@@ -1,7 +1,7 @@
 import AppKit
-import Combine
 import CryptoKit
 import Foundation
+import Observation
 import OpenLXSSHCore
 import OpenLXSSHSecurity
 import OpenLXSSHTrust
@@ -50,23 +50,23 @@ extension AppIssue {
     }
 }
 
-@MainActor final class SecurityViewModel: ObservableObject {
+@Observable @MainActor final class SecurityViewModel {
     let coordinator: SecurityCoordinator
-    @Published private(set) var metadata = SecurityMetadata(hosts: [], keys: [], credentials: [], tickets: [])
-    @Published private(set) var publicKeys: [UUID: String] = [:]
-    @Published private(set) var fingerprints: [UUID: String] = [:]
-    @Published private(set) var publicKeyBits: [UUID: Int] = [:]
-    @Published private(set) var pendingCount = 0
-    @Published private(set) var uncertainCount = 0
-    @Published private(set) var recoveryReviews: [RecoveryReview] = []
-    @Published private(set) var lastCreatedKey: KeyCreationOutcome?
-    @Published private(set) var lastCreatedKeyLabel = ""
-    @Published private(set) var busy = false
-    @Published var issue: AppIssue?
-    @Published var copied = false
-    @Published private(set) var copyNotice: String?
-    private var loadGeneration: UInt64 = 0
-    private var copyTask: Task<Void, Never>?
+    private(set) var metadata = SecurityMetadata(hosts: [], keys: [], credentials: [], tickets: [])
+    private(set) var publicKeys: [UUID: String] = [:]
+    private(set) var fingerprints: [UUID: String] = [:]
+    private(set) var publicKeyBits: [UUID: Int] = [:]
+    private(set) var pendingCount = 0
+    private(set) var uncertainCount = 0
+    private(set) var recoveryReviews: [RecoveryReview] = []
+    private(set) var lastCreatedKey: KeyCreationOutcome?
+    private(set) var lastCreatedKeyLabel = ""
+    private(set) var busy = false
+    var issue: AppIssue?
+    var copied = false
+    private(set) var copyNotice: String?
+    @ObservationIgnored private var loadGeneration: UInt64 = 0
+    @ObservationIgnored private var copyTask: Task<Void, Never>?
     init(coordinator: SecurityCoordinator) { self.coordinator = coordinator }
     func load() async {
         loadGeneration &+= 1
@@ -246,17 +246,17 @@ extension AppIssue {
 
 /// Public label editing has its own selection epoch, separate from background security work.
 /// An A -> B -> A switch or new typing cannot be overwritten by A's suspended save callback.
-@MainActor final class KeyLabelSelectionModel: ObservableObject {
+@Observable @MainActor final class KeyLabelSelectionModel {
     struct Save: Equatable {
         let keyID: UUID
         let label: String
         fileprivate let epoch: UUID
         fileprivate let draftEpoch: UUID
     }
-    @Published private(set) var selectedKeyID: UUID?
-    @Published private(set) var labelDraft = ""
-    private var epoch = UUID()
-    private var draftEpoch = UUID()
+    private(set) var selectedKeyID: UUID?
+    private(set) var labelDraft = ""
+    @ObservationIgnored private var epoch = UUID()
+    @ObservationIgnored private var draftEpoch = UUID()
     private var baseline = ""
     func select(_ key: ManagedKeyReference) { select(id: key.id, label: key.label) }
     func select(id: UUID, label: String) {
@@ -274,15 +274,15 @@ extension AppIssue {
 
 /// Per-editor non-secret completion state. Once Core commits, submit only retries the
 /// label on that immutable UUID. It can never re-enter generation/import in this editor.
-@MainActor final class KeyCreationEditorState: ObservableObject {
-    @Published private(set) var created: KeyCreationOutcome?
-    @Published private(set) var importReview: SecurityKeyImportReview?
-    @Published private(set) var reused: ManagedKeyReference?
-    @Published private(set) var savedLabel = ""
-    @Published private(set) var labelPending = false
-    @Published private(set) var busy = false
-    @Published private(set) var active = true
-    private var epoch = UUID()
+@Observable @MainActor final class KeyCreationEditorState {
+    private(set) var created: KeyCreationOutcome?
+    private(set) var importReview: SecurityKeyImportReview?
+    private(set) var reused: ManagedKeyReference?
+    private(set) var savedLabel = ""
+    private(set) var labelPending = false
+    private(set) var busy = false
+    private(set) var active = true
+    @ObservationIgnored private var epoch = UUID()
 
     func close() { active = false; epoch = UUID() }
     func cancelImport(model: SecurityViewModel) async {
@@ -392,29 +392,29 @@ struct TrustRemovalReview: Equatable, Identifiable {
     let ownerEpoch: UUID
 }
 
-@MainActor final class TrustManagementModel: ObservableObject {
-    @Published private(set) var records: [TrustedHostKey] = []
-    @Published var search = ""
-    @Published private(set) var loading = false
-    @Published private(set) var hasLoaded = false
-    @Published private(set) var refreshRequired = false
-    @Published private(set) var loadIssue: AppIssue?
-    @Published var issue: AppIssue?
-    @Published private(set) var pending: PendingTrustDecision?
-    @Published private(set) var replacementRecord: TrustedHostKey?
-    @Published private(set) var removalReview: TrustRemovalReview?
-    @Published private(set) var busy = false
-    @Published private(set) var notice: String?
+@Observable @MainActor final class TrustManagementModel {
+    private(set) var records: [TrustedHostKey] = []
+    var search = ""
+    private(set) var loading = false
+    private(set) var hasLoaded = false
+    private(set) var refreshRequired = false
+    private(set) var loadIssue: AppIssue?
+    var issue: AppIssue?
+    private(set) var pending: PendingTrustDecision?
+    private(set) var replacementRecord: TrustedHostKey?
+    private(set) var removalReview: TrustRemovalReview?
+    private(set) var busy = false
+    private(set) var notice: String?
     private let storeProvider: @Sendable () async throws -> any TrustManagementStoring
-    private var pendingStore: (any TrustManagementStoring)?
-    private var active = true
-    private var ownerEpoch = UUID()
-    private var operation: UUID?
-    private var loadOperation: UUID?
-    private var loadTask: Task<Void, Never>?
-    private var committedRevision: UInt64 = 0
-    private var noticeTask: Task<Void, Never>?
-    private var reviewCancellation: Task<Void, Never>?
+    @ObservationIgnored private var pendingStore: (any TrustManagementStoring)?
+    @ObservationIgnored private var active = true
+    @ObservationIgnored private var ownerEpoch = UUID()
+    @ObservationIgnored private var operation: UUID?
+    @ObservationIgnored private var loadOperation: UUID?
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var committedRevision: UInt64 = 0
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    @ObservationIgnored private var reviewCancellation: Task<Void, Never>?
 
     init(environment: SessionEnvironment) {
         storeProvider = { AppTrustManagementStore(store: try await environment.trustStore()) }

@@ -1,6 +1,6 @@
 import AppKit
-import Combine
 import Foundation
+import Observation
 import OpenLXSSHCore
 import OpenLXSSHFiles
 import OpenLXSSHTransport
@@ -315,7 +315,7 @@ struct AppIssue: Identifiable, Equatable {
     }
 }
 
-@MainActor final class AppModel: ObservableObject {
+@Observable @MainActor final class AppModel {
     let repository: any AppRepositoryProtocol
     let security: SecurityCoordinator
     let sessions: SessionController
@@ -326,26 +326,38 @@ struct AppIssue: Identifiable, Equatable {
     private let sessionRouter: (any SessionRouting)?
     private let nativeCandidateBuilder: any SessionBuilding
     private let preferencesDefaults: UserDefaults?
-    private var didRestoreManagementPage = false
-    @Published private(set) var hosts: [HostConfiguration] = []
-    @Published private(set) var folders: [HostFolder] = []
-    @Published private(set) var keys: [ManagedKeyReference] = []
-    @Published private(set) var settings = AppSettings()
-    @Published private(set) var isLoading = false
-    @Published private(set) var isWriting = false
-    @Published private(set) var didLoad = false
-    @Published var issue: AppIssue?
-    @Published var selection: SidebarSelection = .all
-    @Published var search = ""
-    @Published var selectedHostID: UUID?
-    @Published private(set) var connectionHosts: [HostConfiguration] = []
-    @Published private(set) var connectionNotice: SessionRouteResult?
-    @Published private(set) var workspacePage: WorkspacePage = .vault
-    @Published private(set) var workspaceCommand: WorkspaceCommandRequest?
-    @Published private(set) var hostSearchFocusRequest: UUID?
-    @Published private(set) var vaultHostFocusRequest: VaultHostFocusRequest?
+    @ObservationIgnored private var didRestoreManagementPage = false
+    private(set) var hosts: [HostConfiguration] = []
+    private(set) var folders: [HostFolder] = []
+    private(set) var keys: [ManagedKeyReference] = []
+    private(set) var settings = AppSettings()
+    private(set) var isLoading = false
+    private(set) var isWriting = false
+    private(set) var didLoad = false
+    var issue: AppIssue?
+    var selection: SidebarSelection = .all
+    var search = ""
+    var selectedHostID: UUID?
+    private(set) var connectionHosts: [HostConfiguration] = []
+    private(set) var connectionNotice: SessionRouteResult?
+    private(set) var workspacePage: WorkspacePage = .vault
+    private(set) var workspaceCommand: WorkspaceCommandRequest?
+    private(set) var hostSearchFocusRequest: UUID?
+    private(set) var vaultHostFocusRequest: VaultHostFocusRequest? {
+        didSet {
+            guard let request = vaultHostFocusRequest else { return }
+            vaultHostFocusObservers = vaultHostFocusObservers.filter { $0(request) }
+        }
+    }
+    @ObservationIgnored private var vaultHostFocusObservers: [@MainActor (VaultHostFocusRequest) -> Bool] = []
+    func observeVaultHostFocus(_ deliver: @escaping @MainActor (VaultHostFocusRequest) -> Bool) {
+        if let request = vaultHostFocusRequest {
+            guard deliver(request) else { return }
+        }
+        vaultHostFocusObservers.append(deliver)
+    }
     // Window lifetime is independent of repeated refreshes of the same query.
-    private var generation = 0
+    @ObservationIgnored private var generation = 0
     private struct ReloadFlight: Sendable {
         let id: UUID
         let query: HostQuery
@@ -353,11 +365,11 @@ struct AppIssue: Identifiable, Equatable {
         var requested: UInt64
         let task: Task<Bool, Never>
     }
-    private var reloadFlight: ReloadFlight?
-    private var reloadSequence: UInt64 = 0
-    private var metadataObservation: Task<Void, Never>?
-    private var observingMetadata = false
-    private var workspaceNavigationGuard: (owner: UUID, action: @MainActor () -> Bool)?
+    @ObservationIgnored private var reloadFlight: ReloadFlight?
+    @ObservationIgnored private var reloadSequence: UInt64 = 0
+    @ObservationIgnored private var metadataObservation: Task<Void, Never>?
+    @ObservationIgnored private var observingMetadata = false
+    @ObservationIgnored private var workspaceNavigationGuard: (owner: UUID, action: @MainActor () -> Bool)?
     private let windowCloseReviews = WindowCloseReviewRegistry()
     func registerWindowCloseReview(owner: UUID, begin: @escaping @MainActor (WindowCloseReviewRequest) -> Void,
                                    cancel: @escaping @MainActor () -> Void) {
@@ -852,9 +864,9 @@ struct PreferencesResetReview: Identifiable {
 }
 struct SettingsClosePrompt: Identifiable { let id = UUID() }
 /// Contains preferences only. No host, terminal input, credential or authentication answer.
-@MainActor final class SettingsEditorModel: ObservableObject {
+@Observable @MainActor final class SettingsEditorModel {
     let id = UUID()
-    @Published var draft: SettingsDraft {
+    var draft: SettingsDraft {
         didSet {
             if !isWriting, !normalizingDraft, draft != oldValue {
                 closeApproval = false
@@ -862,14 +874,14 @@ struct SettingsClosePrompt: Identifiable { let id = UUID() }
             }
         }
     }
-    @Published private(set) var isWriting = false
-    @Published private(set) var isActive = true
-    @Published private(set) var prompt: SettingsClosePrompt?
-    @Published var resetReview: PreferencesResetReview?
-    @Published var issue: AppIssue?
+    private(set) var isWriting = false
+    private(set) var isActive = true
+    private(set) var prompt: SettingsClosePrompt?
+    var resetReview: PreferencesResetReview?
+    var issue: AppIssue?
     private var baseline: SettingsDraft
-    private var normalizingDraft = false
-    private var closeRequest: WindowCloseReviewRequest?
+    @ObservationIgnored private var normalizingDraft = false
+    @ObservationIgnored private var closeRequest: WindowCloseReviewRequest?
     private(set) var closeApproval = false
     init(_ settings: AppSettings) {
         let initial = SettingsDraft(settings)

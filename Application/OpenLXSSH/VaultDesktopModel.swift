@@ -1,6 +1,6 @@
 import AppKit
-import Combine
 import Foundation
+import Observation
 import OpenLXSSHCore
 import OpenLXSSHSecurity
 import OpenLXSSHTransport
@@ -108,39 +108,38 @@ struct VaultBatchConfirmation: Identifiable {
     let changes: [RepositoryChange]
 }
 
-@MainActor final class VaultDesktopModel: ObservableObject {
+@Observable @MainActor final class VaultDesktopModel {
     let repository: any AppRepositoryProtocol
     private let defaults: UserDefaults?
     private let preferenceKey: String
     private let synchronize: @MainActor () async -> Void
     private let selectAppHost: @MainActor (UUID?) -> Void
-    @Published private(set) var snapshot: AppSnapshot?
-    @Published private(set) var isLoading = false
-    @Published private(set) var isWriting = false
-    @Published private(set) var didLoad = false
-    @Published var issue: AppIssue?
-    @Published var notice: String?
-    @Published var search = ""
-    @Published var managementPage: VaultManagementPage = .hosts { didSet { persistNavigation() } }
-    @Published var section: VaultSection = .all { didSet { persistNavigation() } }
-    @Published var tagFilter: Set<UUID> = []
-    @Published private(set) var selectedIDs: Set<UUID> = []
-    @Published private(set) var focusedID: UUID?
-    @Published var preferences: VaultPreferences { didSet { persistPreferences() } }
-    private var navigationToRestore: VaultNavigationPreferences?
-    private var didRestoreNavigation = false
-    private var correctingNavigation = false
-    private var anchorID: UUID?
-    private var generation: UInt64 = 0
-    private var searchTask: Task<Void, Never>?
-    private var noticeTask: Task<Void, Never>?
-    private var metadataObservation: Task<Void, Never>?
-    private var observingMetadata = false
-    private var appFocusObservation: AnyCancellable?
-    private var focusTask: Task<Void, Never>?
-    private var pendingFocus: (request: VaultHostFocusRequest, selectionEpoch: UUID)?
-    private var selectionEpoch = UUID()
-    private var managementNavigationGuard: (owner: UUID, action: @MainActor () -> Bool)?
+    private(set) var snapshot: AppSnapshot?
+    private(set) var isLoading = false
+    private(set) var isWriting = false
+    private(set) var didLoad = false
+    var issue: AppIssue?
+    var notice: String?
+    var search = ""
+    var managementPage: VaultManagementPage = .hosts { didSet { persistNavigation() } }
+    var section: VaultSection = .all { didSet { persistNavigation() } }
+    var tagFilter: Set<UUID> = []
+    private(set) var selectedIDs: Set<UUID> = []
+    private(set) var focusedID: UUID?
+    var preferences: VaultPreferences { didSet { persistPreferences() } }
+    @ObservationIgnored private var navigationToRestore: VaultNavigationPreferences?
+    @ObservationIgnored private var didRestoreNavigation = false
+    @ObservationIgnored private var correctingNavigation = false
+    @ObservationIgnored private var anchorID: UUID?
+    @ObservationIgnored private var generation: UInt64 = 0
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    @ObservationIgnored private var metadataObservation: Task<Void, Never>?
+    @ObservationIgnored private var observingMetadata = false
+    @ObservationIgnored private var focusTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingFocus: (request: VaultHostFocusRequest, selectionEpoch: UUID)?
+    @ObservationIgnored private var selectionEpoch = UUID()
+    @ObservationIgnored private var managementNavigationGuard: (owner: UUID, action: @MainActor () -> Bool)?
     func registerManagementNavigationGuard(owner: UUID, action: @escaping @MainActor () -> Bool) { managementNavigationGuard = (owner, action) }
     func clearManagementNavigationGuard(owner: UUID) { if managementNavigationGuard?.owner == owner { managementNavigationGuard = nil } }
     @discardableResult func performManagementNavigation(_ action: () -> Void) -> Bool {
@@ -169,8 +168,10 @@ struct VaultBatchConfirmation: Identifiable {
     convenience init(app: AppModel) {
         self.init(repository: app.repository, defaults: app.desktopPreferencesDefaults, synchronize: { [weak app] in _ = await app?.reload() },
                   selectAppHost: { [weak app] in app?.selectedHostID = $0 })
-        appFocusObservation = app.$vaultHostFocusRequest.compactMap { $0 }.sink { [weak self] request in
-            self?.requestFocus(request)
+        app.observeVaultHostFocus { [weak self] request in
+            guard let self else { return false }
+            self.requestFocus(request)
+            return true
         }
     }
     func requestFocus(_ request: VaultHostFocusRequest) {
@@ -428,9 +429,9 @@ struct OwnedPresentation<Content>: Identifiable {
     let id = UUID()
     let content: Content
 }
-@MainActor final class PresentationOwner<Content>: ObservableObject {
+@Observable @MainActor final class PresentationOwner<Content> {
     struct Ticket: Equatable, Sendable { fileprivate let epoch: UUID; fileprivate let owner: UUID? }
-    @Published var item: OwnedPresentation<Content>? {
+    var item: OwnedPresentation<Content>? {
         didSet {
             if item?.id != oldValue?.id {
                 epoch = UUID(); closeHandler = nil
@@ -439,12 +440,12 @@ struct OwnedPresentation<Content>: Identifiable {
             }
         }
     }
-    private var epoch = UUID()
-    private var active = true
-    private var closeHandler: (id: UUID, action: @MainActor () -> Bool)?
-    private var reviewHandler: (id: UUID, begin: @MainActor (WindowCloseReviewRequest) -> Void, cancel: @MainActor () -> Void)?
-    private var review: (request: WindowCloseReviewRequest, ticket: Ticket)?
-    private var reviewDismissal: UUID?
+    @ObservationIgnored private var epoch = UUID()
+    @ObservationIgnored private var active = true
+    @ObservationIgnored private var closeHandler: (id: UUID, action: @MainActor () -> Bool)?
+    @ObservationIgnored private var reviewHandler: (id: UUID, begin: @MainActor (WindowCloseReviewRequest) -> Void, cancel: @MainActor () -> Void)?
+    @ObservationIgnored private var review: (request: WindowCloseReviewRequest, ticket: Ticket)?
+    @ObservationIgnored private var reviewDismissal: UUID?
     func capture() -> Ticket { Ticket(epoch: epoch, owner: item?.id) }
     func owns(_ id: UUID) -> Bool { active && item?.id == id }
     func isCurrent(_ ticket: Ticket) -> Bool { active && ticket == capture() }
@@ -634,18 +635,18 @@ struct VaultHostDraft: Equatable, Identifiable {
 }
 
 /// Per-editor, non-Codable input owner used by the real View. Never shared with AppModel.
-@MainActor final class VaultHostEditorModel: ObservableObject {
-    @Published var draft: VaultHostDraft
-    @Published var password = ""
-    @Published var remember = false
-    @Published var forgetExisting = false
-    @Published var showPassword = false
-    @Published private(set) var writing = false
-    @Published private(set) var committedAwaitingRefresh = false
-    @Published var issue: AppIssue?
+@Observable @MainActor final class VaultHostEditorModel {
+    var draft: VaultHostDraft
+    var password = ""
+    var remember = false
+    var forgetExisting = false
+    var showPassword = false
+    private(set) var writing = false
+    private(set) var committedAwaitingRefresh = false
+    var issue: AppIssue?
     private(set) var cleanupPending = false
     private var active = true
-    private var saveToken: UUID?
+    @ObservationIgnored private var saveToken: UUID?
     private let ownsPresentation: @MainActor () -> Bool
     init(draft: VaultHostDraft, ownsPresentation: @escaping @MainActor () -> Bool = { true }) {
         self.draft = draft; self.ownsPresentation = ownsPresentation
@@ -739,17 +740,17 @@ struct VaultHostDraft: Equatable, Identifiable {
 
 /// The real editor and global window/quit preflight share one decision. This owns
 /// no connections, transfer jobs, or credential reader; Cancel is presentation-only.
-@MainActor final class VaultHostCloseReview: ObservableObject {
+@Observable @MainActor final class VaultHostCloseReview {
     struct Prompt: Identifiable, Equatable {
         enum Kind: Equatable { case dirty, writing, committed }
         let id = UUID()
         let kind: Kind
     }
-    @Published private(set) var prompt: Prompt?
-    @Published private(set) var saving = false
-    private weak var editor: VaultHostEditorModel?
-    private var request: WindowCloseReviewRequest?
-    private var invalidated = false
+    private(set) var prompt: Prompt?
+    private(set) var saving = false
+    @ObservationIgnored private weak var editor: VaultHostEditorModel?
+    @ObservationIgnored private var request: WindowCloseReviewRequest?
+    @ObservationIgnored private var invalidated = false
     private let dismiss: @MainActor () -> Void
     private let complete: (@MainActor (WindowCloseReviewRequest) -> Void)?
     init(editor: VaultHostEditorModel, dismiss: @escaping @MainActor () -> Void,

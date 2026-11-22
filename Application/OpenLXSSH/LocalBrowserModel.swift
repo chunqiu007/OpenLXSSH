@@ -1,8 +1,8 @@
 import AppKit
-import Combine
 import CoreFoundation
 import Darwin
 import Foundation
+import Observation
 import SwiftUI
 import OpenLXSSHFiles
 import OpenLXSSHCore
@@ -46,9 +46,9 @@ enum FilesBrowserContentState: Equatable {
 }
 
 /// This is the owner used by FilesTasksView, not a parallel test-only presentation helper.
-@MainActor final class FilesHistoryRemovalOwner: ObservableObject {
-    @Published private(set) var review: FilesHistoryRemovalReview?
-    @Published private(set) var inFlightIDs: Set<UUID> = []
+@Observable @MainActor final class FilesHistoryRemovalOwner {
+    private(set) var review: FilesHistoryRemovalReview?
+    private(set) var inFlightIDs: Set<UUID> = []
     var isInFlight: Bool { review.map { inFlightIDs.contains($0.id) } ?? false }
     func prepare(using model: FilesController) {
         cancel(using: model)
@@ -213,28 +213,28 @@ enum FilesDeletePreflight {
     }
 }
 
-@MainActor final class LocalBrowserModel: ObservableObject {
-    @Published private(set) var path: RemotePath?
-    @Published private(set) var entries: [DirectoryEntry] = []
-    @Published private(set) var loading = false
-    @Published private(set) var readFailed = false
-    @Published var issue: AppIssue?
-    @Published var selection: Set<FileName> = []
-    @Published var filter = ""
-    @Published var showsHidden = false
-    @Published var sort = FilesSort()
-    @Published private(set) var history = FilesNavigationHistory()
-    @Published private(set) var deleteReview: BrowserDeleteReview?
-    @Published private(set) var deleteReports: [DeleteReport] = []
+@Observable @MainActor final class LocalBrowserModel {
+    private(set) var path: RemotePath?
+    private(set) var entries: [DirectoryEntry] = []
+    private(set) var loading = false
+    private(set) var readFailed = false
+    var issue: AppIssue?
+    var selection: Set<FileName> = []
+    var filter = ""
+    var showsHidden = false
+    var sort = FilesSort()
+    private(set) var history = FilesNavigationHistory()
+    private(set) var deleteReview: BrowserDeleteReview?
+    private(set) var deleteReports: [DeleteReport] = []
     private let worker: LocalBrowserWorker
     private let boundary: RemotePath?
-    private var parentAttributes: FileAttributes?
-    private var activated = false
-    private var revision = UUID()
-    private var operation: Task<Void, Never>?
-    private var cancellation: CancellationToken?
-    private var operationIsMutation = false
-    private var pendingTargets: [UUID: FilesOperationTarget] = [:]
+    @ObservationIgnored private var parentAttributes: FileAttributes?
+    @ObservationIgnored private var activated = false
+    @ObservationIgnored private var revision = UUID()
+    @ObservationIgnored private var operation: Task<Void, Never>?
+    @ObservationIgnored private var cancellation: CancellationToken?
+    @ObservationIgnored private var operationIsMutation = false
+    @ObservationIgnored private var pendingTargets: [UUID: FilesOperationTarget] = [:]
     init(root: URL? = nil, beforeList: (@Sendable () async throws -> Void)? = nil,
          validateBoundary: (@Sendable () throws -> Void)? = nil) {
         worker = LocalBrowserWorker(boundary: root, beforeList: beforeList, validateBoundary: validateBoundary)
@@ -371,46 +371,6 @@ enum FilesDeletePreflight {
     func waitUntilIdle() async { await operation?.value }
     func close() async { cancel(); await operation?.value; await worker.close(); activated = false }
     deinit { cancellation?.cancel(); operation?.cancel(); let worker = worker; Task { await worker.close() } }
-}
-
-/// Short-lived, view-owned input. Routing invalidation does not touch the controller/service/jobs.
-@MainActor final class FilesInitialInputOwner: ObservableObject {
-    struct Context: Equatable {
-        let visible: Bool
-        let hostID: UUID?
-        let identity: HostConnectionIdentity?
-        let epoch: UUID
-        let savedCredentialID: UUID?
-
-        init(visible: Bool, host: HostConfiguration?, keys: [ManagedKeyReference], epoch: UUID) {
-            self.visible = visible
-            hostID = host?.id
-            identity = host?.connectionIdentity
-            self.epoch = epoch
-            if let host, host.authentication.needsKey {
-                savedCredentialID = keys.first { $0.id == host.keyRef }?.passphraseCredentialRef
-            } else {
-                savedCredentialID = host?.savePasswordAuthorized == true ? host?.credentialRef : nil
-            }
-        }
-    }
-    @Published var secret = ""
-    @Published var useTemporaryCredential = false
-    private var context: Context?
-    func update(_ value: Context) {
-        if context != value || !value.visible { clear() }
-        context = value
-    }
-    func clear() { secret = ""; useTemporaryCredential = false }
-    func take(for displayed: Context) -> FilesConnectInput? {
-        guard displayed == context, displayed.visible, displayed.hostID != nil, let identity = displayed.identity else { return nil }
-        defer { clear() }
-        if !useTemporaryCredential, secret.isEmpty, let id = displayed.savedCredentialID {
-            return FilesConnectInput(primary: .configuredCredential(id))
-        }
-        return FilesConnectInput(primary: .manual(.init(utf8: secret)),
-                                 keyboardOnly: !identity.authentication.needsKey && secret.isEmpty)
-    }
 }
 
 // Files layout is independent of browsing, operation targets, authentication and transfers.
@@ -648,7 +608,7 @@ enum FilesTransferPlanDisplay {
 /// The actual inline panel used by DualPaneFilesView. Kept in this registered shared source
 /// so unhosted, self-owned-window tests measure the same view rather than a replacement.
 struct FilesTransferPlanPanel: View {
-    @ObservedObject var model: FilesController
+    var model: FilesController
     @State private var expanded: Bool
     private let layoutChanged: (@MainActor ([String: CGRect]) -> Void)?
     init(model: FilesController, initiallyExpanded: Bool = true,

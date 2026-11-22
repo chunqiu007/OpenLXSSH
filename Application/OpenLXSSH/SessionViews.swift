@@ -4,7 +4,7 @@ import OpenLXSSHTransport
 import OpenLXSSHSecurity
 
 struct SessionWorkspaceView: View {
-    @ObservedObject var controller: SessionController
+    let controller: SessionController
     var body: some View {
         VStack(spacing: 0) {
             IssueView(issue: controller.issue) { controller.issue = nil }.padding(.horizontal, 10)
@@ -44,8 +44,8 @@ struct SessionWorkspaceView: View {
     }
 }
 private struct SessionTabButton: View {
-    @ObservedObject var tab: SessionTab
-    @ObservedObject var controller: SessionController
+    let tab: SessionTab
+    let controller: SessionController
     var body: some View {
         HStack(spacing: 2) {
             NativeButton(title: (controller.selectedTabID == tab.id ? "● " : "") + tab.title,
@@ -55,8 +55,8 @@ private struct SessionTabButton: View {
     }
 }
 private struct SessionDetailView: View {
-    @ObservedObject var tab: SessionTab
-    @ObservedObject var controller: SessionController
+    @Bindable var tab: SessionTab
+    let controller: SessionController
     @State private var ownerWindow: NSWindow?
     @State private var showsDiagnostic = false
     var body: some View {
@@ -351,7 +351,7 @@ struct RetainedTerminalView: NSViewRepresentable {
 }
 
 private struct TrustChallengeView: View {
-    @ObservedObject var tab: SessionTab
+    let tab: SessionTab
     let controller: SessionController
     let prompt: SessionTrustPrompt
     @State private var submitting = false
@@ -442,7 +442,7 @@ private struct TrustChallengeView: View {
 }
 
 struct AuthenticationChallengeView: View {
-    @ObservedObject var tab: SessionTab
+    let tab: SessionTab
     let controller: SessionController
     let prompt: SessionAuthenticationPrompt
     @State private var answers: [String]

@@ -17,7 +17,7 @@ struct VaultHostMenuItem {
 /// Both list and card presentation use the same native selection, keyboard and action consumer.
 /// No overlay gestures intercept field-editor shortcuts or send Enter to a background terminal.
 struct VaultHostList: NSViewRepresentable {
-    @ObservedObject var model: VaultDesktopModel
+    let model: VaultDesktopModel
     let action: (VaultHostCommand) -> Void
     let menu: (UUID) -> [VaultHostMenuItem]
     func makeCoordinator() -> Coordinator { Coordinator(self) }

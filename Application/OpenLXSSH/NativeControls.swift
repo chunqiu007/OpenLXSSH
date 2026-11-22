@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 import OpenLXSSHCore
 
@@ -16,11 +17,11 @@ import OpenLXSSHCore
     static func background(terminal: Bool) -> NSColor { NSColor(sessionHex: terminal ? "#1B212E" : "#252D3D") }
 }
 
-@MainActor final class WorkspaceWindowChromeState: ObservableObject {
-    @Published private(set) var leadingInset: CGFloat = 8
-    @Published private(set) var topSafeInset: CGFloat = 0
-    @Published private(set) var isIntegrated = false
-    var interactiveFrames: [CGRect] = []
+@Observable @MainActor final class WorkspaceWindowChromeState {
+    private(set) var leadingInset: CGFloat = 8
+    private(set) var topSafeInset: CGFloat = 0
+    private(set) var isIntegrated = false
+    @ObservationIgnored var interactiveFrames: [CGRect] = []
     func update(leading: CGFloat, top: CGFloat) {
         if abs(leadingInset - leading) > 0.25 { leadingInset = leading }
         if abs(topSafeInset - top) > 0.25 { topSafeInset = top }
@@ -455,12 +456,12 @@ struct NativeWorkspacePage: NSViewRepresentable {
     static func dismantleNSView(_ view: NativeWorkspacePageView, coordinator: ()) { view.dismantle() }
 }
 
-@MainActor private final class RetainedPageAppearance: ObservableObject {
-    @Published var scheme: ColorScheme?
+@Observable @MainActor private final class RetainedPageAppearance {
+    var scheme: ColorScheme?
     init(_ appearance: NSAppearance.Name?) { scheme = appearance == .darkAqua ? .dark : appearance == .aqua ? .light : nil }
 }
 private struct RetainedPageRoot: View {
-    @ObservedObject var appearance: RetainedPageAppearance
+    let appearance: RetainedPageAppearance
     @Environment(\.colorScheme) private var inherited
     let content: AnyView
     var body: some View { content.environment(\.colorScheme, appearance.scheme ?? inherited) }

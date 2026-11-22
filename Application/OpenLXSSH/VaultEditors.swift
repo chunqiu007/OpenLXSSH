@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import OpenLXSSHCore
 import OpenLXSSHSecurity
-import Combine
 
 private struct VaultEditorSheet: Identifiable {
     enum Content { case keys, create(KeyCreation) }
@@ -12,13 +11,13 @@ private struct VaultEditorSheet: Identifiable {
 
 /// Short-lived editor state owns all sensitive input; neither draft nor VaultDesktopModel stores it.
 struct VaultHostEditor: View {
-    @ObservedObject var app: AppModel
-    @ObservedObject var vault: VaultDesktopModel
-    @StateObject private var security: SecurityViewModel
-    @StateObject private var editor: VaultHostEditorModel
-    @StateObject private var closeReview: VaultHostCloseReview
+    let app: AppModel
+    let vault: VaultDesktopModel
+    @State private var security: SecurityViewModel
+    @State private var editor: VaultHostEditorModel
+    @State private var closeReview: VaultHostCloseReview
     @State private var advanced = false
-    @StateObject private var sheets = PresentationOwner<VaultEditorSheet.Content>()
+    @State private var sheets = PresentationOwner<VaultEditorSheet.Content>()
     @State private var showsValidationErrors = false
     @State private var editedFields: Set<String> = []
     @FocusState private var focusedField: String?
@@ -48,11 +47,11 @@ struct VaultHostEditor: View {
         // feed sheet fitting back into itself while fields and errors update.
         let parentHeight = NSApp.mainWindow?.contentView?.bounds.height ?? 720
         _presentationHeight = State(initialValue: min(680, max(420, parentHeight - 60)))
-        _security = StateObject(wrappedValue: SecurityViewModel(coordinator: app.security))
+        _security = State(initialValue: SecurityViewModel(coordinator: app.security))
         let editor = VaultHostEditorModel(draft: VaultHostDraft(host: host, settings: app.settings, folderID: folderID,
             tagIDs: host.flatMap { vault.snapshot?.hostTagIDs[$0.id] } ?? []), ownsPresentation: ownsPresentation)
-        _editor = StateObject(wrappedValue: editor)
-        _closeReview = StateObject(wrappedValue: VaultHostCloseReview(editor: editor, dismiss: { dismiss() }, complete: completeWindowCloseReview))
+        _editor = State(initialValue: editor)
+        _closeReview = State(initialValue: VaultHostCloseReview(editor: editor, dismiss: { dismiss() }, complete: completeWindowCloseReview))
     }
     private var canConnect: Bool { !editor.hasTransientInput || transientConnection != nil }
     private func input<Value>(_ key: ReferenceWritableKeyPath<VaultHostEditorModel, Value>) -> Binding<Value> {
@@ -331,8 +330,8 @@ struct VaultHostEditor: View {
 
 private struct VaultHostClosePrompt: View {
     let prompt: VaultHostCloseReview.Prompt
-    @ObservedObject var editor: VaultHostEditorModel
-    @ObservedObject var review: VaultHostCloseReview
+    let editor: VaultHostEditorModel
+    let review: VaultHostCloseReview
     let security: SecurityCoordinator
     let vault: VaultDesktopModel
     private var title: String {
@@ -371,7 +370,7 @@ private struct VaultHostClosePrompt: View {
 }
 
 struct VaultFolderEditor: View {
-    @ObservedObject var vault: VaultDesktopModel
+    let vault: VaultDesktopModel
     let original: HostFolder?
     @State private var name: String
     @State private var parent: UUID?
@@ -408,15 +407,15 @@ struct VaultFolderEditor: View {
 }
 
 struct VaultKeyPicker: View {
-    @ObservedObject var model: SecurityViewModel
-    @ObservedObject var app: AppModel
+    let model: SecurityViewModel
+    let app: AppModel
     let selectedID: UUID?
     var ownsPresentation: @MainActor () -> Bool = { true }
     let select: (UUID) -> Void
     let dismiss: () -> Void
     @State private var search = ""
     @State private var active = true
-    @StateObject private var creations = PresentationOwner<KeyCreation>()
+    @State private var creations = PresentationOwner<KeyCreation>()
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack { Text("选择 SSH 密钥").font(.title3).bold(); Spacer(); Button("关闭", action: dismiss).keyboardShortcut(.cancelAction) }

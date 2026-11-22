@@ -2,7 +2,7 @@ import SwiftUI
 import OpenLXSSHTrust
 
 struct TrustManagementView: View {
-    @StateObject private var model: TrustManagementModel
+    @State private var model: TrustManagementModel
     @State private var replacement = ""
     @State private var verified = false
     var dismiss: () -> Void
@@ -10,7 +10,7 @@ struct TrustManagementView: View {
     let searchFocusRequest: UUID?
 
     init(environment: SessionEnvironment, embedded: Bool = false, searchFocusRequest: UUID? = nil, dismiss: @escaping () -> Void) {
-        _model = StateObject(wrappedValue: TrustManagementModel(environment: environment))
+        _model = State(initialValue: TrustManagementModel(environment: environment))
         self.dismiss = dismiss; self.embedded = embedded
         self.searchFocusRequest = searchFocusRequest
     }
@@ -184,7 +184,7 @@ struct TrustManagementView: View {
 }
 
 private struct TrustRemovalConfirmation: View {
-    @ObservedObject var model: TrustManagementModel
+    let model: TrustManagementModel
     let review: TrustRemovalReview
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

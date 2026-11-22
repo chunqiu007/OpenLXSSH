@@ -1,6 +1,6 @@
 import AppKit
-import Combine
 import Foundation
+import Observation
 import OpenLXSSHCore
 import OpenLXSSHFiles
 import OpenLXSSHTransport
@@ -294,9 +294,9 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
 
 /// This UUID authorizes only one immutable list, never a later menu invocation.
 /// The synchronous begin fence runs before any Task is scheduled or tab close awaits.
-@MainActor final class SessionBatchCloseOwner: ObservableObject {
-    @Published private(set) var review: SessionBatchCloseReview?
-    @Published private(set) var inFlight = false
+@Observable @MainActor final class SessionBatchCloseOwner {
+    private(set) var review: SessionBatchCloseReview?
+    private(set) var inFlight = false
     func present(_ value: SessionBatchCloseReview) {
         guard review == nil, !inFlight, !value.entries.isEmpty else { return }
         review = value
@@ -315,36 +315,37 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
     }
 }
 
-@MainActor final class SessionTab: ObservableObject, Identifiable {
+@Observable @MainActor final class SessionTab: Identifiable {
     let id: UUID
     let hostID: UUID
-    @Published var title: String
-    @Published var displayMetadata = SessionTabDisplayMetadata()
+    var title: String
+    var displayMetadata = SessionTabDisplayMetadata()
     var displayName: String { customTitle ?? displayMetadata.currentName ?? title }
     var configurationChanged: Bool { displayMetadata.currentConnectionIdentity.map { $0 != host?.connectionIdentity } ?? false }
-    @Published var state: SSHSessionState = .preparing
-    @Published var issue: AppIssue?
-    @Published var trust: [SessionTrustPrompt] = []
-    @Published var authentication: SessionAuthenticationPrompt?
-    @Published var searchText = "" { didSet { if searchText != oldValue { searchFound = nil; searchMatchIndex = 0; searchMatchCount = 0 } } }
-    @Published private(set) var searchFound: Bool?
-    @Published private(set) var searchMatchIndex = 0
-    @Published private(set) var searchMatchCount = 0
-    @Published var fontSizeOverride: Double?
-    @Published private(set) var searchVisible = false
-    @Published private(set) var searchFocusRequest: UUID?
-    @Published private(set) var terminalFocusRequest: UUID?
-    @Published var dialog: SessionDialog?
+    var state: SSHSessionState = .preparing
+    var issue: AppIssue?
+    var trust: [SessionTrustPrompt] = []
+    var authentication: SessionAuthenticationPrompt?
+    var searchText = "" { didSet { if searchText != oldValue { searchFound = nil; searchMatchIndex = 0; searchMatchCount = 0 } } }
+    private(set) var searchFound: Bool?
+    private(set) var searchMatchIndex = 0
+    private(set) var searchMatchCount = 0
+    var fontSizeOverride: Double?
+    private(set) var searchVisible = false
+    private(set) var searchFocusRequest: UUID?
+    private(set) var terminalFocusRequest: UUID?
+    var dialog: SessionDialog?
     var driver: (any SessionDriving)?
-    var builder: (any SessionBuilding)?
-    var primaryRequestID: UUID?
+    @ObservationIgnored var builder: (any SessionBuilding)?
+    @ObservationIgnored var primaryRequestID: UUID?
     var host: HostConfiguration?
-    var configuration: SSHSessionConfiguration?
+    @ObservationIgnored var configuration: SSHSessionConfiguration?
     var preparation: Task<Void, Never>?
-    var operation = UUID()
-    var lastActivity: UInt64 = 0
-    var markedGeneration: UInt64?
+    @ObservationIgnored var operation = UUID()
+    @ObservationIgnored var lastActivity: UInt64 = 0
+    @ObservationIgnored var markedGeneration: UInt64?
     var customTitle: String?
+    var statusRevision: UInt64 = 0
     init(id: UUID = UUID(), host: HostConfiguration) {
         self.id = id; hostID = host.id; title = host.name; self.host = host
         displayMetadata = .init(currentName: host.name, isFavorite: host.isFavorite, currentConnectionIdentity: host.connectionIdentity)
@@ -378,6 +379,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         return state == .disconnected(nil)
     }
     var status: String {
+        _ = statusRevision
         if let detail = driver?.failureDetail { return detail.title + "；可手动重试" }
         return legacyStatus
     }
@@ -403,35 +405,36 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
 
 @MainActor private final class SessionCloseObservation<Value> { var result: Value? }
 
-@MainActor final class SessionController: ObservableObject {
-    @Published private(set) var tabs: [SessionTab] = []
-    @Published private(set) var selectedTabID: UUID?
-    @Published private(set) var closingAll = false
-    @Published private(set) var terminating = false
-    @Published var issue: AppIssue?
-    private var closeAllTask: Task<SessionCloseBatchResult, Never>?
-    private var tabCloseTasks: [UUID: Task<SessionCloseResult, Never>] = [:]
-    private var tabCloseObservations: [UUID: SessionCloseObservation<SessionCloseResult>] = [:]
-    private var closeAllObservation: SessionCloseObservation<SessionCloseBatchResult>?
+@Observable @MainActor final class SessionController {
+    private(set) var tabs: [SessionTab] = []
+    private(set) var selectedTabID: UUID?
+    private(set) var closingAll = false
+    private(set) var terminating = false
+    var issue: AppIssue?
+    private(set) var displayRevision: UInt64 = 0
+    @ObservationIgnored private var closeAllTask: Task<SessionCloseBatchResult, Never>?
+    @ObservationIgnored private var tabCloseTasks: [UUID: Task<SessionCloseResult, Never>] = [:]
+    @ObservationIgnored private var tabCloseObservations: [UUID: SessionCloseObservation<SessionCloseResult>] = [:]
+    @ObservationIgnored private var closeAllObservation: SessionCloseObservation<SessionCloseBatchResult>?
     var closeJoinObserverCount: Int { closeAllJoinObservers + tabCloseJoinObservers }
-    private var closeAllJoinObservers = 0
-    private var tabCloseJoinObservers = 0
-    private(set) var lastCloseBatch = SessionCloseBatchResult(entries: [])
-    private var windowCleanupAdmissionClosed = false
+    @ObservationIgnored private var closeAllJoinObservers = 0
+    @ObservationIgnored private var tabCloseJoinObservers = 0
+    @ObservationIgnored private(set) var lastCloseBatch = SessionCloseBatchResult(entries: [])
+    @ObservationIgnored private var windowCleanupAdmissionClosed = false
     private let repository: any AppRepositoryProtocol
     private let credentials: any CredentialAccess
     private let builder: any SessionBuilding
-    private var transientIntents: [UUID: VaultTransientConnectionIntent] = [:]
-    private var primaryAuthorizations: [UUID: SessionPrimaryAuthorization] = [:]
-    private var preparedCandidates: [UUID: (ReadySession, VaultTransientConnectionIntent)] = [:]
-    private var preparationEpoch = UUID()
-    private var settings = AppSettings()
-    private var activity: UInt64 = 0
-    @Published private(set) var workspaceVisible = true
-    var onSelectionChanged: ((UUID?) -> Void)?
-    var onAuthenticatedMetadata: (() -> Void)?
-    var onShowConfiguration: ((UUID) -> Void)?
-    var trustEnvironment: SessionEnvironment?
+    @ObservationIgnored private var transientIntents: [UUID: VaultTransientConnectionIntent] = [:]
+    @ObservationIgnored private var primaryAuthorizations: [UUID: SessionPrimaryAuthorization] = [:]
+    @ObservationIgnored private var preparedCandidates: [UUID: (ReadySession, VaultTransientConnectionIntent)] = [:]
+    @ObservationIgnored private var preparationEpoch = UUID()
+    @ObservationIgnored private var settings = AppSettings()
+    @ObservationIgnored private var activity: UInt64 = 0
+    private(set) var workspaceVisible = true
+    @ObservationIgnored var onSelectionChanged: ((UUID?) -> Void)?
+    @ObservationIgnored var onAuthenticatedMetadata: (() -> Void)?
+    @ObservationIgnored var onShowConfiguration: ((UUID) -> Void)?
+    @ObservationIgnored var trustEnvironment: SessionEnvironment?
     init(repository: any AppRepositoryProtocol, credentials: any CredentialAccess, builder: any SessionBuilding) {
         self.repository = repository; self.credentials = credentials; self.builder = builder
     }
@@ -579,9 +582,10 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
               !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               let tab = tabs.first(where: { $0.id == id }) else { return }
         tab.customTitle = value; tab.title = value
-        objectWillChange.send() // Duplicate-name suffixes on the other tabs also changed.
+        displayRevision &+= 1 // Duplicate-name suffixes on the other tabs also changed.
     }
     func displayTitle(for tab: SessionTab) -> String {
+        _ = displayRevision
         let same = tabs.filter { $0.displayName == tab.displayName }
         guard same.count > 1, let index = same.firstIndex(where: { $0 === tab }) else { return tab.displayName }
         return tab.displayName + " · " + String(index + 1)
@@ -594,7 +598,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
             tab.displayMetadata = SessionTabDisplayMetadata(currentName: current?.name ?? tab.displayMetadata.currentName, isFavorite: current?.isFavorite ?? false,
                 isDeleted: current == nil, currentConnectionIdentity: current?.connectionIdentity)
         }
-        objectWillChange.send()
+        displayRevision &+= 1
     }
     func connectionInfo(for tab: SessionTab) -> String {
         let snapshot = tab.host.map { "实际连接快照：\n" + $0.username + "@" + $0.vaultEndpoint + "\n" + $0.authentication.displayName } ?? "实际连接快照不可用"
@@ -624,7 +628,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         let operation = UUID(); tab.operation = operation; tab.state = .preparing; tab.issue = nil
         tab.preparation = Task { [weak self, weak tab] in
             guard let self, let tab else { return }
-            defer { tab.preparation = nil; tab.objectWillChange.send() }
+            defer { tab.preparation = nil }
             do {
                 let ready = try await (tab.builder ?? builder).prepare(hostID: tab.hostID, sessionID: tab.id)
                 guard !Task.isCancelled, tab.operation == operation, tabs.contains(where: { $0 === tab }) else {
@@ -662,7 +666,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
                     catch { self?.issue = .session(error) }
                 }
             }
-            self.objectWillChange.send()
+            tab.statusRevision &+= 1
         }
         driver.onTrust = { [weak tab, weak driver] prompts in
             guard let tab, let driver, tab.driver === driver,
@@ -734,7 +738,7 @@ struct SessionBatchCloseReview: Identifiable, Equatable {
         let operation = UUID(); tab.operation = operation; tab.state = .preparing; tab.issue = nil
         tab.preparation = Task { [weak self, weak tab] in
             guard let self, let tab else { return }
-            defer { tab.preparation = nil; tab.objectWillChange.send() }
+            defer { tab.preparation = nil }
             do {
                 let (host, configuration) = try await (tab.builder ?? builder).configuration(hostID: tab.hostID)
                 guard tab.operation == operation, !Task.isCancelled else { throw TransportError.stale }

@@ -15,23 +15,25 @@ private struct VaultPresentation: Identifiable {
 /// The optional handler is mandatory for using an editor's unsaved password in a new connection;
 /// without it, the editor disables that action rather than silently dropping the supplied password.
 struct VaultWorkspacePage: View {
-    @ObservedObject var app: AppModel
-    @StateObject private var model: VaultDesktopModel
+    let app: AppModel
+    @State private var model: VaultDesktopModel
     private var page: VaultManagementPage {
         get { model.managementPage }
         nonmutating set { model.managementPage = newValue }
     }
-    @StateObject private var presentations = PresentationOwner<VaultPresentation.Content>()
+    @State private var presentations = PresentationOwner<VaultPresentation.Content>()
     @State private var compactInspector = false
     @State private var hasCompletedInitialLoad = false
     @State private var navigationOwnerID = UUID()
     @State private var keySearchFocusRequest: UUID?
     @State private var trustSearchFocusRequest: UUID?
     private let transientConnection: VaultTransientConnectionHandler?
+
     init(app: AppModel, transientConnection: VaultTransientConnectionHandler? = nil) {
         self.app = app; self.transientConnection = transientConnection
-        _model = StateObject(wrappedValue: VaultDesktopModel(app: app))
+        _model = State(initialValue: VaultDesktopModel(app: app))
     }
+
     var body: some View {
         lifecycleContent
         .nativeSheet(item: $presentations.item, isEnabled: app.workspacePage == .vault,
@@ -39,6 +41,7 @@ struct VaultWorkspacePage: View {
             presentations.attemptClose()
         }) { item in presentationContent(item) }
     }
+
     private var allowsHostTerminationReview: Bool {
         guard let content = presentations.item?.content else { return false }
         switch content {
@@ -46,6 +49,7 @@ struct VaultWorkspacePage: View {
         default: return false
         }
     }
+
     private var queryObservedContent: some View {
         workspaceContent
             .background(DesktopStyle.background)
@@ -56,6 +60,7 @@ struct VaultWorkspacePage: View {
             .onChange(of: model.preferences.descending) { _, _ in model.scheduleLoad() }
             .onChange(of: model.focusedID) { _, id in if id == nil { compactInspector = false } }
     }
+
     private var lifecycleContent: some View {
         queryObservedContent
             .task {
@@ -82,6 +87,7 @@ struct VaultWorkspacePage: View {
             }
             .onChange(of: app.workspaceCommand) { _, request in consumeCommand(request) }
     }
+
     private func registerNavigationGuard() {
         let owner = presentations
         model.registerManagementNavigationGuard(owner: navigationOwnerID) { [weak owner] in
@@ -97,6 +103,7 @@ struct VaultWorkspacePage: View {
             owner.beginWindowCloseReview(request)
         }, cancel: { [weak owner] in owner?.cancelWindowCloseReview() })
     }
+
     private func consumeCommand(_ request: WorkspaceCommandRequest?) {
         guard app.workspacePage == .vault, let request, request == app.workspaceCommand else { return }
         if request.command == .search {
@@ -117,11 +124,30 @@ struct VaultWorkspacePage: View {
         default: break
         }
     }
+
     private var workspaceContent: some View {
         GeometryReader { geometry in
             let inlineInspector = geometry.size.width >= 940
             HSplitView {
-                sidebar.frame(minWidth: 160, idealWidth: 176, maxWidth: min(210, max(176, geometry.size.width * 0.19)))
+                VaultSidebarView(
+                    app: app,
+                    model: model,
+                    onNavigate: { action in
+                        if presentations.item != nil { _ = presentations.attemptClose(); return }
+                        _ = model.performManagementNavigation(action)
+                    },
+                    onSelectSection: select,
+                    onNewRootFolder: { _ = presentations.present(.folder(nil, nil)) },
+                    onEditFolder: { _ = presentations.present(.folder($0, $0?.parentID)) },
+                    onAddChildFolder: { _ = presentations.present(.folder(nil, $0)) },
+                    onNewHostInFolder: { _ = presentations.present(.newHostInFolder($0)) },
+                    onImportMove: importMove,
+                    onDeleteFolder: deleteFolder,
+                    onNewTag: { _ = presentations.present(.tag(nil)) },
+                    onRenameTag: { _ = presentations.present(.tag($0)) },
+                    onDeleteTag: deleteTag
+                )
+                .frame(minWidth: 160, idealWidth: 176, maxWidth: min(210, max(176, geometry.size.width * 0.19)))
                 if page == .keys {
                     SecurityManagerView(app: app, embedded: true, searchFocusRequest: keySearchFocusRequest) { page = .hosts }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -133,8 +159,15 @@ struct VaultWorkspacePage: View {
                         hostContent(inlineInspector: inlineInspector, pageHeight: geometry.size.height)
                             .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
                         if inlineInspector, model.preferences.inspector, let host = model.selectedHost {
-                            inspector(host, close: { model.preferences.inspector = false })
-                                .frame(minWidth: 245, idealWidth: 270, maxWidth: min(336, max(270, geometry.size.width * 0.28)))
+                            VaultInspectorView(
+                                model: model,
+                                host: host,
+                                menuItems: menuItems(host.id),
+                                onCommand: perform,
+                                onEdit: { presentHost(host) },
+                                onClose: { model.preferences.inspector = false }
+                            )
+                            .frame(minWidth: 245, idealWidth: 270, maxWidth: min(336, max(270, geometry.size.width * 0.28)))
                         }
                     }
                 }
@@ -142,6 +175,7 @@ struct VaultWorkspacePage: View {
             .onChange(of: inlineInspector) { _, _ in compactInspector = false }
         }
     }
+
     @ViewBuilder private func presentationContent(_ item: OwnedPresentation<VaultPresentation.Content>) -> some View {
             switch item.content {
             case .host(let host):
@@ -183,76 +217,6 @@ struct VaultWorkspacePage: View {
             }
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                Image(systemName: "terminal").font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.accentColor).frame(width: 34, height: 34)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("OpenLXSSH").font(.system(size: 14, weight: .semibold))
-                    Text("本地保险箱").font(.caption).foregroundStyle(.secondary)
-                }
-            }.padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 16)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("主机").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 6)
-                    navigation("所有主机", icon: "server.rack", count: model.catalog.count, active: page == .hosts && model.section == .all) { select(.all) }
-                    navigation("收藏", icon: "star", count: model.catalog.filter(\.isFavorite).count, active: page == .hosts && model.section == .favorites) { select(.favorites) }
-                    navigation("未分组", icon: "tray", count: model.catalog.filter { $0.folderID == nil }.count, active: page == .hosts && model.section == .ungrouped) { select(.ungrouped) }
-                    HStack {
-                        Text("分组").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button { _ = presentations.present(.folder(nil, nil)) } label: { Image(systemName: "plus") }
-                            .buttonStyle(.plain).help("新建根分组").accessibilityLabel("新建根分组")
-                    }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 5)
-                    VaultFolderTree(model: model, parentID: nil, depth: 0, select: { select(.folder($0)) },
-                        edit: { _ = presentations.present(.folder($0, $0?.parentID)) },
-                        add: { _ = presentations.present(.folder(nil, $0)) },
-                        newHost: { _ = presentations.present(.newHostInFolder($0)) },
-                        importMove: importMove, remove: deleteFolder).padding(.horizontal, 6)
-                    HStack {
-                        Text("标签").help("多选标签时，同时匹配所选标签").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button { _ = presentations.present(.tag(nil)) } label: { Image(systemName: "plus") }
-                            .buttonStyle(.plain).help("新建标签").accessibilityLabel("新建标签")
-                    }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 5)
-                    ForEach(model.tags) { tag in
-                        Button {
-                            _ = model.performManagementNavigation {
-                                page = .hosts
-                                if model.tagFilter.contains(tag.id) { model.tagFilter.remove(tag.id) } else { model.tagFilter.insert(tag.id) }
-                            }
-                        } label: {
-                            HStack { Image(systemName: model.tagFilter.contains(tag.id) ? "checkmark.circle.fill" : "tag"); Text(tag.name).lineLimit(1); Spacer() }
-                                .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 7)
-                                .background(model.tagFilter.contains(tag.id) ? DesktopStyle.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain).padding(.horizontal, 6)
-                        .contextMenu {
-                            Button("重命名标签…") { _ = presentations.present(.tag(tag)) }
-                            Button("删除全局标签…", role: .destructive) { deleteTag(tag.id) }
-                        }
-                    }
-                }
-            }
-            Divider().padding(.horizontal, 12).padding(.vertical, 6)
-            navigation("密钥与凭据", icon: "key", active: page == .keys) { page = .keys }
-            navigation("已知主机", icon: "checkmark.shield", active: page == .trust) { page = .trust }
-            navigation("设置…", icon: "gearshape", active: false) { _ = app.sendWorkspaceCommand(.settings) }
-            Label("配置保存在此 Mac", systemImage: "internaldrive")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-                .help("配置仅保存在本机，凭据使用系统 Keychain；无云同步或独立保险箱锁。")
-                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 14)
-        }.background(DesktopStyle.sidebar)
-    }
-    private func navigation(_ title: String, icon: String, count: Int? = nil, active: Bool, action: @escaping () -> Void) -> some View {
-        VaultSidebarNavButton(title: title, icon: icon, count: count, active: active) {
-            if presentations.item != nil { _ = presentations.attemptClose(); return }
-            _ = model.performManagementNavigation(action)
-        }
-    }
     private func select(_ section: VaultSection) {
         _ = model.performManagementNavigation { page = .hosts; model.section = section }
     }
@@ -287,8 +251,15 @@ struct VaultWorkspacePage: View {
                     .help("显示或收起主机详情").accessibilityLabel("主机检查器")
                     .popover(isPresented: $compactInspector) {
                         if !inlineInspector, let host = model.selectedHost {
-                            inspector(host, close: { compactInspector = false })
-                                .frame(width: 300, height: min(500, max(180, pageHeight - 50)))
+                            VaultInspectorView(
+                                model: model,
+                                host: host,
+                                menuItems: menuItems(host.id),
+                                onCommand: perform,
+                                onEdit: { presentHost(host) },
+                                onClose: { compactInspector = false }
+                            )
+                            .frame(width: 300, height: min(500, max(180, pageHeight - 50)))
                         }
                     }
                 }
@@ -358,6 +329,7 @@ struct VaultWorkspacePage: View {
             }.padding(.horizontal, 18).padding(.vertical, 7)
         }
     }
+
     @ViewBuilder private var emptyState: some View {
         if !model.didLoad {
             if model.isLoading || !hasCompletedInitialLoad {
@@ -410,114 +382,15 @@ struct VaultWorkspacePage: View {
         }
     }
 
-    private func inspector(_ host: HostConfiguration, close: @escaping () -> Void) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text("主机详情").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Menu { VaultHostMenu(items: menuItems(host.id), action: perform) } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-                .help("主机操作").accessibilityLabel("主机操作")
-                Button(action: close) { Image(systemName: "xmark").frame(width: 20, height: 20) }
-                    .buttonStyle(.borderless).help("收起检查器").accessibilityLabel("收起检查器")
-            }.padding(.horizontal, 16).padding(.vertical, 12)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "server.rack")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 36, height: 36)
-                            .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
-                        Text(host.name)
-                            .font(.system(size: 18, weight: .semibold))
-                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        if host.isFavorite {
-                            Image(systemName: "star.fill").font(.caption)
-                                .foregroundStyle(.orange).accessibilityLabel("已收藏")
-                        }
-                    }
-                    detailSection("地址") {
-                        HStack(spacing: 6) {
-                            Text(verbatim: host.vaultEndpoint).font(.system(size: 12, design: .monospaced))
-                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                            Button { perform(.copyEndpoint(host.id)) } label: {
-                                Image(systemName: "doc.on.doc").frame(width: 20, height: 20)
-                            }
-                            .buttonStyle(.borderless).help("复制端点").accessibilityLabel("复制端点")
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 7))
-                    }
-                    Divider()
-                    detailSection("SSH") {
-                        DesktopKeyValueRow(label: "用户名", value: host.username, monospaced: true)
-                        DesktopKeyValueRow(label: "端口", value: String(host.port), monospaced: true)
-                        DesktopKeyValueRow(label: "认证方式", value: host.vaultAuthenticationLabel)
-                        if let key = model.snapshot?.keys.first(where: { $0.id == host.keyRef }) {
-                            DesktopKeyValueRow(label: "密钥", value: key.label.isEmpty ? key.algorithm.rawValue.uppercased() + " · " + key.id.uuidString.prefix(8) : key.label)
-                        } else if host.credentialRef != nil {
-                            DesktopKeyValueRow(label: "凭据", value: "已保存密码")
-                        }
-                    }
-                    Divider()
-                    detailSection("常规") {
-                        DesktopKeyValueRow(label: "分组", value: host.folderID.map(model.path(for:)) ?? "未分组")
-                        if let tags = model.metadata(for: host.id)?.tags, !tags.isEmpty {
-                            HStack(spacing: 8) {
-                                Text("标签").foregroundStyle(.secondary)
-                                ScrollView(.horizontal) {
-                                    HStack(spacing: 5) {
-                                        ForEach(tags) { tag in
-                                            DesktopBadge(text: tag.name, color: .accentColor, fill: DesktopStyle.iconSurface)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .trailing)
-                                }
-                                .defaultScrollAnchor(.trailing, for: .alignment)
-                            }
-                        }
-                    }
-                    Divider()
-                    DisclosureGroup("高级") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            DesktopKeyValueRow(label: "TCP 空闲/重试间隔", value: host.keepaliveInterval == 0 ? "已关闭" : "\(host.keepaliveInterval) 秒")
-                            DesktopKeyValueRow(label: "TCP 失败探测次数", value: "\(host.keepaliveCountMax) 次")
-                            Text("系统按 TCP 保活设置判断失联。远端任务能否在断线后继续，取决于服务器。")
-                                .font(.caption).foregroundStyle(.secondary)
-                            DesktopKeyValueRow(label: "最近认证成功", value: host.lastConnectedAt?.formatted() ?? "从未连接")
-                        }.padding(.top, 8)
-                    }.font(.system(size: 12, weight: .medium))
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Divider()
-            HStack(spacing: 8) {
-                Button { presentHost(host) } label: { Label("编辑", systemImage: "pencil") }
-                    .accessibilityLabel("编辑主机")
-                Spacer(minLength: 4)
-                Button { perform(.connect(host.id, .reuse)) } label: { Label("连接", systemImage: "terminal") }
-                    .buttonStyle(.borderedProminent)
-            }.padding(.horizontal, 16).padding(.vertical, 12)
-        }.frame(maxHeight: .infinity).background(DesktopStyle.panel)
-    }
-
-    private func detailSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-            content().font(.system(size: 12))
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private func presentHost(_ host: HostConfiguration?) { _ = presentations.present(.host(host)) }
+
     private func menuItems(_ id: UUID) -> [VaultHostMenuItem] {
         let ids = model.actionIDs(for: id)
         return [.init(title: "连接", command: .connect(id, .reuse)), .init(title: "在新会话打开", command: .connect(id, .newSession)), .separator,
             .init(title: "编辑…", command: .edit(id)), .init(title: "复制配置", command: .duplicate(id)), .separator]
             + batchMenu(ids) + [.separator, .init(title: "复制端点", command: .copyEndpoint(id))]
     }
+
     private func batchMenu(_ ids: [UUID]) -> [VaultHostMenuItem] {
         let allFavorite = !ids.isEmpty && ids.allSatisfy { id in model.catalog.first { $0.id == id }?.isFavorite == true }
         return [.init(title: allFavorite ? "取消收藏" : "收藏", command: .favorite(ids, !allFavorite)),
@@ -526,6 +399,7 @@ struct VaultWorkspacePage: View {
             .init(title: "移除标签关联", children: model.tags.map { .init(title: $0.name, command: .tag(ids, $0.id, false)) }),
             .separator, .init(title: "删除主机配置…", command: .delete(ids), destructive: true)]
     }
+
     private func perform(_ command: VaultHostCommand) {
         guard !model.isWriting else { return }
         switch command {
@@ -544,7 +418,9 @@ struct VaultWorkspacePage: View {
         case .delete(let ids): presentBatch(model.deleteConfirmation(ids: ids))
         }
     }
+
     private func presentBatch(_ value: VaultBatchConfirmation) { if !value.hostIDs.isEmpty { _ = presentations.present(.batch(value)) } }
+
     private func importMove(_ providers: [NSItemProvider], to folderID: UUID?) -> Bool {
         let ticket = presentations.capture()
         return model.importHostDrag(providers, to: folderID) { value in
@@ -552,6 +428,7 @@ struct VaultWorkspacePage: View {
             _ = presentations.present(.batch(value), ifCurrent: ticket)
         }
     }
+
     private func deleteFolder(_ id: UUID) {
         let ticket = presentations.capture()
         Task {
@@ -561,6 +438,7 @@ struct VaultWorkspacePage: View {
             } catch { if presentations.isCurrent(ticket) { model.issue = .sanitized(error) } }
         }
     }
+
     private func deleteTag(_ id: UUID) {
         let ticket = presentations.capture()
         Task {
@@ -572,49 +450,11 @@ struct VaultWorkspacePage: View {
     }
 }
 
-private struct VaultFolderTree: View {
-    @ObservedObject var model: VaultDesktopModel
-    let parentID: UUID?
-    let depth: Int
-    let select: (UUID) -> Void
-    let edit: (HostFolder?) -> Void
-    let add: (UUID?) -> Void
-    let newHost: (UUID) -> Void
-    let importMove: ([NSItemProvider], UUID?) -> Bool
-    let remove: (UUID) -> Void
-    var body: some View {
-        ForEach(model.children(of: parentID)) { folder in
-            VStack(spacing: 0) {
-                HStack(spacing: 5) {
-                    Button { model.toggleExpanded(folder.id) } label: { Image(systemName: model.preferences.expandedFolders.contains(folder.id) ? "chevron.down" : "chevron.right").font(.caption2).frame(width: 12) }
-                        .buttonStyle(.plain).accessibilityLabel("展开或折叠“\(folder.name)”")
-                    Button { select(folder.id) } label: {
-                        Label(folder.name + (model.folders.filter { $0.name == folder.name }.count > 1 ? " · " + folder.id.uuidString.prefix(6) : ""), systemImage: "folder")
-                            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                }.padding(.vertical, 7).padding(.leading, CGFloat(depth * 12 + 6)).padding(.trailing, 6)
-                    .background(model.section == .folder(folder.id) ? DesktopStyle.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
-                    .help(model.folderLabel(folder))
-                    .onDrop(of: [.text], isTargeted: nil) { providers in importMove(providers, folder.id) }
-                    .contextMenu {
-                        Button("新建主机…") { newHost(folder.id) }
-                        Button("新建子组…") { add(folder.id) }
-                        Button("重命名或移动…") { edit(folder) }
-                        Button("删除分组…", role: .destructive) { remove(folder.id) }
-                    }
-                if model.preferences.expandedFolders.contains(folder.id) {
-                    AnyView(VaultFolderTree(model: model, parentID: folder.id, depth: depth + 1, select: select, edit: edit, add: add, newHost: newHost, importMove: importMove, remove: remove))
-                }
-            }
-        }
-    }
-}
-
 private struct VaultConfirmationView: View {
     let title: String
     let detail: String
     let targets: [String]
-    @ObservedObject var model: VaultDesktopModel
+    let model: VaultDesktopModel
     let confirm: () async -> Void
     let cancel: () -> Void
     var body: some View {
@@ -629,7 +469,7 @@ private struct VaultConfirmationView: View {
 }
 
 private struct VaultTagEditor: View {
-    @ObservedObject var vault: VaultDesktopModel
+    let vault: VaultDesktopModel
     let tag: HostTag?
     @State private var name: String
     let dismiss: () -> Void
@@ -658,49 +498,5 @@ private struct VaultTagEditor: View {
             let value = HostTag(id: tag?.id ?? UUID(), name: name)
             if await vault.apply([.saveTag(value)]), ownsPresentation() { dismiss() }
         }
-    }
-}
-
-private struct VaultSidebarNavButton: View {
-    let title: String
-    let icon: String
-    let count: Int?
-    let active: Bool
-    let action: () -> Void
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: active ? .semibold : .regular))
-                    .frame(width: 18)
-                    .foregroundStyle(active ? Color.accentColor : .secondary)
-                Text(title)
-                    .font(.system(size: 13, weight: active ? .semibold : .regular))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let count, count > 0 {
-                    Text("\(count)")
-                        .font(.system(size: 11, weight: .medium).monospacedDigit())
-                        .foregroundStyle(active ? Color.accentColor : .secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(active ? Color.accentColor.opacity(0.14) : DesktopStyle.separator, in: Capsule())
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(active ? DesktopStyle.selection : (hovered ? DesktopStyle.panelElevated : .clear), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(active ? Color.accentColor.opacity(0.28) : .clear)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .onHover { hovered = $0 }
-        .accessibilityAddTraits(active ? .isSelected : [])
     }
 }

@@ -6,14 +6,14 @@ import OpenLXSSHSecurity
 
 /// Kept for existing callers; the desktop editor owns a stable non-secret draft and short-lived input.
 struct HostEditor: View {
-    @ObservedObject var model: AppModel
-    @StateObject private var vault: VaultDesktopModel
+    let model: AppModel
+    @State private var vault: VaultDesktopModel
     let host: HostConfiguration?
     let folderID: UUID?
     let dismiss: () -> Void
     init(model: AppModel, host: HostConfiguration?, folderID: UUID?, dismiss: @escaping () -> Void) {
         self.model = model; self.host = host; self.folderID = folderID; self.dismiss = dismiss
-        _vault = StateObject(wrappedValue: VaultDesktopModel(app: model))
+        _vault = State(initialValue: VaultDesktopModel(app: model))
     }
     var body: some View {
         Group {
@@ -31,13 +31,13 @@ struct HostEditor: View {
 }
 
 struct FolderEditor: View {
-    @ObservedObject var model: AppModel
-    @StateObject private var vault: VaultDesktopModel
+    let model: AppModel
+    @State private var vault: VaultDesktopModel
     let folder: HostFolder?
     let dismiss: () -> Void
     init(model: AppModel, folder: HostFolder?, dismiss: @escaping () -> Void) {
         self.model = model; self.folder = folder; self.dismiss = dismiss
-        _vault = StateObject(wrappedValue: VaultDesktopModel(app: model))
+        _vault = State(initialValue: VaultDesktopModel(app: model))
     }
     var body: some View {
         VaultFolderEditor(vault: vault, folder: folder, parentID: folder?.parentID, dismiss: dismiss)
@@ -46,8 +46,8 @@ struct FolderEditor: View {
 }
 
 struct SettingsEditor: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject var editor: SettingsEditorModel
+    let model: AppModel
+    @Bindable var editor: SettingsEditorModel
     @State private var category: PreferencesCategory = .general
     @State private var diagnosticCategories: Set<DiagnosticCategory> = [.version]
     @State private var diagnosticSnapshot: PublicDiagnosticSnapshot?
@@ -56,7 +56,7 @@ struct SettingsEditor: View {
     private let presentationHeight: CGFloat
     var dismiss: () -> Void
     init(model: AppModel, editor: SettingsEditorModel, initialCategory: PreferencesCategory = .general, dismiss: @escaping () -> Void) {
-        self.model = model; self.editor = editor; self.dismiss = dismiss
+        self.model = model; _editor = Bindable(wrappedValue: editor); self.dismiss = dismiss
         _category = State(initialValue: initialCategory)
         let parentHeight = NSApplication.shared.mainWindow?.contentView?.bounds.height ?? 680
         presentationHeight = min(620, max(420, parentHeight - 60))
