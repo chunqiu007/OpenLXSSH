@@ -2,6 +2,11 @@
 
 更新：2026-11-22（Asia/Shanghai）。本文件记录 `main` 分支当前工程基线、验证结果与已知限制；**2.0.4 及以前的历史阶段工程日志与报告已完整归档于 Git 标签 `v2.0.4`（`ac8b967`）及提交 `084b043`**。
 
+## 2026-11-22　2.5 发布验证
+
+- 以 `a4ebf81` 的产品源码构建 arm64 Release，关闭调试信息生成并剥离符号。最终 LZMA 只读镜像已挂载核验主程序、版本、签名、架构、依赖和许可证。
+- 已复核最终视觉 51 项和操作流程 57 项均通过；重跑钥匙串专项 11 项均通过。较宽的应用回归记录有 249 项通过、2 项失败。一项在无宿主测试环境中访问尚未初始化的 NSApp，另一项依赖旧版主机表单控件及关闭预期，独立重跑仍失败。本轮未连接真实 SSH/SFTP 服务器，也未验证第二台 Mac 上的安装或升级。
+
 ## 2026-11-22 原生界面视觉更新
 
 - 保险箱、工作区标签、主机编辑器、新连接面板和 SFTP 使用统一的深青、雾绿与中性色。主机列表和卡片突出名称、端点和选中位置，连接面板按已保存主机数设置合适高度。
@@ -14,12 +19,12 @@
 - 工作分工与复核：UI-01 主机表单由 host_editor 起草、主会话接手完成；UI-02 新连接面板和 SFTP 接线由主会话完成。QA-01 由 ui_smoke 在临时 HOME、独立 bundle 的原生窗口执行。主会话复核 Swift 差异、窗口截图和测试结果。
 - `Scripts/build-app.sh Debug build-for-testing`、`Scripts/build-app.sh Release` 通过。`xcodebuild test-without-building` 运行本轮涉及的草稿、关闭、保险箱、双栏和会话路由用例，57 项通过。结果保留在 `DerivedData/UIIntuitionQA/flows.xcresult`。
 - 常规窗口与紧凑窗口已实测。覆盖粘贴 SSH 命令并填表、空表单取消、有修改时保留草稿、SFTP 保存返回、路径输入、⌘T 零个／一个／多个匹配与 Esc。截图保留在 `DerivedData/UIIntuitionQA/`。SSH 入口只用回环拒绝连接验证路由；真实远端认证和文件传输不在本轮复测范围。
-- 当前交付为本地 Release App，发布与双机验收状态沿用下方记录。
+- 该阶段交付为本地 Release App，2.5 发布验证见上方记录。
 
 ## 当前目标与交付基线
 
 - **产品定位**：Apple Silicon（arm64）/ macOS 26+ 原生轻量 SSH + SFTP 桌面客户端（Swift 6、SwiftUI + AppKit、静态 `libssh2 + OpenSSL`、SwiftTerm、GRDB/SQLite、现代本机 Keychain v2）。
-- **最新已发布包**：Release **2.0.4（build 7）**，标签 `v2.0.4`（`ac8b967`），`OpenLXSSH-2.0.4-arm64.dmg`（7,368,371 B，SHA-256 `37f7bc30d74b416c0980b4fdc1ea65c48fa79cf1eeefe86ac0a514c38fe2135c`），Developer ID 离线签名、未经 Apple 公证。
+- **最新已发布包**：Release **2.5（build 8）**，标签 `v2.5`，`OpenLXSSH-2.5-arm64.dmg`（6,365,425 B，SHA-256 `284fcc051ec2bba24b7b2a345000aa71e3256d8c953997da7d2647bb45b9bb43`），Developer ID 离线签名、未经 Apple 公证。
 - **活文档索引**：[需求说明](docs/requirements.md) · [架构说明](docs/architecture.md) · [用户指南](docs/user-guide.md) · [ADR-20261122](docs/adr/20261122-streamline-and-modern-keychain.md)。
 
 ## `main` 分支里程碑（M1–M6，位于 `v2.0.4` 之上）
@@ -46,8 +51,8 @@
 
 ## 已知限制与历史既有测试项（原样保留）
 
-- **未覆盖范围**：M1–M6 尚未连接真实远端 SSH/SFTP 服务器复测，尚未发布高于 2.0.4 的签名/公证 DMG，也未在第二台 Mac 上做安装/升级人工回归；为保护本机真实 `Application Support` 数据，未直接启动未隔离的 `OpenLXSSH.app`。
-- **Keychain v2 升级说明**：从 2.0.4（v1 命名空间）升级至 `main` 的 v2（`org.openlxssh.credentials.v2`）时，旧凭据不静默迁移，且 SSH 连接弹窗为「仅本次使用，不保存」；升级后如需重新记住密码，在「保险箱」编辑对应主机并勾选「记住密码」；如需重新记住加密私钥口令，在「密钥与凭据」选择对应私钥并点击「记住口令…」/「重新记住口令…」。
+- **未覆盖范围**：M1–M6 尚未连接真实远端 SSH/SFTP 服务器复测，也未在第二台 Mac 上做安装/升级人工回归；为保护本机真实 `Application Support` 数据，未直接启动未隔离的 `OpenLXSSH.app`。
+- **Keychain v2 升级说明**：从 2.0.4（v1 命名空间）升级至 2.5 的 v2（`org.openlxssh.credentials.v2`）时，旧凭据不静默迁移，且 SSH 连接弹窗为「仅本次使用，不保存」；升级后如需重新记住密码，在「保险箱」编辑对应主机并勾选「记住密码」；如需重新记住加密私钥口令，在「密钥与凭据」选择对应私钥并点击「记住口令…」/「重新记住口令…」。
 - **既有历史失败项（未改绿）**：
   - `InitialDirectoryTests.testNativeOwnerWithoutSFTPDoesNotResolveOrSendAnyBytes`（1 项，始于 `9e405ad`）。
   - `DualPaneFilesTests` 中 4 项旧计划审查用例。
@@ -55,4 +60,4 @@
 
 ## 下一步
 
-- M6 已提交为 `1d14b11`。后续如需发布新版本 DMG，递增版本号、执行真实 SSH/SFTP 与多窗口/分屏手工冒烟后，使用 `Scripts/package-release-candidate.py --build --sign "<Developer ID>"` 打包。
+- 在可用的隔离服务器和第二台 Mac 上复核 2.5 安装、升级、SSH 认证与 SFTP 传输，跟进上述两项应用回归失败。

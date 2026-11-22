@@ -4,11 +4,13 @@
 
 OpenLXSSH 是一款为 **Apple Silicon（M 系列芯片）Mac** 打造的轻量原生 **SSH 和 SFTP 客户端**，支持 **macOS 26 及以上版本**。应用使用 SwiftUI 和 AppKit 开发，无需 Electron 运行环境或云端账号。
 
-## 下载 Release 2.0.4
+## 下载 Release 2.5
 
-[下载 Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.0.4/OpenLXSSH-2.0.4-arm64.dmg) · [发布说明](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.0.4)
+[下载 Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.5/OpenLXSSH-2.5-arm64.dmg) · [发布说明](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.5)
 
-打开 DMG，将 OpenLXSSH 拖到「应用程序」，然后从「应用程序」启动。包内应用版本为 **2.0.4（构建号 7）**，使用 Developer ID 离线签名，未经 Apple 公证。
+打开 DMG，将 OpenLXSSH 拖到「应用程序」，然后从「应用程序」启动。包内应用版本为 **2.5（构建号 8）**，使用 Developer ID 离线签名，未经 Apple 公证。
+
+从 2.0.4 升级时，原先保存的密码和私钥口令不会自动迁移到新版钥匙串存储。需要继续记住密码时，请在「保险箱」编辑主机；私钥口令可在「密钥与凭据」中重新保存。
 
 ## 内存占用
 
@@ -16,8 +18,8 @@ OpenLXSSH 是一款为 **Apple Silicon（M 系列芯片）Mac** 打造的轻量�
 
 ## 主要功能
 
-- 用分组、标签和收藏管理主机，在独立的终端标签中保持多个 SSH 会话；当前 `main` 分支源码（尚未发布新 DMG）已新增原生终端分屏（`⌘D` / `⇧⌘D`）与多窗口工作区（`⌘N`）。
-- 支持密码和 SSH 密钥登录，以及服务器要求的 MFA 等交互式验证。支持将凭据保存到本机 macOS 钥匙串（`main` 分支已升级至现代 `LAContext` / Data Protection Keychain v2），并在连接时核对主机指纹。
+- 用分组、标签和收藏管理主机，在独立的终端标签中保持多个 SSH 会话；2.5 支持原生终端分屏（`⌘D` / `⇧⌘D`）与多窗口工作区（`⌘N`）。
+- 支持密码和 SSH 密钥登录，以及服务器要求的 MFA 等交互式验证。支持将凭据保存到本机 macOS 钥匙串，并在连接时核对主机指纹。
 - 通过 SFTP 双栏浏览本地和远端目录，上传或下载文件和文件夹，查看传输进度并处理同名冲突。
 - 登录跳板机后，在远端终端里手动执行第二次 `ssh`。SFTP 文件浏览器直接连接目标服务器。
 
@@ -25,7 +27,7 @@ OpenLXSSH 是一款为 **Apple Silicon（M 系列芯片）Mac** 打造的轻量�
 
 ## 帮忙测试
 
-1. 在 M 系列 Mac 上安装并启动 Release 2.0.4。添加一台有权限测试的主机，核对主机指纹，再用平时的认证方式连接。
+1. 在 M 系列 Mac 上安装并启动 Release 2.5。添加一台有权限测试的主机，核对主机指纹，再用平时的认证方式连接。
 2. 新建并切换多个终端标签。平时使用跳板机的话，可以试一下手动嵌套 SSH。
 3. 用 SFTP 上传和下载一个小测试文件，再试一次同名传输，检查「取消」「替换」「都保留」是否符合预期。
 
