@@ -58,7 +58,7 @@ struct SettingsEditor: View {
     init(model: AppModel, editor: SettingsEditorModel, initialCategory: PreferencesCategory = .general, dismiss: @escaping () -> Void) {
         self.model = model; _editor = Bindable(wrappedValue: editor); self.dismiss = dismiss
         _category = State(initialValue: initialCategory)
-        let parentHeight = NSApplication.shared.mainWindow?.contentView?.bounds.height ?? 680
+        let parentHeight = (NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow)?.contentView?.bounds.height ?? 680
         presentationHeight = min(620, max(420, parentHeight - 60))
     }
 

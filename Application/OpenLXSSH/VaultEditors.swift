@@ -45,7 +45,7 @@ struct VaultHostEditor: View {
         _closeRequest = closeRequest
         // Capture once per presentation. Reading window geometry from body would
         // feed sheet fitting back into itself while fields and errors update.
-        let parentHeight = NSApp.mainWindow?.contentView?.bounds.height ?? 720
+        let parentHeight = (NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow)?.contentView?.bounds.height ?? 720
         _presentationHeight = State(initialValue: min(680, max(420, parentHeight - 60)))
         _security = State(initialValue: SecurityViewModel(coordinator: app.security))
         let editor = VaultHostEditorModel(draft: VaultHostDraft(host: host, settings: app.settings, folderID: folderID,

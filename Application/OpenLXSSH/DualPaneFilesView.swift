@@ -98,7 +98,7 @@ struct DualPaneFilesView: View {
                 guard app.workspacePage == .sftp, request?.page == .sftp, request?.command == .search,
                       request == app.workspaceCommand,
                       dialog == nil, operationDialog == nil, pendingChange == nil,
-                      NSApp.modalWindow == nil, NSApp.mainWindow?.attachedSheet == nil else { return }
+                      NSApp.modalWindow == nil, (NSApp.keyWindow ?? NSApp.mainWindow)?.attachedSheet == nil else { return }
                 if activeSearchPane == .remote, files.state == .ready { remoteSearchFocusRequest = UUID() }
                 else { localSearchFocusRequest = UUID() }
             }

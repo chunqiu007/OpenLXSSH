@@ -430,6 +430,7 @@ struct AppIssue: Identifiable, Equatable {
     deinit { metadataObservation?.cancel(); reloadFlight?.task.cancel() }
 
     init(repository: any AppRepositoryProtocol, sessionRouter: (any SessionRouting)? = nil, security suppliedSecurity: SecurityCoordinator? = nil,
+         sessionEnvironment suppliedEnvironment: SessionEnvironment? = nil,
          location: AppDataLocation = .applicationSupport, sessionBuilder: (any SessionBuilding)? = nil,
          nativeCandidateBuilder suppliedCandidate: (any SessionBuilding)? = nil,
          filesConnector: (any FilesConnecting)? = nil, preferencesDefaults: UserDefaults? = nil,
@@ -438,7 +439,7 @@ struct AppIssue: Identifiable, Equatable {
         self.sessionRouter = sessionRouter; self.preferencesDefaults = preferencesDefaults
         let security = suppliedSecurity ?? SecurityCoordinator(repository: repository, location: location)
         self.security = security
-        let environment = SessionEnvironment(location: location); sessionEnvironment = environment
+        let environment = suppliedEnvironment ?? SessionEnvironment(location: location); sessionEnvironment = environment
         let selection = AppSessionBuilders(repository: repository, security: security, environment: environment,
                                            ordinary: sessionBuilder, prepared: suppliedCandidate)
         sessionBuilders = selection
@@ -1040,7 +1041,7 @@ enum DesktopHelp {
         窗口/列表等非秘密偏好由 macOS 偏好存储管理。终端输出与搜索只保留在当前标签内存，不录制、不在重启后恢复；不自动连接或重用旧认证回答。诊断预览不枚举这些目录、不读取文件内容或 Keychain。
         """
     static let shortcuts = """
-        ⌘T 新连接；⌘N 打开主窗口；⌘, 设置。
+        ⌘T 新连接；⌘N 新建窗口；⌘, 设置。
         ⌘W 关闭当前 SSH；在固定管理页关闭窗口。表单有未保存改动时先审核，固定标签不会被删除。
         ⌘1 保险箱；⌘2 SFTP；⌘⇧[ / ⌘⇧] 前一个 / 后一个标签。
         ⌘F 查找当前页：保险箱当前子页搜索、SFTP 当前栏筛选或当前终端查找。

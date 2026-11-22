@@ -1150,6 +1150,242 @@ extension OpenLXSSHAppTests {
         XCTAssertTrue(isolated.sessions.tabs.isEmpty); XCTAssertTrue(router.requests.isEmpty)
         await isolated.files.closeForWindow(); try await repository.close()
     }
+
+    func testMultiWindowSharedInfrastructureKeepsWorkspaceSessionsSplitsAndSFTPIndependent() async throws {
+        let (repository, directory) = try repository()
+        let location = AppDataLocation.isolated(directory)
+        let security = SecurityCoordinator(repository: repository, location: location, credentials: FakeCredentials())
+        let environment = SessionEnvironment(location: location)
+        let remoteRoot = try AppDataLocation.canonical(directory).appendingPathComponent("multi-window-sftp", isDirectory: true)
+        try FileManager.default.createDirectory(at: remoteRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+
+        let hostA = sample("multi-window-A")
+        let hostB = sample("multi-window-B")
+        try await repository.apply([.insertHost(hostA), .insertHost(hostB)])
+
+        let connector1 = AppModelFilesConnector(root: remoteRoot)
+        let connector2 = AppModelFilesConnector(root: remoteRoot)
+        let model1 = AppModel(
+            repository: repository,
+            security: security,
+            sessionEnvironment: environment,
+            location: location,
+            sessionBuilder: WindowTabsLayoutBuilder(host: hostA),
+            filesConnector: connector1
+        )
+        let model2 = AppModel(
+            repository: repository,
+            security: security,
+            sessionEnvironment: environment,
+            location: location,
+            sessionBuilder: WindowTabsLayoutBuilder(host: hostB),
+            filesConnector: connector2
+        )
+        addTeardownBlock {
+            await model1.sessions.closeAll()
+            await model2.sessions.closeAll()
+            await model1.files.closeForWindow()
+            await model2.files.closeForWindow()
+            try await security.close()
+            try await repository.close()
+        }
+
+        XCTAssertTrue(model1.sessionEnvironment === model2.sessionEnvironment)
+        XCTAssertTrue(model1.security === model2.security)
+        XCTAssertTrue(DesktopHelp.shortcuts.contains("⌘N 新建窗口"))
+        XCTAssertTrue(awaiting: await model1.reload())
+        XCTAssertTrue(awaiting: await model2.reload())
+
+        // Window 1 opens a session tab and splits horizontally.
+        model1.requestSession(hostID: hostA.id, mode: .newSession)
+        let firstTab = try XCTUnwrap(model1.sessions.selectedTab)
+        await firstTab.preparation?.value
+        let splitTab = try XCTUnwrap(model1.sessions.splitCurrentSession(axis: .horizontal))
+        await splitTab.preparation?.value
+        XCTAssertEqual(model1.sessions.tabs.count, 2)
+        XCTAssertTrue(model1.sessions.isSplitActive)
+        XCTAssertEqual(model1.workspacePage, .session(splitTab.id))
+
+        // Window 2 independently switches to SFTP for hostB and connects.
+        model2.selectedHostID = hostB.id
+        model2.showWorkspace(.sftp)
+        await model2.files.waitUntilCurrentWorkCompletes()
+        model2.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await model2.files.waitUntilCurrentWorkCompletes()
+
+        XCTAssertEqual(model2.workspacePage, .sftp)
+        XCTAssertEqual(model2.files.state, .ready)
+        XCTAssertEqual(model2.files.selectedHost?.id, hostB.id)
+        XCTAssertTrue(model2.sessions.tabs.isEmpty)
+        XCTAssertFalse(model2.sessions.isSplitActive)
+
+        // Window 1 remains unaffected by Window 2's page and SFTP state.
+        XCTAssertEqual(model1.workspacePage, .session(splitTab.id))
+        XCTAssertEqual(model1.sessions.tabs.count, 2)
+        XCTAssertTrue(model1.sessions.isSplitActive)
+        XCTAssertEqual(model1.files.state, .disconnected)
+        XCTAssertNil(model1.files.selectedHost)
+    }
+
+    func testClosingSecondaryWindowLeavesPrimaryWindowSessionsSFTPAndSharedRepositoryIntact() async throws {
+        _ = NSApplication.shared
+        let (repository, directory) = try repository()
+        let location = AppDataLocation.isolated(directory)
+        let security = SecurityCoordinator(repository: repository, location: location, credentials: FakeCredentials())
+        let environment = SessionEnvironment(location: location)
+        let remoteRoot = try AppDataLocation.canonical(directory).appendingPathComponent("multi-window-close", isDirectory: true)
+        try FileManager.default.createDirectory(at: remoteRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+
+        let hostA = sample("primary-host")
+        let hostB = sample("secondary-host")
+        try await repository.apply([.insertHost(hostA), .insertHost(hostB)])
+
+        let primary = AppModel(
+            repository: repository,
+            security: security,
+            sessionEnvironment: environment,
+            location: location,
+            sessionBuilder: WindowTabsLayoutBuilder(host: hostA),
+            filesConnector: AppModelFilesConnector(root: remoteRoot)
+        )
+        let secondary = AppModel(
+            repository: repository,
+            security: security,
+            sessionEnvironment: environment,
+            location: location,
+            sessionBuilder: WindowTabsLayoutBuilder(host: hostB),
+            filesConnector: AppModelFilesConnector(root: remoteRoot)
+        )
+
+        let window1 = NSWindow(
+            contentRect: NSRect(x: -5000, y: -5000, width: 1000, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let window2 = NSWindow(
+            contentRect: NSRect(x: -4960, y: -5040, width: 1000, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window1.isReleasedWhenClosed = false
+        window2.isReleasedWhenClosed = false
+        WorkspaceWindowChrome.configure(window1)
+        WorkspaceWindowChrome.configure(window2)
+        window1.contentView = NSHostingView(rootView: MainView(model: primary))
+        window2.contentView = NSHostingView(rootView: MainView(model: secondary))
+        defer {
+            window1.orderOut(nil); window1.contentView = nil; window1.close()
+            window2.orderOut(nil); window2.contentView = nil; window2.close()
+        }
+        addTeardownBlock {
+            await primary.sessions.closeAll()
+            await secondary.sessions.closeAll()
+            await primary.files.closeForWindow()
+            await secondary.files.closeForWindow()
+            try await security.close()
+            try await repository.close()
+        }
+
+        XCTAssertTrue(awaiting: await primary.reload())
+        XCTAssertTrue(awaiting: await secondary.reload())
+
+        // Both windows open active SFTP and an SSH session tab.
+        primary.selectedHostID = hostA.id
+        primary.showWorkspace(.sftp)
+        await primary.files.waitUntilCurrentWorkCompletes()
+        primary.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await primary.files.waitUntilCurrentWorkCompletes()
+        primary.requestSession(hostID: hostA.id, mode: .newSession)
+        let primaryTab = try XCTUnwrap(primary.sessions.selectedTab)
+        await primaryTab.preparation?.value
+
+        secondary.selectedHostID = hostB.id
+        secondary.showWorkspace(.sftp)
+        await secondary.files.waitUntilCurrentWorkCompletes()
+        secondary.files.connect(.init(primary: .manual(.init(utf8: UUID().uuidString))))
+        await secondary.files.waitUntilCurrentWorkCompletes()
+        secondary.requestSession(hostID: hostB.id, mode: .newSession)
+        let secondaryTab = try XCTUnwrap(secondary.sessions.selectedTab)
+        await secondaryTab.preparation?.value
+
+        XCTAssertEqual(primary.files.state, .ready)
+        XCTAssertEqual(secondary.files.state, .ready)
+        XCTAssertEqual(primary.sessions.tabs.count, 1)
+        XCTAssertEqual(secondary.sessions.tabs.count, 1)
+
+        // Close window 2 only.
+        let closeResult = await secondary.lifecycle.closeConnectionsResult(cancelTransfers: true, retainAdmissionFreeze: true)
+        XCTAssertTrue(closeResult.complete)
+        secondary.windowClosed()
+        window2.orderOut(nil)
+        window2.contentView = nil
+        window2.close()
+        secondary.lifecycle.resumeAfterContinue()
+
+        XCTAssertTrue(secondary.sessions.tabs.isEmpty)
+        XCTAssertEqual(secondary.files.state, .disconnected)
+        XCTAssertEqual(secondary.workspacePage, .vault)
+
+        // Window 1's active session, SFTP, and shared repository remain fully intact and writable.
+        XCTAssertEqual(primary.sessions.tabs.map(\.id), [primaryTab.id])
+        XCTAssertEqual(primary.workspacePage, .session(primaryTab.id))
+        XCTAssertEqual(primary.files.state, .ready)
+        XCTAssertEqual(primary.files.selectedHost?.id, hostA.id)
+        XCTAssertFalse(primary.lifecycle.terminating)
+
+        let addedAfterClose = sample("added-after-window2-close")
+        XCTAssertTrue(awaiting: await primary.saveHost(addedAfterClose, isNew: true))
+        XCTAssertTrue(primary.connectionHosts.contains(where: { $0.id == addedAfterClose.id }))
+    }
+
+    func testMultiWindowRepositoryCommitSynchronizesLiveAcrossWindows() async throws {
+        let (repository, directory) = try repository()
+        let location = AppDataLocation.isolated(directory)
+        let security = SecurityCoordinator(repository: repository, location: location, credentials: FakeCredentials())
+        let environment = SessionEnvironment(location: location)
+
+        let window1 = AppModel(repository: repository, security: security, sessionEnvironment: environment, location: location)
+        let window2 = AppModel(repository: repository, security: security, sessionEnvironment: environment, location: location)
+        let vault2 = VaultDesktopModel(app: window2)
+        addTeardownBlock {
+            await window1.files.closeForWindow()
+            await window2.files.closeForWindow()
+            try await security.close()
+            try await repository.close()
+        }
+
+        XCTAssertTrue(awaiting: await window1.reload())
+        XCTAssertTrue(awaiting: await window2.reload())
+        XCTAssertTrue(awaiting: await vault2.load())
+        XCTAssertTrue(window2.hosts.isEmpty)
+        XCTAssertTrue(vault2.hosts.isEmpty)
+
+        // Save a new host in window 1; window 2 and its VaultDesktopModel receive live updates via metadataChanges().
+        let created = sample("synced-across-windows")
+        XCTAssertTrue(awaiting: await window1.saveHost(created, isNew: true))
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < deadline {
+            if window2.hosts.contains(where: { $0.id == created.id })
+                && window2.connectionHosts.contains(where: { $0.id == created.id })
+                && vault2.hosts.contains(where: { $0.id == created.id }) {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(window2.hosts.contains(where: { $0.id == created.id }))
+        XCTAssertTrue(window2.connectionHosts.contains(where: { $0.id == created.id }))
+        XCTAssertTrue(vault2.hosts.contains(where: { $0.id == created.id }))
+
+        // Explicit reload on window 2 also reflects updates committed by window 1.
+        var renamed = created
+        renamed.name = "synced-renamed"
+        XCTAssertTrue(awaiting: await window1.saveHost(renamed, isNew: false))
+        XCTAssertTrue(awaiting: await window2.reload())
+        XCTAssertEqual(window2.hosts.first(where: { $0.id == created.id })?.name, "synced-renamed")
+    }
 }
 
 // Evaluate async results before passing them into XCTest's synchronous autoclosures.

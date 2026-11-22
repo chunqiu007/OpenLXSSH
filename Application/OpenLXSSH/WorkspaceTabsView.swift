@@ -430,7 +430,7 @@ struct WorkspaceTabBar: View {
         }
     }
     private func showConnectionInfo(_ tab: SessionTab) {
-        guard let window = NSApp.mainWindow, window.attachedSheet == nil else { return }
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow, window.attachedSheet == nil else { return }
         let alert = NSAlert(); alert.messageText = sessions.displayTitle(for: tab)
         alert.informativeText = sessions.connectionInfo(for: tab)
         alert.addButton(withTitle: "关闭"); NativeSheetCloseRouting.register(alert); alert.beginSheetModal(for: window)

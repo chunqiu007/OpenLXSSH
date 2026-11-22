@@ -107,7 +107,7 @@ struct VaultWorkspacePage: View {
     private func consumeCommand(_ request: WorkspaceCommandRequest?) {
         guard app.workspacePage == .vault, let request, request == app.workspaceCommand else { return }
         if request.command == .search {
-            guard request.page == .vault, NSApp.modalWindow == nil, NSApp.mainWindow?.attachedSheet == nil else { return }
+            guard request.page == .vault, NSApp.modalWindow == nil, (NSApp.keyWindow ?? NSApp.mainWindow)?.attachedSheet == nil else { return }
         }
         if presentations.item != nil {
             if request.command != .search { _ = presentations.attemptClose() }

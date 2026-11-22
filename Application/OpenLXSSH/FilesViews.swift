@@ -56,8 +56,8 @@ struct FilesPanelView: View {
             FilesEntryTable(entries: model.entries, selected: $selected, dropEnabled: model.canTransfer,
                 drop: { model.acceptFileDrop($0) }, enter: { model.enter($0) }).frame(minHeight: 180)
             HStack {
-                NativeButton(title: "上传文件／目录…", id: "files.upload", enabled: model.canTransfer) { model.chooseUploads(window: NSApp.mainWindow) }.fixedSize()
-                NativeButton(title: "下载所选…", id: "files.download", enabled: model.canTransfer && !selected.isEmpty) { model.chooseDownloads(model.entries.filter { selected.contains($0.name) }, window: NSApp.mainWindow) }.fixedSize()
+                NativeButton(title: "上传文件／目录…", id: "files.upload", enabled: model.canTransfer) { model.chooseUploads(window: NSApp.keyWindow ?? NSApp.mainWindow) }.fixedSize()
+                NativeButton(title: "下载所选…", id: "files.download", enabled: model.canTransfer && !selected.isEmpty) { model.chooseDownloads(model.entries.filter { selected.contains($0.name) }, window: NSApp.keyWindow ?? NSApp.mainWindow) }.fixedSize()
             }
             Text("可将 Finder 文件／目录拖入列表。取消远端 I/O 可能关闭共享 SFTP 服务，使使用该服务的其他任务失败；不自动重连或续传。").font(.caption2).foregroundStyle(.secondary)
             HStack {

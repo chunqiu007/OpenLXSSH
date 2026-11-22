@@ -742,7 +742,7 @@ struct AuthenticationChallengeView: View {
     var dismiss: () -> Void
     init(tab: SessionTab, controller: SessionController, prompt: SessionAuthenticationPrompt, dismiss: @escaping () -> Void) {
         self.tab = tab; self.controller = controller; self.prompt = prompt; self.dismiss = dismiss
-        let parentHeight = NSApplication.shared.mainWindow?.contentView?.bounds.height ?? 720
+        let parentHeight = (NSApp.keyWindow?.sheetParent ?? NSApp.keyWindow ?? NSApp.mainWindow)?.contentView?.bounds.height ?? 720
         let expanded: Bool
         if case .keyboard(_, _, let fields) = prompt.payload { expanded = fields.count > 2 } else { expanded = false }
         _presentationHeight = State(initialValue: expanded ? min(680, max(420, parentHeight - 60)) : 320)
