@@ -51,7 +51,7 @@ struct VaultHostList: NSViewRepresentable {
         guard let table = coordinator.table else { return }
         let card = model.displayMode == .cards
         table.intercellSpacing = NSSize(width: 0, height: card ? 7 : 2)
-        table.rowHeight = card ? 88 : 54
+        table.rowHeight = card ? 92 : 58
         table.reloadData()
         table.selectRowIndexes(IndexSet(model.hosts.indices.filter { model.selectedIDs.contains(model.hosts[$0].id) }), byExtendingSelection: false)
         coordinator.updating = false
@@ -157,8 +157,8 @@ private struct VaultHostRow: View {
     private var tags: [HostTag] { metadata?.tags ?? [] }
 
     private var rowBackground: Color {
-        if selected { return DesktopStyle.selection }
-        if hovered { return DesktopStyle.panelElevated }
+        if selected { return DesktopStyle.brandSurface }
+        if hovered { return DesktopStyle.well }
         return card ? DesktopStyle.panel : .clear
     }
 
@@ -167,18 +167,25 @@ private struct VaultHostRow: View {
             if card { cardContent }
             else { listContent }
         }
-        .padding(.horizontal, card ? 14 : 10)
+        .padding(.horizontal, card ? 16 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: card ? 10 : 6))
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: card ? 12 : 8))
         .overlay {
             if card {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(selected ? Color.accentColor : DesktopStyle.border, lineWidth: selected ? 1.5 : 1)
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(selected ? DesktopStyle.brand.opacity(0.65) : DesktopStyle.border, lineWidth: 1)
             }
         }
         .overlay(alignment: .leading) {
-            if selected && !card {
-                Capsule().fill(Color.accentColor).frame(width: 3, height: 24)
+            if selected {
+                Capsule().fill(DesktopStyle.brand).frame(width: 3, height: card ? 34 : 20)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if !card && !selected && !hovered {
+                Rectangle().fill(DesktopStyle.border).frame(height: 0.5)
+                    .padding(.leading, 56).padding(.trailing, 12)
+                    .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .onHover { hovered = $0 }
@@ -189,10 +196,7 @@ private struct VaultHostRow: View {
 
     private var listContent: some View {
         HStack(spacing: 10) {
-            Image(systemName: "server.rack")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(selected ? Color.accentColor : .secondary)
-                .frame(width: 22).accessibilityHidden(true)
+            DesktopGlyph(systemName: "server.rack", size: 34)
             VStack(alignment: .leading, spacing: 4) {
                 name
                 endpointLabel
@@ -209,10 +213,7 @@ private struct VaultHostRow: View {
 
     private var cardContent: some View {
         HStack(spacing: 12) {
-            Image(systemName: "server.rack").font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Color.accentColor).frame(width: 40, height: 40)
-                .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityHidden(true)
+            DesktopGlyph(systemName: "server.rack", size: 44)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     name
@@ -234,7 +235,7 @@ private struct VaultHostRow: View {
 
     private var name: some View {
         HStack(spacing: 5) {
-            Text(verbatim: host.name).font(.system(size: card ? 15 : 13, weight: .semibold))
+            Text(verbatim: host.name).font(.system(size: card ? 16 : 14, weight: .semibold))
                 .lineLimit(1).truncationMode(.tail)
             if host.isFavorite {
                 Image(systemName: "star.fill").font(.caption2)
@@ -244,7 +245,7 @@ private struct VaultHostRow: View {
     }
 
     private var endpointLabel: some View {
-        Text(verbatim: endpoint).font(.system(size: 11, design: .monospaced))
+        Text(verbatim: endpoint).font(.system(size: 12, design: .monospaced))
             .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
     }
 }

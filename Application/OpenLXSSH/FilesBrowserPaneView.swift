@@ -34,11 +34,11 @@ struct FilesPaneHeaderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: localSide ? "desktopcomputer" : "server.rack")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 24, height: 24)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 6))
+                Image(systemName: localSide ? "desktopcomputer" : "externaldrive.connected.to.line.below")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(DesktopStyle.brand)
+                    .frame(width: 23)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)

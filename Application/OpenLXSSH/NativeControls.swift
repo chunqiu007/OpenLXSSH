@@ -16,7 +16,7 @@ import OpenLXSSHCore
     }
 
     static func background(terminal: Bool) -> NSColor {
-        NSColor(sessionHex: terminal ? "#1B212E" : "#252D3D")
+        terminal ? NSColor(sessionHex: "#1B212E") : DesktopStyle.managementChromeColor
     }
 }
 
@@ -248,18 +248,21 @@ enum DesktopStyle {
     static let barHeight: CGFloat = 48
     static let spacing: CGFloat = 8
     static let cornerRadius: CGFloat = 8
-    static let panel = adaptive(light: "#FFFFFF", dark: "#222936")
-    static let panelElevated = adaptive(light: "#F8FAFC", dark: "#2A3342")
-    static let well = adaptive(light: "#EEF1F6", dark: "#141922")
-    static let background = adaptive(light: "#F5F7FA", dark: "#1A202B")
-    static let sidebar = adaptive(light: "#ECEFF4", dark: "#151B24")
-    static let border = adaptive(light: "#E2E6EE", dark: "#2F394A")
-    static let borderStrong = adaptive(light: "#CFD6E3", dark: "#3D495E")
+    static let panel = adaptive(light: "#FEFEFC", dark: "#242C2D")
+    static let panelElevated = adaptive(light: "#E8EFEC", dark: "#303B3B")
+    static let well = adaptive(light: "#F0F3F0", dark: "#1B2223")
+    static let background = adaptive(light: "#F8F9F6", dark: "#1B2122")
+    static let sidebar = adaptive(light: "#EAF0ED", dark: "#171E1F")
+    static let border = adaptive(light: "#D9E1DD", dark: "#384342")
+    static let borderStrong = adaptive(light: "#BECBC5", dark: "#50605C")
     static let separator = Color.primary.opacity(0.08)
-    static let selection = Color.accentColor.opacity(0.13)
+    static let brand = adaptive(light: "#226C60", dark: "#89CDB8")
+    static let brandSurface = adaptive(light: "#DCECE5", dark: "#263E37")
+    static let selection = adaptive(light: "#D6E8E0", dark: "#2E4740")
     static let iconSurface = Color.accentColor.opacity(0.11)
-    static let managementBar = Color(nsColor: NSColor(sessionHex: "#252D3D"))
-    static let managementActive = Color(nsColor: NSColor(sessionHex: "#434F65"))
+    static let managementChromeColor = NSColor(sessionHex: "#1B3335")
+    static let managementBar = Color(nsColor: managementChromeColor)
+    static let managementActive = Color(nsColor: NSColor(sessionHex: "#365450"))
     static let terminalBackground = Color(nsColor: NSColor(sessionHex: "#141821"))
     static let terminalChrome = Color(nsColor: NSColor(sessionHex: "#1B212E"))
     static let terminalActive = Color(nsColor: NSColor(sessionHex: "#2D374B"))
@@ -281,6 +284,33 @@ enum DesktopStyle {
 
     static func hoverTab(terminal: Bool) -> Color {
         activeTab(terminal: terminal).opacity(0.55)
+    }
+}
+
+/// Shared SF Symbol treatment for workspace destinations and sheet headers.
+struct DesktopGlyph: View {
+    let systemName: String
+    var size: CGFloat = 36
+    var prominent = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+        Image(systemName: systemName)
+            .symbolRenderingMode(.hierarchical)
+            .font(.system(size: size * 0.48, weight: .medium))
+            .foregroundStyle(prominent ? .white : DesktopStyle.brand)
+            .frame(width: size, height: size)
+            .background {
+                if prominent {
+                    shape.fill(LinearGradient(colors: [Color(nsColor: NSColor(sessionHex: "#47796D")),
+                                                       DesktopStyle.managementBar],
+                                              startPoint: .topLeading, endPoint: .bottomTrailing))
+                } else {
+                    shape.fill(DesktopStyle.brandSurface)
+                }
+            }
+            .overlay { shape.strokeBorder(prominent ? Color.white.opacity(0.16) : DesktopStyle.brand.opacity(0.12)) }
+            .accessibilityHidden(true)
     }
 }
 

@@ -77,19 +77,15 @@ struct VaultHostEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "server.rack")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 34, height: 34)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
-                Text(draft.isNew ? "新建主机" : "编辑主机").font(.title3.weight(.semibold))
+                DesktopGlyph(systemName: "server.rack", size: 36, prominent: true)
+                Text(draft.isNew ? "新建主机" : "编辑主机").font(.system(size: 21, weight: .semibold))
                 Spacer()
                 Button { requestClose() } label: { Image(systemName: "xmark").frame(width: 22, height: 22) }
                     .buttonStyle(.borderless).help("关闭").accessibilityLabel("关闭主机编辑")
-            }.padding(.horizontal, 20).padding(.vertical, 16)
+            }.padding(.horizontal, 20).padding(.vertical, 14).background(DesktopStyle.panel)
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     section("连接信息", icon: "terminal") {
                         HStack(alignment: .top, spacing: 12) {
                             field("服务器地址", key: "address", text: draftInput.configuration.address,
@@ -144,35 +140,13 @@ struct VaultHostEditor: View {
                         }
                         Text("如需验证码或其他验证，连接时会提示。").font(.caption).foregroundStyle(.secondary)
                     }
-                    organizationSection
-                    DisclosureGroup(isExpanded: $advanced) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 6) {
-                                Text("快速预设").font(.caption).foregroundStyle(.secondary)
-                                ForEach([("高稳 15 秒", "15", "3"), ("标准 30 秒", "30", "3"), ("省电 60 秒", "60", "3"), ("关闭", "0", "3")], id: \.0) { label, iv, cnt in
-                                    let active = draftInput.interval.wrappedValue == iv && draftInput.count.wrappedValue == cnt
-                                    Button(label) {
-                                        draftInput.interval.wrappedValue = iv
-                                        draftInput.count.wrappedValue = cnt
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .tint(active ? .accentColor : .secondary)
-                                }
-                            }
-                            field("TCP 保活间隔（秒）", key: "interval", text: draftInput.interval, next: "count")
-                            field("TCP 失败探测次数", key: "count", text: draftInput.count)
-                            Text("设置仅对新连接生效。间隔为 0 时关闭 TCP 保活。").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.top, 10)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text("高级 · 长连接保活")
-                            Spacer()
-                            Text(keepaliveSummary).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.padding(16)
-                        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+                    VStack(spacing: 0) {
+                        organizationSection
+                        Divider().padding(.leading, 16)
+                        keepaliveSection
+                    }
+                    .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(DesktopStyle.border).allowsHitTesting(false) }
                     if !canConnect { Text("当前编辑器暂时无法发起连接。可先保存配置后从主机列表连接；未记住的本次输入会在关闭后清除。").font(.caption).foregroundStyle(.secondary) }
                 }.padding(20).disabled(!editor.canEdit)
             }.frame(minHeight: 0, maxHeight: .infinity)
@@ -199,7 +173,7 @@ struct VaultHostEditor: View {
                     Button("保存并连接") { Task { _ = await save(connect: true) } }.buttonStyle(.borderedProminent)
                         .disabled(writing || !validForSave || !canConnect)
                 }
-            }.padding(16)
+            }.padding(.horizontal, 20).padding(.vertical, 14).background(DesktopStyle.panel)
         }.frame(width: 500, height: presentationHeight)
         .background(DesktopStyle.background)
         .defaultFocus($focusedField, "address")
@@ -301,9 +275,37 @@ struct VaultHostEditor: View {
                 }
             }
         }
-        .padding(16)
-        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    private var keepaliveSection: some View {
+        DisclosureGroup(isExpanded: $advanced) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Text("快速预设").font(.caption).foregroundStyle(.secondary)
+                    ForEach([("高稳 15 秒", "15", "3"), ("标准 30 秒", "30", "3"), ("省电 60 秒", "60", "3"), ("关闭", "0", "3")], id: \.0) { label, iv, cnt in
+                        let active = draftInput.interval.wrappedValue == iv && draftInput.count.wrappedValue == cnt
+                        Button(label) {
+                            draftInput.interval.wrappedValue = iv
+                            draftInput.count.wrappedValue = cnt
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(active ? .accentColor : .secondary)
+                    }
+                }
+                field("TCP 保活间隔（秒）", key: "interval", text: draftInput.interval, next: "count")
+                field("TCP 失败探测次数", key: "count", text: draftInput.count)
+                Text("设置仅对新连接生效。间隔为 0 时关闭 TCP 保活。").font(.caption).foregroundStyle(.secondary)
+            }.padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Text("高级 · 长连接保活")
+                Spacer()
+                Text(keepaliveSummary).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
     }
 
     private var keepaliveSummary: String {
@@ -357,9 +359,10 @@ struct VaultHostEditor: View {
     }
     private func section<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Image(systemName: icon).foregroundStyle(DesktopStyle.brand).accessibilityHidden(true)
+                Text(title)
+            }.font(.system(size: 13, weight: .semibold))
             content()
         }
         .padding(16)
@@ -369,7 +372,7 @@ struct VaultHostEditor: View {
     }
     private func field(_ title: String, key: String, text: Binding<String>, placeholder: String? = nil, next: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
             TextField(title, text: text, prompt: Text(placeholder ?? title))
                 .textFieldStyle(.roundedBorder)
                 .focused($focusedField, equals: key)

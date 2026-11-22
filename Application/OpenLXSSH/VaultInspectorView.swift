@@ -25,34 +25,30 @@ struct VaultInspectorView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "server.rack")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 36, height: 36)
-                            .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
-                        Text(host.name)
-                            .font(.system(size: 18, weight: .semibold))
-                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        if host.isFavorite {
-                            Image(systemName: "star.fill").font(.caption)
-                                .foregroundStyle(.orange).accessibilityLabel("已收藏")
+                    VStack(alignment: .leading, spacing: 12) {
+                        DesktopGlyph(systemName: "server.rack", size: 42)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(verbatim: host.name)
+                                .font(.system(size: 21, weight: .semibold))
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            if host.isFavorite {
+                                Image(systemName: "star.fill").font(.caption)
+                                    .foregroundStyle(.orange).accessibilityLabel("已收藏")
+                            }
                         }
-                    }
-                    detailSection("地址") {
                         HStack(spacing: 6) {
                             Text(verbatim: host.vaultEndpoint).font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
                                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityLabel("地址 " + host.vaultEndpoint)
                             Button { onCommand(.copyEndpoint(host.id)) } label: {
                                 Image(systemName: "doc.on.doc").frame(width: 20, height: 20)
                             }
                             .buttonStyle(.borderless).help("复制端点").accessibilityLabel("复制端点")
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(DesktopStyle.well, in: RoundedRectangle(cornerRadius: 7))
                     }
                     Divider()
-                    detailSection("SSH") {
+                    detailSection("SSH", symbol: "terminal") {
                         DesktopKeyValueRow(label: "用户名", value: host.username, monospaced: true)
                         DesktopKeyValueRow(label: "端口", value: String(host.port), monospaced: true)
                         DesktopKeyValueRow(label: "认证方式", value: host.vaultAuthenticationLabel)
@@ -63,7 +59,7 @@ struct VaultInspectorView: View {
                         }
                     }
                     Divider()
-                    detailSection("常规") {
+                    detailSection("常规", symbol: "folder") {
                         DesktopKeyValueRow(label: "分组", value: host.folderID.map(model.path(for:)) ?? "未分组")
                         if let tags = model.metadata(for: host.id)?.tags, !tags.isEmpty {
                             HStack(spacing: 8) {
@@ -71,7 +67,7 @@ struct VaultInspectorView: View {
                                 ScrollView(.horizontal) {
                                     HStack(spacing: 5) {
                                         ForEach(tags) { tag in
-                                            DesktopBadge(text: tag.name, color: .accentColor, fill: DesktopStyle.iconSurface)
+                                            DesktopBadge(text: tag.name, color: DesktopStyle.brand, fill: DesktopStyle.brandSurface)
                                         }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -90,7 +86,7 @@ struct VaultInspectorView: View {
                             DesktopKeyValueRow(label: "最近认证成功", value: host.lastConnectedAt?.formatted() ?? "从未连接")
                         }.padding(.top, 8)
                     }.font(.system(size: 12, weight: .medium))
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(.horizontal, 18).padding(.vertical, 20).frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             HStack(spacing: 8) {
@@ -103,9 +99,13 @@ struct VaultInspectorView: View {
         }.frame(maxHeight: .infinity).background(DesktopStyle.panel)
     }
 
-    private func detailSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+    private func detailSection<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol).foregroundStyle(DesktopStyle.brand).accessibilityHidden(true)
+                Text(title)
+            }
+            .font(.system(size: 12, weight: .semibold))
             content().font(.system(size: 12))
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

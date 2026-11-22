@@ -25,14 +25,13 @@ struct VaultSidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
-                Image(systemName: "terminal").font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.accentColor).frame(width: 34, height: 34)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
+                DesktopGlyph(systemName: "terminal", size: 36, prominent: true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("OpenLXSSH").font(.system(size: 14, weight: .semibold))
+                    Text("OpenLXSSH").font(.system(size: 16, weight: .semibold, design: .rounded)).fixedSize()
                     Text("本地保险箱").font(.caption).foregroundStyle(.secondary)
                 }
-            }.padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 16)
+            }.padding(.horizontal, 15).padding(.top, 20).padding(.bottom, 11)
+            Divider().padding(.horizontal, 15).padding(.bottom, 7)
             ScrollView {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("主机").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
@@ -43,18 +42,18 @@ struct VaultSidebarView: View {
                     HStack {
                         Text("分组").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         Spacer()
-                        Button(action: onNewRootFolder) { Image(systemName: "plus") }
+                        Button(action: onNewRootFolder) { Image(systemName: "plus").frame(width: 20, height: 20).contentShape(Rectangle()) }
                             .buttonStyle(.plain).help("新建根分组").accessibilityLabel("新建根分组")
-                    }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 5)
+                    }.padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 2)
                     VaultFolderTree(model: model, parentID: nil, depth: 0, select: { onSelectSection(.folder($0)) },
                         edit: onEditFolder, add: onAddChildFolder, newHost: onNewHostInFolder,
                         importMove: onImportMove, remove: onDeleteFolder).padding(.horizontal, 6)
                     HStack {
                         Text("标签").help("多选标签时，同时匹配所选标签").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         Spacer()
-                        Button(action: onNewTag) { Image(systemName: "plus") }
+                        Button(action: onNewTag) { Image(systemName: "plus").frame(width: 20, height: 20).contentShape(Rectangle()) }
                             .buttonStyle(.plain).help("新建标签").accessibilityLabel("新建标签")
-                    }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 5)
+                    }.padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 2)
                     ForEach(model.tags) { tag in
                         Button {
                             _ = model.performManagementNavigation {
@@ -64,7 +63,7 @@ struct VaultSidebarView: View {
                         } label: {
                             HStack { Image(systemName: model.tagFilter.contains(tag.id) ? "checkmark.circle.fill" : "tag"); Text(tag.name).lineLimit(1); Spacer() }
                                 .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 7)
-                                .background(model.tagFilter.contains(tag.id) ? DesktopStyle.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
+                                .background(model.tagFilter.contains(tag.id) ? DesktopStyle.brandSurface : .clear, in: RoundedRectangle(cornerRadius: 7))
                                 .contentShape(Rectangle())
                         }.buttonStyle(.plain).padding(.horizontal, 6)
                         .contextMenu {
@@ -114,7 +113,7 @@ private struct VaultFolderTree: View {
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }.padding(.vertical, 7).padding(.leading, CGFloat(depth * 12 + 6)).padding(.trailing, 6)
-                    .background(model.section == .folder(folder.id) ? DesktopStyle.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
+                    .background(model.section == .folder(folder.id) ? DesktopStyle.brandSurface : .clear, in: RoundedRectangle(cornerRadius: 7))
                     .help(model.folderLabel(folder))
                     .onDrop(of: [.text], isTargeted: nil) { providers in importMove(providers, folder.id) }
                     .contextMenu {
@@ -145,7 +144,7 @@ private struct VaultSidebarNavButton: View {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: active ? .semibold : .regular))
                     .frame(width: 18)
-                    .foregroundStyle(active ? Color.accentColor : .secondary)
+                    .foregroundStyle(active ? DesktopStyle.brand : .secondary)
                 Text(title)
                     .font(.system(size: 13, weight: active ? .semibold : .regular))
                     .lineLimit(1)
@@ -153,19 +152,19 @@ private struct VaultSidebarNavButton: View {
                 if let count, count > 0 {
                     Text("\(count)")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
-                        .foregroundStyle(active ? Color.accentColor : .secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(active ? Color.accentColor.opacity(0.14) : DesktopStyle.separator, in: Capsule())
+                        .foregroundStyle(active ? DesktopStyle.brand : .secondary)
+                        .padding(.trailing, 2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(active ? DesktopStyle.selection : (hovered ? DesktopStyle.panelElevated : .clear), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(active ? Color.accentColor.opacity(0.28) : .clear)
-            )
+            .background(active ? DesktopStyle.brandSurface : (hovered ? DesktopStyle.panelElevated : .clear), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .leading) {
+                if active {
+                    Capsule().fill(DesktopStyle.brand).frame(width: 3, height: 15)
+                        .accessibilityHidden(true).allowsHitTesting(false)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

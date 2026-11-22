@@ -283,7 +283,7 @@ struct WorkspaceTabBar: View {
         HStack(spacing: 4) {
             fixedTab("保险箱", icon: "tray.full", page: .vault, id: "workspace.vault")
             fixedTab("SFTP", icon: "folder", page: .sftp, id: "workspace.sftp")
-            Divider().padding(.vertical, 10)
+            Rectangle().fill(Color.white.opacity(0.16)).frame(width: 1, height: 18).padding(.horizontal, 3).accessibilityHidden(true)
             GeometryReader { space in
                 HStack(spacing: 4) {
                     if !sessions.tabs.isEmpty {
@@ -291,6 +291,8 @@ struct WorkspaceTabBar: View {
                     }
                     Button { chooser = ConnectionChooserPresentation() } label: {
                         Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .background { Circle().fill(Color.white.opacity(0.09)).frame(width: 24, height: 24) }
                             .frame(width: newConnectionSize, height: newConnectionSize)
                             .contentShape(Rectangle())
                     }
@@ -388,15 +390,22 @@ struct WorkspaceTabBar: View {
     }
     private func fixedTab(_ title: String, icon: String, page: WorkspacePage, id: String) -> some View {
         Button { model.showWorkspace(page) } label: {
-            Label(title, systemImage: icon).font(.system(size: 13, weight: model.workspacePage == page ? .semibold : .regular))
+            let active = model.workspacePage == page
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .symbolVariant(active ? .fill : .none)
+                    .foregroundStyle(active ? .white : DesktopStyle.barSecondary)
+                Text(title)
+            }
+            .font(.system(size: 13, weight: active ? .semibold : .medium))
                 .frame(minWidth: 90, minHeight: 34)
                 .background(model.workspacePage == page ? DesktopStyle.activeTab(terminal: model.workspacePage.sessionID != nil)
                             : (hoveredFixedID == id ? DesktopStyle.hoverTab(terminal: model.workspacePage.sessionID != nil) : .clear),
                             in: RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius))
-                .overlay(RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius).stroke(focusedFixedID == id ? DesktopStyle.barForeground : .clear, lineWidth: 1).allowsHitTesting(false))
+                .overlay(RoundedRectangle(cornerRadius: DesktopStyle.cornerRadius).stroke(focusedFixedID == id ? DesktopStyle.barForeground : (active ? Color.white.opacity(0.14) : .clear), lineWidth: 1).allowsHitTesting(false))
         }.buttonStyle(.plain).fixedSize(horizontal: true, vertical: false).focused($focusedFixedID, equals: id)
             .onHover { hoveredFixedID = $0 ? id : (hoveredFixedID == id ? nil : hoveredFixedID) }
-            .accessibilityIdentifier(id).accessibilityAddTraits(model.workspacePage == page ? .isSelected : []).workspaceChromeControl()
+            .accessibilityLabel(title).accessibilityIdentifier(id).accessibilityAddTraits(model.workspacePage == page ? .isSelected : []).workspaceChromeControl()
     }
     private func tabDropTarget(before target: UUID?) -> some View {
         WorkspaceTabNativeDropTarget(owner: tabDrag, before: target, order: { sessions.tabs.map(\.id) }, move: { sessions.moveTab($0, before: $1) })
@@ -668,15 +677,8 @@ private struct ConnectionChooser: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                Image(systemName: "terminal")
-                    .accessibilityHidden(true)
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 34, height: 34)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("新连接").font(.title3).bold()
-                }
+                DesktopGlyph(systemName: "terminal", size: 36, prominent: true)
+                Text("新连接").font(.system(size: 21, weight: .semibold))
                 Spacer()
                 Button("新建主机…") { dismiss(); model.showWorkspace(.vault); model.sendWorkspaceCommand(.newHost) }
             }
@@ -702,13 +704,19 @@ private struct ConnectionChooser: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(hosts) { host in hostRow(host) }
+                    let matches = hosts
+                    LazyVStack(spacing: 0) {
+                        ForEach(matches) { host in
+                            hostRow(host)
+                            if host.id != matches.last?.id { Divider().padding(.leading, 56) }
+                        }
                     }
+                    .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(DesktopStyle.border).allowsHitTesting(false) }
                 }
             }
             HStack { Spacer(); Button("关闭", action: dismiss).keyboardShortcut(.cancelAction) }
-        }.padding(24).frame(width: 620, height: 460).background(DesktopStyle.background)
+        }.padding(22).frame(width: 560, height: CGFloat(min(5, max(2, model.connectionHosts.count))) * 62 + 172).background(DesktopStyle.background)
     }
 
     private func open(_ host: HostConfiguration, mode: SessionOpenMode) {
@@ -718,11 +726,7 @@ private struct ConnectionChooser: View {
 
     private func hostRow(_ host: HostConfiguration) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "server.rack")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 32, height: 32)
-                .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 8))
+            DesktopGlyph(systemName: "server.rack", size: 32)
             VStack(alignment: .leading, spacing: 3) {
                 Text(host.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Text(verbatim: host.username + "@" + host.vaultEndpoint)
@@ -740,7 +744,5 @@ private struct ConnectionChooser: View {
                 .help(hosts.count == 1 ? "在搜索框按回车也可打开此主机" : "打开此主机的终端")
         }
         .padding(12)
-        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DesktopStyle.border))
     }
 }

@@ -72,29 +72,16 @@ struct FilesConnectionPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: "externaldrive.connected.to.line.below")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 40, height: 40)
-                    .background(DesktopStyle.iconSurface, in: RoundedRectangle(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(files.selectedHost?.name ?? "连接远端主机")
-                        .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(2)
-                    if let host = files.selectedHost {
+            if let host = files.selectedHost {
+                HStack(spacing: 12) {
+                    DesktopGlyph(systemName: "server.rack", size: 40, prominent: true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: host.name).font(.system(size: 18, weight: .semibold)).lineLimit(2)
                         let endpoint = host.username + "@" + host.vaultEndpoint
-                        Text(verbatim: endpoint).font(.system(size: 11, design: .monospaced))
+                        Text(verbatim: endpoint).font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(endpoint)
                     }
                 }
-            }
-            if files.selectedHost == nil {
-                Text(needsFirstHost ? "先在保险箱中保存一台主机，即可在这里浏览和传输文件。" : "选择已保存的主机，浏览远端文件。").font(.callout).foregroundStyle(.secondary)
-                Button(needsFirstHost ? "新建主机…" : "选择主机…", action: needsFirstHost ? onCreateHost : onChooseHost)
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier(needsFirstHost ? "files.remote.empty.create" : "files.remote.empty.choose")
-            } else if let host = files.selectedHost {
                 Divider()
                 if files.state == .failed {
                     Label(status, systemImage: "exclamationmark.circle")
@@ -112,12 +99,28 @@ struct FilesConnectionPanelView: View {
                         }
                     }
                 }
+            } else {
+                HStack(spacing: 9) {
+                    DesktopGlyph(systemName: "folder", size: 34)
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(DesktopStyle.brand)
+                    DesktopGlyph(systemName: "server.rack", size: 34, prominent: true)
+                }.accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("连接远端主机").font(.system(size: 20, weight: .semibold))
+                    Text(needsFirstHost ? "先在保险箱中保存一台主机，即可在这里浏览和传输文件。" : "选择已保存的主机，浏览远端文件。")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Button(needsFirstHost ? "新建主机…" : "选择主机…", action: needsFirstHost ? onCreateHost : onChooseHost)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(needsFirstHost ? "files.remote.empty.create" : "files.remote.empty.choose")
             }
         }
-        .padding(20)
-        .frame(maxWidth: 360, alignment: .leading)
-        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(DesktopStyle.border) }
+        .padding(22)
+        .frame(maxWidth: 344, alignment: .leading)
+        .background(DesktopStyle.panel, in: RoundedRectangle(cornerRadius: 16))
+        .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(DesktopStyle.border).allowsHitTesting(false) }
+        .shadow(color: .black.opacity(0.045), radius: 10, y: 3)
     }
 
     private func connectionForm(_ host: HostConfiguration) -> some View {

@@ -51,10 +51,8 @@ struct DualPaneFilesView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            Text("文件传输").font(.system(size: 18, weight: .semibold))
+            DesktopGlyph(systemName: "arrow.left.arrow.right", size: 30)
+            Text("文件传输").font(.system(size: 20, weight: .semibold))
             Spacer()
             if files.selectedHost != nil {
                 Button { dialog = DualFilesDialog(content: .host) } label: {

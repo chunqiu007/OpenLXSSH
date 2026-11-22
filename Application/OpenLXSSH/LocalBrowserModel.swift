@@ -382,7 +382,7 @@ enum FilesLayoutColumn: String, CaseIterable, Hashable {
         switch self { case .name: "名称"; case .modified: "修改时间"; case .size: "大小"; case .kind: "类型"; case .permissions: "权限" }
     }
     var defaultWidth: Double {
-        switch self { case .name: 240; case .modified: 135; case .size: 85; case .kind: 80; case .permissions: 65 }
+        switch self { case .name: 240; case .modified: 112; case .size: 64; case .kind: 64; case .permissions: 65 }
     }
 }
 struct FilesTableLayout: Equatable {

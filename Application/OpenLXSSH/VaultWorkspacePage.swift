@@ -224,10 +224,10 @@ struct VaultWorkspacePage: View {
 
     private func hostContent(inlineInspector: Bool, pageHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 15) {
                 HStack(spacing: 10) {
                     Text(model.title)
-                        .font(.system(size: 24, weight: .semibold)).lineLimit(1)
+                        .font(.system(size: 27, weight: .bold)).lineLimit(1)
                         .help(model.title)
                     Spacer(minLength: 4)
                     Menu {
@@ -287,7 +287,9 @@ struct VaultWorkspacePage: View {
                     }.labelStyle(.iconOnly).pickerStyle(.segmented).labelsHidden().frame(width: 65)
                 }
             }
-            .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 12)
+            .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 15)
+            .background(DesktopStyle.panel)
+            Divider()
             if !model.tagFilter.isEmpty {
                 ScrollView(.horizontal) {
                     HStack {
@@ -296,7 +298,7 @@ struct VaultWorkspacePage: View {
                         }
                         Button("清除筛选") { model.clearFilters() }.font(.caption)
                     }
-                }.padding(.horizontal, 16).padding(.bottom, 8)
+                }.padding(.horizontal, 22).padding(.vertical, 8)
             }
             if let issue = model.issue {
                 HStack {
@@ -308,7 +310,8 @@ struct VaultWorkspacePage: View {
                 emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VaultHostList(model: model, action: perform, menu: menuItems)
-                    .padding(.horizontal, 12).padding(.bottom, 8)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(model.displayMode == .list ? DesktopStyle.panel : DesktopStyle.background)
             }
             if model.selectedIDs.count > 1 {
                 HStack {
@@ -355,14 +358,24 @@ struct VaultWorkspacePage: View {
         } else {
             switch model.section {
             case .all:
-                ContentUnavailableView {
-                    Label("添加第一台主机", systemImage: "server.rack")
-                } description: {
+                VStack(spacing: 0) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .strokeBorder(DesktopStyle.brand.opacity(0.18))
+                            .frame(width: 68, height: 68).rotationEffect(.degrees(-12))
+                        DesktopGlyph(systemName: "server.rack", size: 62, prominent: true)
+                    }
+                    .frame(width: 82, height: 84).accessibilityHidden(true)
+                    Text("添加第一台主机").font(.system(size: 23, weight: .semibold))
+                        .padding(.top, 12)
                     Text("新建主机以保存连接地址和登录方式。")
-                } actions: {
-                    Button("新建主机") { presentHost(nil) }.buttonStyle(.borderedProminent)
-                    Button("导入密钥…") { page = .keys }
-                }
+                        .font(.callout).foregroundStyle(.secondary).padding(.top, 7)
+                    HStack(spacing: 10) {
+                        Button("新建主机") { presentHost(nil) }.buttonStyle(.borderedProminent)
+                        Button("导入密钥…") { page = .keys }
+                    }
+                    .padding(.top, 18)
+                }.padding(20)
             case .favorites:
                 ContentUnavailableView {
                     Label("还没有收藏的主机", systemImage: "star")
