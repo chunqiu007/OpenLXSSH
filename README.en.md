@@ -4,11 +4,11 @@
 
 OpenLXSSH is a lightweight, native **SSH and SFTP client for Apple Silicon Macs**. It runs on M-series chips with **macOS 26 or later**. The desktop app uses SwiftUI and AppKit, with no Electron runtime or cloud account required.
 
-## Download Release 2.5
+## Download Release 2.5.1
 
-[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.5/OpenLXSSH-2.5-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.5)
+[Download the Apple Silicon DMG](https://github.com/chunqiu007/OpenLXSSH/releases/download/v2.5.1/OpenLXSSH-2.5.1-arm64.dmg) · [Release notes](https://github.com/chunqiu007/OpenLXSSH/releases/tag/v2.5.1)
 
-Open the DMG, drag OpenLXSSH into Applications, and launch it from there. The image contains app version **2.5 (build 8)**. It is signed offline with Developer ID and has not been notarized by Apple.
+Open the DMG, drag OpenLXSSH into Applications, and launch it from there. The image contains app version **2.5.1 (build 9)**. It is signed offline with Developer ID and has not been notarized by Apple.
 
 When upgrading from 2.0.4, saved passwords and key passphrases do not migrate automatically to the new Keychain storage. To save a password again, edit its host in the vault. To save a passphrase again, select its key in the keys and credentials view.
 
@@ -27,7 +27,7 @@ See [User Guide](docs/user-guide.md) and [Architecture](docs/architecture.md) (C
 
 ## Help test OpenLXSSH
 
-1. Install and launch Release 2.5 on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
+1. Install and launch Release 2.5.1 on an M-series Mac. Add a host you have permission to test, verify its fingerprint, and try the authentication method you normally use.
 2. Open and switch between terminal tabs. If you use a jump host, try your regular nested SSH workflow.
 3. Upload and download a small test file in SFTP. Try a same-name transfer and check that **Cancel**, **Replace**, and **Keep Both** behave as you expect.
 

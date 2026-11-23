@@ -1,6 +1,11 @@
 # OpenLXSSH — 工程状态
 
-更新：2026-11-22（Asia/Shanghai）。本文件记录 `main` 分支当前工程基线、验证结果与已知限制；**2.0.4 及以前的历史阶段工程日志与报告已完整归档于 Git 标签 `v2.0.4`（`ac8b967`）及提交 `084b043`**。
+更新：2026-11-23（Asia/Shanghai）。本文件记录 `main` 分支当前工程基线、验证结果与已知限制；**2.0.4 及以前的历史阶段工程日志与报告已完整归档于 Git 标签 `v2.0.4`（`ac8b967`）及提交 `084b043`**。
+
+## 2026-11-23　2.5.1 发布验证
+
+- 本版包含提交 `deb1cfd`，修复多窗口设置合并、钥匙串凭据清理、SFTP 速率显示与新建主机后的保存流程，并修正跨窗口诊断统计。
+- 按用户要求沿用此前已执行的测试。本轮执行 arm64 Release 构建，并挂载精简 DMG 核验应用版本、签名、架构、调试符号和文件一致性。
 
 ## 2026-11-22　2.5 发布验证
 
@@ -24,7 +29,7 @@
 ## 当前目标与交付基线
 
 - **产品定位**：Apple Silicon（arm64）/ macOS 26+ 原生轻量 SSH + SFTP 桌面客户端（Swift 6、SwiftUI + AppKit、静态 `libssh2 + OpenSSL`、SwiftTerm、GRDB/SQLite、现代本机 Keychain v2）。
-- **最新已发布包**：Release **2.5（build 8）**，标签 `v2.5`，`OpenLXSSH-2.5-arm64.dmg`（6,365,425 B，SHA-256 `284fcc051ec2bba24b7b2a345000aa71e3256d8c953997da7d2647bb45b9bb43`），Developer ID 离线签名、未经 Apple 公证。
+- **最新已发布包**：Release **2.5.1（build 9）**，标签 `v2.5.1`，`OpenLXSSH-2.5.1-arm64.dmg`（6,369,443 B，SHA-256 `dac0f2d904bb4a7e501f2e8ae07aa96d8a67a01875426f9792c63fd81e0a2845`），Developer ID 离线签名、未经 Apple 公证。
 - **活文档索引**：[需求说明](docs/requirements.md) · [架构说明](docs/architecture.md) · [用户指南](docs/user-guide.md) · [ADR-20261122](docs/adr/20261122-streamline-and-modern-keychain.md)。
 
 ## `main` 分支里程碑（M1–M6，位于 `v2.0.4` 之上）
